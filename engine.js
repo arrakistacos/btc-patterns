@@ -515,6 +515,7 @@
     const chartRecent = new Map();
     let hS = 0, hE = 0, lS = 0, lE = 0;
     let lastSigs = [], prediction = null;
+    const zSeries = opts.collect ? [] : null; // [forTime, pattern z] for every bar (used by the tuner)
     const first = 30;
     for (let i = first; i < n; i++) {
       while (hE < piv.highs.length && piv.highs[hE].i + PIVOT_K <= i) hE++;
@@ -525,6 +526,7 @@
       const sigs = detectCandles(ctx, i).concat(detectChart(ctx, i, known));
       const active = sigs.filter((s) => enabled(s.type));
       const pred = predict(ctx, i, active, stats, interval);
+      if (zSeries) zSeries.push([pred.forTime, pred.z]);
       if (i < n - 1) {
         const d = C[i + 1].c - C[i].c, actual = Math.sign(d);
         wf.bars++;
@@ -559,9 +561,65 @@
     for (const t in PATTERNS) rates[t] = { n: stats[t].n, hits: stats[t].hits, seen: stats[t].seen, rate: stats[t].n ? stats[t].hits / stats[t].n : null, shrunk: hitRate(stats, t) };
     return {
       stats: rates, wf, candleMarks, chartDrawings, prediction,
-      active: lastSigs, n, firstTime: C[0].t, lastTime: C[n - 1].t,
+      active: lastSigs, n, firstTime: C[0].t, lastTime: C[n - 1].t, zSeries,
     };
   }
 
-  return { PATTERNS, analyze, computeATR, computePivots };
+  // ---------- Polymarket-style window odds ----------
+  // P(Up) for a 5-minute "Up or Down" window: will the settlement price be >= the start price K?
+  // Price is modelled as driftless Brownian motion in dollars with volatility sigma ($ per sqrt-second).
+  //   mode 'spot'  : settles on the spot price at the end of the window
+  //   mode 'end60' : settles on a 60-second TWAP ending at the window close
+  //   mode 'full'  : settles on the TWAP over the whole window
+  function normCdf(x) {
+    // Abramowitz–Stegun 7.1.26 (|err| < 1.5e-7)
+    const t = 1 / (1 + 0.3275911 * Math.abs(x) / Math.SQRT2);
+    const y = 1 - (((((1.061405429 * t - 1.453152027) * t) + 1.421413741) * t - 0.284496736) * t + 0.254829592) * t * Math.exp(-x * x / 2);
+    return x >= 0 ? 0.5 * (1 + y) : 0.5 * (1 - y);
+  }
+
+  function windowUpProb(o) {
+    const W = o.W || 300, e = Math.max(0, Math.min(W, o.elapsed || 0)), tau = W - e;
+    const sig = Math.max(o.sigma, 1e-9);
+    let mean, sd;
+    if (o.mode === 'full') {
+      const avg = e > 0 && o.avgSoFar != null ? o.avgSoFar : o.S;
+      mean = (e * avg + o.S * tau) / W;
+      sd = sig * Math.pow(tau, 1.5) / (Math.sqrt(3) * W);
+    } else if (o.mode === 'end60') {
+      const A = 60;
+      if (tau > A) { mean = o.S; sd = sig * Math.sqrt(tau - A + A / 3); }
+      else {
+        const avg = o.avgLast60 != null ? o.avgLast60 : o.S;
+        mean = ((A - tau) * avg + o.S * tau) / A;
+        sd = sig * Math.pow(tau, 1.5) / (Math.sqrt(3) * A);
+      }
+    } else { mean = o.S; sd = sig * Math.sqrt(tau); }
+    if (sd < 1e-9) return mean >= o.K ? 1 : 0;
+    return normCdf((mean - o.K) / sd);
+  }
+
+  // Parkinson volatility from high/low of the last n closed candles, in $ per sqrt-second
+  function parkinsonSigma(C, i, n, interval) {
+    let s = 0, m = 0;
+    for (let j = Math.max(0, i - n + 1); j <= i; j++) { const r = C[j].h - C[j].l; s += r * r; m++; }
+    return m ? Math.sqrt(s / m / (4 * Math.LN2) / (interval || 300)) : NaN;
+  }
+
+  // Velocity: net move over the last n closed candles in units of expected move (z-score)
+  function velocity(C, i, n, sigma, interval) {
+    if (i - n < 0 || !(sigma > 0)) return 0;
+    return (C[i].c - C[i - n].c) / (sigma * Math.sqrt(n * (interval || 300)));
+  }
+
+  const DEFAULT_WINDOW_PARAMS = { mode: 'full', volBars: 12, volScale: 1, beta: 1, gamma: 0, velBars: 3 };
+
+  // Combined probability: volatility/distance model + pattern lean + velocity term
+  function combineWindow(pVol, patternZ, vel, params) {
+    const pc = Math.min(1 - 1e-6, Math.max(1e-6, pVol));
+    const z = logit(pc) + (params.beta || 0) * (patternZ || 0) + (params.gamma || 0) * (vel || 0);
+    return 1 / (1 + Math.exp(-z));
+  }
+
+  return { PATTERNS, analyze, computeATR, computePivots, normCdf, windowUpProb, parkinsonSigma, velocity, combineWindow, DEFAULT_WINDOW_PARAMS };
 });

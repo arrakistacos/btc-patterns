@@ -240,6 +240,7 @@
 
   function onTrade(price, size, ts) {
     noteClock(ts);
+    pushTick(ts || now(), price);
     const t = bucket(ts || now());
     const C = state.candles;
     const last = C[C.length - 1];
@@ -255,6 +256,7 @@
 
   function onCandle(k, ts) {
     noteClock(ts);
+    pushTick(ts || now(), k.c);
     const C = state.candles;
     const last = C[C.length - 1];
     if (!last || k.t > last.t) {
@@ -466,7 +468,7 @@
       priceLines.push(candleSeries.createPriceLine({ price: pr.low, color: 'rgba(125,136,153,0.6)', lineWidth: 1, lineStyle: LW.LineStyle.Dotted, axisLabelVisible: false, title: '' }));
     } else ghostSeries.setData([]);
 
-    $('predFor').textContent = 'Next candle · closes ' + tLocal(pr.forTime + INTERVAL);
+    $('predFor').textContent = 'Pattern call at ' + tLocal(pr.forTime) + ' open · candle closes ' + tLocal(pr.forTime + INTERVAL);
     const dirEl = $('predDir'), confEl = $('predConf');
     if (pr.signal && pr.dir !== 0) {
       dirEl.textContent = pr.dir > 0 ? '▲ UP' : '▼ DOWN';
@@ -571,6 +573,141 @@
       $('countdown').textContent = Math.floor(left / 60) + ':' + String(Math.floor(left % 60)).padStart(2, '0');
     }
     maybeAnalyze(false);
+    renderWindow();
+  }
+
+  // ---------- this window vs Polymarket ----------
+  const ticks = []; // [ts, price], last ~6 minutes, for time-weighted averages
+  function pushTick(ts, price) {
+    if (!isFinite(price)) return;
+    if (ticks.length && ts < ticks[ticks.length - 1][0]) ts = ticks[ticks.length - 1][0];
+    ticks.push([ts, price]);
+    while (ticks.length && ticks[0][0] < ts - 400) ticks.shift();
+  }
+  function twAvg(from, to) {
+    let sum = 0, dur = 0, prev = null;
+    for (const [t, p] of ticks) {
+      if (prev && t > from) { const a = Math.max(prev[0], from), b = Math.min(t, to); if (b > a) { sum += prev[1] * (b - a); dur += b - a; } }
+      prev = [t, p];
+    }
+    if (prev && to > Math.max(prev[0], from)) { const a = Math.max(prev[0], from); sum += prev[1] * (to - a); dur += to - a; }
+    return dur > 0 ? sum / dur : null;
+  }
+
+  state.params = Object.assign({}, E.DEFAULT_WINDOW_PARAMS);
+  fetch('params.json', { cache: 'no-store' }).then((r) => r.ok ? r.json() : null).then((j) => {
+    if (j && j.window) { state.params = Object.assign({}, E.DEFAULT_WINDOW_PARAMS, j.window); state.paramsTuned = j.generated; }
+  }).catch(() => { /* defaults */ });
+
+  const pm = { t: null, token: null, ws: null, bid: null, ask: null, last: null, lastMsg: 0, poll: null, ping: null, status: '' };
+  async function pmRoll(t) {
+    if (pm.t === t) return;
+    pm.t = t; pm.token = null; pm.bid = pm.ask = pm.last = null; pm.status = 'finding market…';
+    pmClose();
+    for (let a = 0; a < 6 && pm.t === t; a++) {
+      try {
+        const m = (await getJSON(`https://gamma-api.polymarket.com/markets?slug=btc-updown-5m-${t}`))[0];
+        if (m) { pm.token = JSON.parse(m.clobTokenIds)[JSON.parse(m.outcomes).indexOf('Up')]; break; }
+      } catch (e) { /* retry */ }
+      await new Promise((r) => setTimeout(r, 4000));
+    }
+    if (pm.t !== t) return;
+    if (!pm.token) { pm.status = 'no Polymarket market found'; return; }
+    pm.status = 'connecting…';
+    pmConnect(pm.token, t);
+  }
+  function pmClose() {
+    clearInterval(pm.ping); clearInterval(pm.poll);
+    if (pm.ws) { pm.ws.onclose = null; try { pm.ws.close(); } catch (e) { /* ignore */ } }
+    pm.ws = null;
+  }
+  function pmConnect(token, t) {
+    pmClose();
+    let ws;
+    try { ws = new WebSocket('wss://ws-subscriptions-clob.polymarket.com/ws/market'); } catch (e) { return pmPoll(token, t); }
+    pm.ws = ws;
+    ws.onopen = () => { ws.send(JSON.stringify({ assets_ids: [token], type: 'market', custom_feature_enabled: true })); pm.ping = setInterval(() => { try { ws.send('PING'); } catch (e) { /* closed */ } }, 9000); };
+    ws.onmessage = (e) => {
+      if (e.data === 'PONG' || pm.token !== token) return;
+      let d; try { d = JSON.parse(e.data); } catch (err) { return; }
+      for (const x of Array.isArray(d) ? d : [d]) {
+        if (x.event_type === 'best_bid_ask' && x.asset_id === token) { pm.bid = +x.best_bid; pm.ask = +x.best_ask; pm.lastMsg = Date.now(); }
+        else if (x.price_changes) { for (const c of x.price_changes) if (c.asset_id === token && c.best_bid != null) { pm.bid = +c.best_bid; pm.ask = +c.best_ask; pm.lastMsg = Date.now(); } }
+        else if (x.event_type === 'last_trade_price' && x.asset_id === token) { pm.last = +x.price; pm.lastMsg = Date.now(); }
+        else if (x.event_type === 'book' && x.asset_id === token) {
+          const b = (x.bids || []).map((q) => +q.price), a = (x.asks || []).map((q) => +q.price);
+          if (b.length) pm.bid = Math.max(...b); if (a.length) pm.ask = Math.min(...a); pm.lastMsg = Date.now();
+        }
+      }
+      pm.status = 'live';
+    };
+    ws.onclose = () => { clearInterval(pm.ping); if (pm.t === t) pmPoll(token, t); };
+  }
+  function pmPoll(token, t) {   // fallback: REST midpoint every 5s
+    clearInterval(pm.poll);
+    pm.status = 'polling';
+    const go = async () => {
+      if (pm.t !== t) return clearInterval(pm.poll);
+      try { const j = await getJSON(`https://clob.polymarket.com/midpoint?token_id=${token}`); const m = +j.mid; if (isFinite(m)) { pm.bid = pm.ask = m; pm.lastMsg = Date.now(); } } catch (e) { /* keep last */ }
+    };
+    go(); pm.poll = setInterval(go, 5000);
+  }
+  function pmMid() {
+    if (pm.bid == null || pm.ask == null) return pm.last;
+    if (pm.ask - pm.bid > 0.1 && pm.last != null) return pm.last;
+    return (pm.bid + pm.ask) / 2;
+  }
+
+  function windowOdds() {
+    const C = state.candles;
+    const t = now(), Ws = bucket(t), e = t - Ws;
+    const closed = closedCandles();
+    if (closed.length < 60 || !C.length) return null;
+    const cur = C[C.length - 1];
+    const K = cur.t === Ws ? cur.o : closed[closed.length - 1].c;
+    const S = cur.c;
+    const P = state.params, i = closed.length - 1;
+    const sig0 = E.parkinsonSigma(closed, i, P.volBars, INTERVAL);
+    const pVol = E.windowUpProb({
+      S, K, sigma: sig0 * P.volScale, elapsed: e, mode: P.mode, W: INTERVAL,
+      avgSoFar: twAvg(Ws, t), avgLast60: twAvg(Ws + INTERVAL - 60, t),
+    });
+    const pr = state.result && state.result.prediction;
+    const z = pr && pr.forTime === Ws ? pr.z : 0;
+    const vel = E.velocity(closed, i, P.velBars, sig0, INTERVAL);
+    const p = E.combineWindow(pVol, z, vel, P);
+    return { Ws, e, K, S, p, pVol, z, vel, sigma: sig0 * P.volScale, left: INTERVAL - e };
+  }
+
+  function renderWindow() {
+    const w = windowOdds();
+    if (!w) return;
+    pmRoll(w.Ws);
+    $('winLabel').textContent = tLocal(w.Ws) + ' – ' + tLocal(w.Ws + INTERVAL) + ' window';
+    $('winLeft').textContent = Math.floor(w.left / 60) + ':' + String(Math.floor(w.left % 60)).padStart(2, '0') + ' left';
+    const setBar = (bar, label, p) => {
+      if (p == null || !isFinite(p)) { $(bar).style.width = '0'; $(label).textContent = '—'; $(label).className = 'num muted'; return; }
+      $(bar).style.width = (p * 100).toFixed(1) + '%';
+      $(bar).style.background = p >= 0.5 ? 'var(--up)' : 'var(--down)';
+      $(label).textContent = 'Up ' + (p * 100).toFixed(1) + '%';
+      $(label).className = 'num ' + (p >= 0.5 ? 'up' : 'down');
+    };
+    setBar('barOurs', 'pOurs', w.p);
+    const mk = pmMid();
+    setBar('barPoly', 'pPoly', mk);
+    const d = w.S - w.K;
+    $('winK').textContent = usd(w.K, 2);
+    $('winNow').textContent = usd(w.S, 2);
+    $('winGap').innerHTML = `<span class="${d >= 0 ? 'up' : 'down'}">${signed(d)}</span> · ${(d / (w.sigma * Math.sqrt(Math.max(1, w.left)))).toFixed(2)}σ of time left`;
+    const stale = pm.lastMsg && Date.now() - pm.lastMsg > 30000;
+    const diff = mk != null ? (w.p - mk) * 100 : null;
+    $('winNote').innerHTML =
+      (diff != null ? `Ours is <b>${Math.abs(diff).toFixed(1)} pts ${diff >= 0 ? 'more bullish' : 'more bearish'}</b> than the market. ` : '') +
+      `Polymarket: ${esc(stale ? 'stale' : pm.status)}` +
+      (pm.token ? ` · <a href="https://polymarket.com/event/btc-updown-5m-${w.Ws}" target="_blank" rel="noopener" style="color:var(--accent)">open market ↗</a>` : '') +
+      `<br>Model: ${esc(state.params.mode)} settlement, ${state.params.volBars * 5}-min volatility, velocity γ ${state.params.gamma}` +
+      (state.paramsTuned ? ` · tuned ${new Date(state.paramsTuned).toLocaleDateString()}` : ' · default params') +
+      `. Start price is Coinbase's; Polymarket settles on Chainlink, which can differ by a few dollars.`;
   }
 
   // ---------- wiring ----------

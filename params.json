@@ -1,0 +1,20 @@
+{
+ "generated": "2026-11-06T23:38:59.758Z",
+ "window": {
+  "mode": "spot",
+  "volBars": 6,
+  "volScale": 1,
+  "beta": 1,
+  "gamma": 0.15,
+  "velBars": 1
+ },
+ "marketMatch": {
+  "mode": "end60",
+  "volBars": 12,
+  "volScale": 1.2,
+  "beta": 0,
+  "gamma": 0.15,
+  "velBars": 1
+ },
+ "note": "Tuned by tools/tune.mjs on resolved Polymarket 5m BTC markets. window = best vs outcomes; marketMatch = closest to Polymarket odds."
+}

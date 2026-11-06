@@ -1,0 +1,130 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Calibration vs Polymarket</title>
+<meta name="theme-color" content="#0b0e14">
+<style>
+  :root { --bg:#0b0e14; --panel:#11151d; --line:#222a37; --text:#d6dde8; --muted:#7d8899; --up:#16c784; --down:#ea3943; --accent:#5aa9ff; --amber:#f5b041; --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--text); font:14px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif; }
+  header { padding:14px 16px; border-bottom:1px solid var(--line); background:var(--panel); display:flex; gap:12px; align-items:baseline; flex-wrap:wrap; }
+  header a { color:var(--accent); text-decoration:none; font-size:13px; }
+  h1 { font-size:18px; margin:0; }
+  main { max-width:1100px; margin:0 auto; padding:16px; display:grid; gap:14px; grid-template-columns: 1fr 1fr; }
+  .card { background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:14px 16px; min-width:0; }
+  .wide { grid-column: 1 / -1; }
+  h2 { font-size:12px; text-transform:uppercase; letter-spacing:.08em; color:var(--muted); margin:0 0 10px; }
+  .num { font-family:var(--mono); font-variant-numeric:tabular-nums; }
+  .muted { color:var(--muted); }
+  .tiles { display:grid; grid-template-columns: repeat(auto-fit, minmax(150px,1fr)); gap:10px; }
+  .tile { background:#161b25; border:1px solid var(--line); border-radius:10px; padding:10px 12px; }
+  .tile .k { font-size:12px; color:var(--muted); }
+  .tile .v { font-size:22px; font-weight:700; font-family:var(--mono); }
+  table { width:100%; border-collapse:collapse; font-size:13px; }
+  th, td { padding:6px 8px; border-bottom:1px solid #1a202b; text-align:right; }
+  th:first-child, td:first-child { text-align:left; }
+  th { color:var(--muted); font-weight:500; }
+  ul.find { margin:0; padding-left:18px; } ul.find li { margin:4px 0; }
+  svg text { fill: var(--muted); font-size: 11px; font-family: system-ui, sans-serif; }
+  .legend { display:flex; gap:14px; font-size:12px; color:var(--muted); margin-top:6px; flex-wrap:wrap; }
+  .sw { display:inline-block; width:10px; height:10px; border-radius:2px; margin-right:5px; vertical-align:-1px; }
+  code { font-family:var(--mono); font-size:12px; background:#161b25; padding:1px 5px; border-radius:4px; }
+  @media (max-width: 820px) { main { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+<header>
+  <h1>Calibration vs Polymarket</h1>
+  <span class="muted" id="meta">Loading…</span>
+  <span style="flex:1"></span>
+  <a href="./">← Back to the chart</a>
+</header>
+<main id="main"></main>
+<script>
+(async () => {
+  const main = document.getElementById('main');
+  let R;
+  try { R = await (await fetch('data/calibration.json', { cache: 'no-store' })).json(); }
+  catch (e) { main.innerHTML = '<div class="card wide">No calibration report yet. Run <code>node tools/backfill.mjs</code> then <code>node tools/tune.mjs</code>.</div>'; return; }
+
+  const f4 = (x) => x == null ? '—' : x.toFixed(4);
+  const pc = (x) => x == null ? '—' : (x * 100).toFixed(1) + '%';
+  const d = (t) => new Date(t * 1000).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+  document.getElementById('meta').textContent = `${R.data.windows} resolved 5-min windows · ${d(R.data.from)} → ${d(R.data.to)} · updated ${new Date(R.generated).toLocaleString()}`;
+
+  const T = R.bestOutcome.test, M = R.market.test, P = R.bestOutcome.params;
+  const skill = (ll) => 1 - ll / Math.log(2); // share of coin-flip uncertainty removed
+  const gap = R.checkpoints.filter((c) => c.n);
+  const velHelps = R.ablation.noVelocity.logloss - R.ablation.full.logloss;
+  const patHelps = R.ablation.noPatterns.logloss - R.ablation.full.logloss;
+  const modes = Object.entries(R.ablation.modes).sort((a, b) => a[1].logloss - b[1].logloss);
+  const blendGain = R.blend.marketTestLogloss - R.blend.testLogloss;
+
+  const findings = [
+    `On held-out windows our model removes <b>${pc(skill(T.logloss))}</b> of coin-flip uncertainty; Polymarket removes <b>${pc(skill(M.logloss))}</b>.`,
+    `Settlement behaves like <b>${modes[0][0] === 'spot' ? 'the spot price' : modes[0][0] === 'end60' ? 'a 60-second TWAP at the close' : 'a whole-window TWAP'}</b> at the close (best fit); a whole-window average fits ${modes.find((m) => m[0] === 'full')[1].logloss > modes[0][1].logloss + 0.02 ? 'much worse' : 'about as well'}.`,
+    `Volatility lookback that fits best: <b>${P.volBars * 5} minutes</b> (×${P.volScale}). Closest match to Polymarket's own odds: <b>${R.bestMarketMatch.params.volBars * 5} minutes</b>, ${R.bestMarketMatch.params.mode} settlement, ×${R.bestMarketMatch.params.volScale}.`,
+    `Velocity (momentum) term: γ = ${P.gamma} over ${P.velBars * 5} min — ${Math.abs(velHelps) < 0.002 ? 'a <b>negligible</b>' : velHelps > 0 ? 'a <b>helpful</b>' : 'a <b>harmful</b>'} effect (Δ log loss ${velHelps >= 0 ? '−' : '+'}${Math.abs(velHelps).toFixed(4)}).`,
+    `Chart patterns: ${Math.abs(patHelps) < 0.002 ? '<b>no measurable value</b>' : patHelps > 0 ? '<b>small value</b>' : '<b>hurt</b>'} once volatility and distance are known (Δ log loss ${patHelps >= 0 ? '−' : '+'}${Math.abs(patHelps).toFixed(4)}).`,
+    `Adding our signals on top of Polymarket's odds ${blendGain > 0.001 ? '<b>improves</b>' : '<b>does not improve</b>'} them (log loss ${f4(R.blend.testLogloss)} vs ${f4(R.blend.marketTestLogloss)}).`,
+    `The biggest gap is late in the window (${gap[gap.length - 1].e / 60}+ min in): market ${pc(gap[gap.length - 1].marketAcc)} right vs ours ${pc(gap[gap.length - 1].modelAcc)} — traders see the Chainlink price and sub-minute moves we don't sample here.`,
+  ];
+
+  main.innerHTML = `
+    <div class="card wide">
+      <h2>Headline (test set — last 30% of windows, never used for tuning)</h2>
+      <div class="tiles">
+        <div class="tile"><div class="k">Our log loss</div><div class="v">${f4(T.logloss)}</div></div>
+        <div class="tile"><div class="k">Polymarket log loss</div><div class="v">${f4(M.logloss)}</div></div>
+        <div class="tile"><div class="k">Coin flip</div><div class="v">${f4(Math.log(2))}</div></div>
+        <div class="tile"><div class="k">Our Brier</div><div class="v">${f4(T.brier)}</div></div>
+        <div class="tile"><div class="k">Polymarket Brier</div><div class="v">${f4(M.brier)}</div></div>
+        <div class="tile"><div class="k">Avg gap to market</div><div class="v">${(gap.reduce((s, c) => s + c.maeToMarket * c.n, 0) / gap.reduce((s, c) => s + c.n, 0) * 100).toFixed(1)}pt</div></div>
+      </div>
+      <p class="muted" style="margin:10px 0 0">Lower is better for log loss and Brier. Up resolved ${pc(R.data.upRate)} of the time in this sample.</p>
+    </div>
+    <div class="card wide"><h2>What the data says</h2><ul class="find">${findings.map((x) => '<li>' + x + '</li>').join('')}</ul></div>
+    <div class="card"><h2>Reliability — when it says X%, does Up happen X% of the time?</h2>${reliabilitySvg()}
+      <div class="legend"><span><i class="sw" style="background:var(--accent)"></i>Our model</span><span><i class="sw" style="background:var(--amber)"></i>Polymarket</span><span><i class="sw" style="background:#3a4252"></i>Perfect calibration</span></div></div>
+    <div class="card"><h2>Our P(Up) vs Polymarket at the same moment</h2>${scatterSvg()}
+      <div class="legend"><span>Each dot is one window at 1–4 min in. Dots on the diagonal = we agree with the market.</span></div></div>
+    <div class="card wide"><h2>By minute into the window (test set)</h2>
+      <table><thead><tr><th>Minute</th><th>Windows</th><th>Our log loss</th><th>Market log loss</th><th>Our accuracy</th><th>Market accuracy</th><th>Avg gap to market</th></tr></thead>
+      <tbody>${gap.map((c) => `<tr><td>${c.e / 60}:00</td><td class="num">${c.n}</td><td class="num">${f4(c.model.logloss)}</td><td class="num">${f4(c.market.logloss)}</td><td class="num">${pc(c.modelAcc)}</td><td class="num">${pc(c.marketAcc)}</td><td class="num">${(c.maeToMarket * 100).toFixed(1)}pt</td></tr>`).join('')}</tbody></table></div>
+    <div class="card wide"><h2>Tuned parameters (saved to params.json, used live by the chart)</h2>
+      <table><tbody>
+        <tr><td>Settlement model</td><td class="num">${P.mode}</td></tr>
+        <tr><td>Volatility lookback</td><td class="num">${P.volBars} × 5-min candles (Parkinson high/low estimator)</td></tr>
+        <tr><td>Volatility scale</td><td class="num">${P.volScale}</td></tr>
+        <tr><td>Pattern weight β</td><td class="num">${P.beta}</td></tr>
+        <tr><td>Velocity weight γ / lookback</td><td class="num">${P.gamma} / ${P.velBars} candle(s)</td></tr>
+      </tbody></table>
+      <p class="muted">Model: P(Up) = Φ((price − start price) / (σ·√time left)), then shifted in log-odds by β × pattern lean + γ × velocity. Grid-searched on the first 70% of windows; all scores above are on the last 30%.</p></div>`;
+
+  function reliabilitySvg() {
+    const S = 280, pad = 38, sc = (v) => pad + v * (S - 2 * pad), sy = (v) => S - pad - v * (S - 2 * pad);
+    let g = `<svg viewBox="0 0 ${S} ${S}" width="100%" style="max-width:420px">`;
+    for (let v = 0; v <= 1.001; v += 0.25) g += `<line x1="${sc(v)}" y1="${sy(0)}" x2="${sc(v)}" y2="${sy(1)}" stroke="#161b25"/><line x1="${sc(0)}" y1="${sy(v)}" x2="${sc(1)}" y2="${sy(v)}" stroke="#161b25"/><text x="${sc(v)}" y="${S - 10}" text-anchor="middle">${v * 100}%</text><text x="${pad - 4}" y="${sy(v) + 4}" text-anchor="end">${v * 100}%</text>`;
+    g += `<line x1="${sc(0)}" y1="${sy(0)}" x2="${sc(1)}" y2="${sy(1)}" stroke="#3a4252" stroke-dasharray="4 4"/>`;
+    for (const [key, col] of [['market', '#f5b041'], ['model', '#5aa9ff']]) {
+      const pts = R.reliability[key].filter((b) => b.n >= 8);
+      g += `<polyline fill="none" stroke="${col}" stroke-width="2" points="${pts.map((b) => sc(b.avgP) + ',' + sy(b.freq)).join(' ')}"/>`;
+      for (const b of pts) g += `<circle cx="${sc(b.avgP)}" cy="${sy(b.freq)}" r="${Math.min(7, 2 + Math.sqrt(b.n) / 4)}" fill="${col}" fill-opacity=".85"><title>${key}: predicted ${pc(b.avgP)}, happened ${pc(b.freq)} (n=${b.n})</title></circle>`;
+    }
+    return g + '</svg>';
+  }
+  function scatterSvg() {
+    const S = 280, pad = 38, sc = (v) => pad + v * (S - 2 * pad), sy = (v) => S - pad - v * (S - 2 * pad);
+    let g = `<svg viewBox="0 0 ${S} ${S}" width="100%" style="max-width:420px">`;
+    for (let v = 0; v <= 1.001; v += 0.25) g += `<text x="${sc(v)}" y="${S - 10}" text-anchor="middle">${v * 100}%</text><text x="${pad - 4}" y="${sy(v) + 4}" text-anchor="end">${v * 100}%</text>`;
+    g += `<line x1="${sc(0)}" y1="${sy(0)}" x2="${sc(1)}" y2="${sy(1)}" stroke="#3a4252" stroke-dasharray="4 4"/>`;
+    for (const [m, k] of R.scatter) g += `<circle cx="${sc(m).toFixed(1)}" cy="${sy(k).toFixed(1)}" r="1.8" fill="#5aa9ff" fill-opacity=".35"/>`;
+    g += `<text x="${S / 2}" y="${S - 0}" text-anchor="middle">ours →</text><text x="8" y="${pad - 12}">Polymarket ↑</text>`;
+    return g + '</svg>';
+  }
+})();
+</script>
+</body>
+</html>
