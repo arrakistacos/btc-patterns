@@ -1,0 +1,164 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>BTC Pattern Watch</title>
+<meta name="description" content="Live Bitcoin 5-minute candles with automatic chart-pattern detection, confidence scores and next-candle prediction.">
+<meta name="theme-color" content="#0b0e14">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%230b0e14'/%3E%3Crect x='7' y='9' width='5' height='13' fill='%2316c784'/%3E%3Cline x1='9.5' y1='5' x2='9.5' y2='26' stroke='%2316c784' stroke-width='1.5'/%3E%3Crect x='19' y='12' width='5' height='10' fill='%23ea3943'/%3E%3Cline x1='21.5' y1='8' x2='21.5' y2='27' stroke='%23ea3943' stroke-width='1.5'/%3E%3C/svg%3E">
+<style>
+  :root {
+    --bg: #0b0e14; --panel: #11151d; --panel2: #161b25; --line: #222a37;
+    --text: #d6dde8; --muted: #7d8899; --up: #16c784; --down: #ea3943; --amber: #f5b041; --accent: #5aa9ff;
+    --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.4 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  .num { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+  .up { color: var(--up); } .down { color: var(--down); } .flat { color: var(--amber); } .muted { color: var(--muted); }
+
+  header { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 18px; padding: 10px 16px; border-bottom: 1px solid var(--line); background: var(--panel); position: sticky; top: 0; z-index: 5; }
+  .brand { font-weight: 700; letter-spacing: .02em; }
+  .brand small { color: var(--muted); font-weight: 500; margin-left: 6px; }
+  .px { font-size: 22px; font-weight: 700; }
+  .chg { font-size: 13px; }
+  .spacer { flex: 1; }
+  .pill { display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px; border-radius: 999px; background: var(--panel2); border: 1px solid var(--line); font-size: 12px; white-space: nowrap; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
+  .dot.live { background: var(--up); box-shadow: 0 0 0 0 rgba(22,199,132,.6); animation: pulse 2s infinite; }
+  .dot.warn { background: var(--amber); } .dot.err { background: var(--down); }
+  @keyframes pulse { 0% { box-shadow: 0 0 0 0 rgba(22,199,132,.55); } 70% { box-shadow: 0 0 0 7px rgba(22,199,132,0); } 100% { box-shadow: 0 0 0 0 rgba(22,199,132,0); } }
+  select, button { background: var(--panel2); color: var(--text); border: 1px solid var(--line); border-radius: 8px; padding: 5px 9px; font: inherit; font-size: 12px; cursor: pointer; }
+  button:hover, select:hover { border-color: #33405a; }
+
+  main { display: grid; grid-template-columns: minmax(0, 1fr) 370px; gap: 0; min-height: calc(100vh - 56px); }
+  .chartcol { display: flex; flex-direction: column; min-width: 0; border-right: 1px solid var(--line); }
+  .toolbar { display: flex; flex-wrap: wrap; gap: 6px; padding: 8px 12px; border-bottom: 1px solid var(--line); align-items: center; }
+  .chip { display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px; border-radius: 999px; border: 1px solid var(--line); background: var(--panel2); font-size: 12px; cursor: pointer; user-select: none; }
+  .chip input { accent-color: var(--accent); margin: 0; }
+  #chart { flex: 1; min-height: 420px; position: relative; }
+  .legend { padding: 6px 12px 8px; font-size: 12px; color: var(--muted); border-top: 1px solid var(--line); }
+
+  aside { padding: 12px; display: flex; flex-direction: column; gap: 12px; overflow-y: auto; max-height: calc(100vh - 56px); position: sticky; top: 56px; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px; }
+  .card h3 { margin: 0 0 8px; font-size: 12px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); font-weight: 600; display: flex; justify-content: space-between; align-items: center; }
+  .predhead { display: flex; justify-content: space-between; align-items: baseline; font-size: 12px; color: var(--muted); }
+  .bigcall { display: flex; align-items: baseline; gap: 10px; margin: 6px 0 2px; }
+  .bigcall .dir { font-size: 26px; font-weight: 800; }
+  .bigcall .conf { font-size: 18px; font-weight: 700; }
+  .meter { height: 6px; border-radius: 3px; background: linear-gradient(90deg, var(--down), #3a4252 50%, var(--up)); position: relative; margin: 8px 0 10px; }
+  .meter i { position: absolute; top: -4px; width: 3px; height: 14px; background: #fff; border-radius: 2px; transform: translateX(-50%); }
+  .kv { display: grid; grid-template-columns: auto 1fr; gap: 3px 12px; font-size: 13px; }
+  .kv dt { color: var(--muted); } .kv dd { margin: 0; text-align: right; }
+  .drivers { margin-top: 8px; font-size: 12px; color: var(--muted); }
+  .drivers b { color: var(--text); font-weight: 600; }
+  .track { margin-top: 10px; padding-top: 10px; border-top: 1px dashed var(--line); font-size: 12px; color: var(--muted); }
+  .track b { color: var(--text); }
+
+  .plist { display: flex; flex-direction: column; gap: 6px; }
+  .pitem { display: grid; grid-template-columns: 18px 1fr auto; gap: 2px 8px; align-items: center; padding: 8px 10px; border-radius: 9px; background: var(--panel2); border: 1px solid var(--line); cursor: pointer; }
+  .pitem:hover { border-color: #33405a; }
+  .pitem .arrow { font-weight: 800; }
+  .pitem .nm { font-weight: 600; }
+  .pitem .sub { grid-column: 2 / 4; font-size: 12px; color: var(--muted); }
+  .badge { font-family: var(--mono); font-size: 12px; padding: 2px 7px; border-radius: 6px; background: #1d2431; }
+  .empty { color: var(--muted); font-size: 13px; }
+
+  .tgroup { margin-bottom: 10px; }
+  .tgroup .gh { display: flex; justify-content: space-between; align-items: center; font-size: 12px; color: var(--muted); margin: 4px 0 6px; }
+  .tgroup .gh span { display: flex; gap: 6px; }
+  .trow { display: grid; grid-template-columns: 20px 14px 1fr auto; gap: 8px; align-items: center; padding: 5px 2px; border-bottom: 1px solid #1a202b; font-size: 13px; cursor: pointer; }
+  .trow:last-child { border-bottom: 0; }
+  .trow input { accent-color: var(--accent); margin: 0; width: 16px; height: 16px; }
+  .trow .hr { font-family: var(--mono); font-size: 11px; color: var(--muted); text-align: right; }
+  .trow.off .nm { color: var(--muted); text-decoration: line-through; }
+
+  footer { padding: 10px 16px 18px; font-size: 11px; color: var(--muted); border-top: 1px solid var(--line); }
+  details summary { cursor: pointer; color: var(--text); }
+  details p { margin: 6px 0; }
+
+  @media (max-width: 980px) {
+    main { grid-template-columns: 1fr; }
+    .chartcol { border-right: 0; }
+    #chart { min-height: 56vh; }
+    aside { max-height: none; position: static; }
+    .px { font-size: 20px; }
+  }
+</style>
+</head>
+<body>
+<header>
+  <div class="brand">₿ BTC/USD <small>5-minute · Pattern Watch</small></div>
+  <div><span id="price" class="px num">—</span> <span id="chg" class="chg num muted"></span></div>
+  <div class="spacer"></div>
+  <span class="pill" id="status" title="Data feed status"><span class="dot" id="dot"></span><span id="statusText">Connecting…</span></span>
+  <select id="source" aria-label="Data source">
+    <option value="auto">Source: Auto</option>
+    <option value="coinbase">Coinbase</option>
+    <option value="binanceus">Binance.US</option>
+    <option value="kraken">Kraken</option>
+  </select>
+</header>
+
+<main>
+  <section class="chartcol">
+    <div class="toolbar">
+      <label class="chip"><input type="checkbox" id="showMarks" checked> Candle patterns</label>
+      <label class="chip"><input type="checkbox" id="showLines" checked> Chart patterns</label>
+      <label class="chip"><input type="checkbox" id="showPred" checked> Prediction</label>
+      <label class="chip" title="Hide weaker patterns from the chart and the active list (the prediction still weighs every enabled pattern by its confidence)">Min conf <input type="range" id="minConf" min="0" max="90" step="5" style="width:90px"> <span id="minConfVal" class="num">55%</span></label>
+      <span class="spacer"></span>
+      <button id="fit" title="Jump to the latest candles">Latest ⟶</button>
+    </div>
+    <div id="chart"></div>
+    <div class="legend" id="legend">Hollow candle = predicted next candle · dashed lines = predicted close and 68% range · patterns are read from closed candles only, so they never repaint.</div>
+  </section>
+
+  <aside>
+    <div class="card" id="predCard">
+      <div class="predhead"><span id="predFor">Next candle</span><span class="num" id="countdown"></span></div>
+      <div class="bigcall"><span class="dir" id="predDir">—</span><span class="conf num" id="predConf"></span></div>
+      <div class="meter"><i id="predMeter" style="left:50%"></i></div>
+      <dl class="kv">
+        <dt>Predicted close</dt><dd class="num" id="predClose">—</dd>
+        <dt>68% range</dt><dd class="num" id="predRange">—</dd>
+        <dt>Expected move</dt><dd class="num" id="predMove">—</dd>
+      </dl>
+      <div class="drivers" id="drivers"></div>
+      <div class="track" id="track"></div>
+    </div>
+
+    <div class="card">
+      <h3>Active patterns <span class="muted" id="activeCount"></span></h3>
+      <div class="plist" id="activeList"><div class="empty">Waiting for data…</div></div>
+    </div>
+
+    <div class="card">
+      <h3>Patterns <span><button id="allOn">All on</button> <button id="allOff">All off</button></span></h3>
+      <div class="muted" style="font-size:12px;margin-bottom:8px">Off = hidden from the chart and ignored by the prediction. Right column: how often each pattern called the next candle correctly on the loaded history.</div>
+      <div id="toggles"></div>
+    </div>
+
+    <div class="card">
+      <details>
+        <summary>How the scores work</summary>
+        <p><b>Pattern confidence</b> is how textbook the shape is: fit of the swings or trendlines, size relative to recent volatility (ATR), the trend leading into it, volume, and whether it has confirmed with a breakout.</p>
+        <p><b>Hit rate</b> is measured walk-forward on the ~4 days of loaded candles: every time the pattern appeared, did the next candle close in its direction?</p>
+        <p><b>Prediction</b> combines the active patterns, each weighted by its confidence and its hit rate (shrunk toward 50% until it has enough samples). The expected move scales recent average candle size by how lopsided the odds are; the range is ±1 standard deviation of recent 5-minute moves.</p>
+        <p>The track record line is the honest scoreboard: if it hovers near 50%, the patterns aren't adding edge right now.</p>
+      </details>
+    </div>
+  </aside>
+</main>
+
+<footer>
+  Data streams straight from the exchange to your browser (WebSocket, with REST resync every minute and automatic failover). Educational tool, not financial advice — 5-minute patterns are noisy, so weigh the hit rates.
+  Charts by <a href="https://www.tradingview.com/lightweight-charts/" style="color:var(--muted)">TradingView Lightweight Charts</a>.
+</footer>
+
+<script src="vendor/lightweight-charts.standalone.production.js"></script>
+<script src="engine.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
