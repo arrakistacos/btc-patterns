@@ -621,5 +621,63 @@
     return 1 / (1 + Math.exp(-z));
   }
 
-  return { PATTERNS, analyze, computeATR, computePivots, normCdf, windowUpProb, parkinsonSigma, velocity, combineWindow, DEFAULT_WINDOW_PARAMS };
+  // ---------- support / resistance ----------
+  // Horizontal levels touched by >= minTouches swing highs (resistance) or swing lows (support)
+  // with no candle CLOSING through them since the first touch. Wicks may poke through; closes may not.
+  function findLevels(C, opts) {
+    opts = opts || {};
+    const minTouches = opts.minTouches || 3, maxPerSide = opts.maxPerSide || 4, K = opts.pivotK || 3;
+    const n = C.length;
+    if (n < 50) return [];
+    const atr = computeATR(C);
+    const recent = atr.slice(-288).filter((x) => x > 0).sort((a, b) => a - b);
+    const tol = Math.max((opts.tolAtr || 0.5) * (recent[Math.floor(recent.length / 2)] || 0), (opts.tolPct || 0.0006) * C[n - 1].c);
+    if (!(tol > 0)) return [];
+    const piv = computePivots(C, K);
+    const last = C[n - 1].c;
+    // index of the most recent close through level L (resistance: above, support: below); -1 if never
+    const lastBreak = (L, dir) => {
+      for (let j = n - 1; j >= 0; j--) if (dir > 0 ? C[j].c > L + tol : C[j].c < L - tol) return j;
+      return -1;
+    };
+
+    function side(points, dir) { // dir = +1 resistance (swing highs), -1 support (swing lows)
+      const cands = [];
+      const seen = new Set();
+      for (const seed of points) {
+        // Only swings since price last closed through this level count as "respected"
+        let b = lastBreak(seed.p, dir);
+        let touch = points.filter((q) => q.i > b && Math.abs(q.p - seed.p) <= tol);
+        if (!touch.length) continue;
+        const L = touch.reduce((a, q) => a + q.p, 0) / touch.length;
+        b = lastBreak(L, dir);
+        touch = points.filter((q) => q.i > b && Math.abs(q.p - L) <= tol);
+        if (touch.length < minTouches) continue;
+        const key = touch.map((q) => q.i).join(',');
+        if (seen.has(key)) continue;
+        seen.add(key);
+        cands.push({ L, touch, f: touch[0].i });
+      }
+      // Merge near-duplicates (keep the one with more touches), then keep the levels nearest to price
+      cands.sort((a, b) => b.touch.length - a.touch.length || b.touch[b.touch.length - 1].i - a.touch[a.touch.length - 1].i);
+      const merged = [];
+      for (const c of cands) if (!merged.some((x) => Math.abs(x.L - c.L) < 2 * tol)) merged.push(c);
+      merged.sort((a, b) => Math.abs(a.L - last) - Math.abs(b.L - last));
+      const chosen = merged.slice(0, maxPerSide);
+      return chosen.map((c) => ({
+        type: dir > 0 ? 'R' : 'S',
+        price: c.L,
+        touches: c.touch.map((q) => ({ t: C[q.i].t, p: q.p })),
+        count: c.touch.length,
+        firstT: C[c.f].t,
+        lastTouchT: C[c.touch[c.touch.length - 1].i].t,
+        distance: c.L - last,
+        testing: Math.abs(c.L - last) <= tol,
+        tol,
+      }));
+    }
+    return side(piv.highs, 1).concat(side(piv.lows, -1)).sort((a, b) => b.price - a.price);
+  }
+
+  return { PATTERNS, analyze, findLevels, computeATR, computePivots, normCdf, windowUpProb, parkinsonSigma, velocity, combineWindow, DEFAULT_WINDOW_PARAMS };
 });

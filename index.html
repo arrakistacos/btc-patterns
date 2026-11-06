@@ -113,6 +113,10 @@
       <label class="chip"><input type="checkbox" id="showMarks" checked> Candle patterns</label>
       <label class="chip"><input type="checkbox" id="showLines" checked> Chart patterns</label>
       <label class="chip"><input type="checkbox" id="showPred" checked> Prediction</label>
+      <span class="chip"><label style="display:inline-flex;gap:6px;align-items:center;cursor:pointer"><input type="checkbox" id="showLevels" checked> Levels</label>
+        <select id="minTouches" aria-label="Minimum touches" style="padding:1px 4px;border-radius:6px">
+          <option value="2">2+ touches</option><option value="3">3+ touches</option><option value="4">4+ touches</option><option value="5">5+ touches</option><option value="6">6+ touches</option>
+        </select></span>
       <label class="chip" title="Hide weaker patterns from the chart and the active list (the prediction still weighs every enabled pattern by its confidence)">Min conf <input type="range" id="minConf" min="0" max="90" step="5" style="width:90px"> <span id="minConfVal" class="num">55%</span></label>
       <span class="spacer"></span>
       <button id="fit" title="Jump to the latest candles">Latest ⟶</button>
@@ -148,6 +152,12 @@
       </dl>
       <div class="drivers" id="drivers"></div>
       <div class="track" id="track"></div>
+    </div>
+
+    <div class="card">
+      <h3>Support &amp; resistance <span class="muted" id="levelCount"></span></h3>
+      <div class="muted" style="font-size:12px;margin-bottom:8px">Horizontal levels that swing highs/lows have touched at least N times with no candle closing through since. Dots on the chart mark each touch.</div>
+      <div class="plist" id="levelList"><div class="empty">Waiting for data…</div></div>
     </div>
 
     <div class="card">

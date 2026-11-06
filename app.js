@@ -19,7 +19,7 @@
   const state = {
     candles: [],
     enabled: store.get('enabled', {}),
-    view: Object.assign({ marks: true, lines: true, pred: true, minConf: 55 }, store.get('view', {})),
+    view: Object.assign({ marks: true, lines: true, pred: true, minConf: 55, levels: true, minTouches: 3 }, store.get('view', {})),
     source: store.get('source', 'auto'),
     result: null,
     lastAnalyzed: null,
@@ -391,6 +391,8 @@
     const t0 = performance.now();
     state.result = E.analyze(closed, { enabled: isOn, interval: INTERVAL });
     state.result.ms = performance.now() - t0;
+    state.closedForLevels = closed;
+    computeLevels();
     const pred = state.result.prediction;
     if (!pd || pd.forTime !== pred.forTime || !pd.scored) state.pending = Object.assign({}, pred, { scored: false });
     renderAnalysis();
@@ -404,6 +406,53 @@
     renderPrediction(R);
     renderActive(R);
     renderToggles(R);
+    renderLevels();
+  }
+
+  // ---------- support / resistance levels ----------
+  let levelSeries = [];
+  function computeLevels() {
+    const closed = state.closedForLevels;
+    state.levels = closed ? E.findLevels(closed, { minTouches: state.view.minTouches, maxPerSide: 4 }) : [];
+  }
+  function renderLevels() {
+    for (const s of levelSeries) chart.removeSeries(s);
+    levelSeries = [];
+    const levels = (state.levels || []).slice().sort((a, b) => Math.abs(a.distance) - Math.abs(b.distance)); // nearest first
+    const box = $('levelList');
+    $('levelCount').textContent = levels.length ? levels.length + ' found' : '';
+    if (!levels.length) box.innerHTML = `<div class="empty">No level with ${state.view.minTouches}+ touches is unbroken right now. Try fewer touches.</div>`;
+    else {
+      const last = state.candles[state.candles.length - 1];
+      box.innerHTML = levels.map((L, k) => {
+        const away = last ? last.c - L.price : -L.distance;
+        const pctAway = last ? (away / L.price * 100) : 0;
+        const since = new Date(L.firstT * 1000).toLocaleString([], { weekday: 'short', hour: 'numeric', minute: '2-digit' });
+        return `<div class="pitem" data-k="${k}">
+          <span class="arrow ${L.type === 'R' ? 'down' : 'up'}">${L.type === 'R' ? '▔' : '▁'}</span>
+          <span class="nm">${L.type === 'R' ? 'Resistance' : 'Support'} <span class="num">${usd(L.price)}</span></span>
+          <span class="badge">${L.count}× ${L.testing ? '· testing' : ''}</span>
+          <span class="sub">Respected ${L.count} times, never closed through since ${esc(since)} · price is ${signed(away)} (${pctAway.toFixed(2)}%) ${away >= 0 ? 'above' : 'below'} it</span>
+        </div>`;
+      }).join('');
+      box.querySelectorAll('.pitem').forEach((node) => {
+        node.onclick = () => { const L = levels[+node.dataset.k]; chart.timeScale().setVisibleRange({ from: L.firstT - 10 * INTERVAL, to: state.candles[state.candles.length - 1].t + 4 * INTERVAL }); };
+      });
+    }
+    if (!state.view.levels || !state.candles.length) return;
+    const endT = state.candles[state.candles.length - 1].t;
+    for (const L of levels) {
+      const col = L.type === 'R' ? 'rgba(234,57,67,0.85)' : 'rgba(22,199,132,0.85)';
+      const times = [...new Set([L.firstT, ...L.touches.map((q) => q.t), endT])].sort((a, b) => a - b);
+      const s = chart.addLineSeries({
+        color: col, lineWidth: L.testing ? 2 : 1, lineStyle: LW.LineStyle.LargeDashed,
+        priceLineVisible: false, lastValueVisible: true, crosshairMarkerVisible: false,
+        title: L.type + ' ×' + L.count, autoscaleInfoProvider: () => null,
+      });
+      s.setData(times.map((t) => ({ time: t, value: L.price })));
+      s.setMarkers(L.touches.map((q, idx) => ({ time: q.t, position: 'inBar', shape: 'circle', color: col, size: 0.55, text: idx === L.touches.length - 1 ? String(L.count) : '' })));
+      levelSeries.push(s);
+    }
   }
 
   function renderMarkers(R) {
@@ -711,7 +760,9 @@
   }
 
   // ---------- wiring ----------
-  const viewBoxes = { showMarks: 'marks', showLines: 'lines', showPred: 'pred' };
+  const viewBoxes = { showMarks: 'marks', showLines: 'lines', showPred: 'pred', showLevels: 'levels' };
+  $('minTouches').value = String(state.view.minTouches);
+  $('minTouches').onchange = () => { state.view.minTouches = +$('minTouches').value; store.set('view', state.view); computeLevels(); renderLevels(); };
   for (const [id, k] of Object.entries(viewBoxes)) {
     $(id).checked = state.view[k] !== false;
     $(id).onchange = () => { state.view[k] = $(id).checked; store.set('view', state.view); renderAnalysis(); };
