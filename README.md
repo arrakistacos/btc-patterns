@@ -39,6 +39,12 @@ node tools/tune.mjs         # grid search; test = last 30% of windows → params
 
 Results are at **[calibration.html](https://arrakistacos.github.io/btc-patterns/calibration.html)**. A GitHub Action (`.github/workflows/recalibrate.yml`) re-runs both every night and commits the new parameters.
 
+### Model settings
+
+Sliders set the **volatility lookback** (1–48 five-minute candles), the **velocity lookback** (1–12 candles) and a **volatility multiplier** (0.5–2×). Each slider shows the tuned value, and a **Reset to tuned** button restores them. Your settings are saved in the browser.
+
+A live readout shows the typical move per minute and over the time left. It also shows the **gap needed for 95% certainty** next to the current gap, plus velocity.
+
 ### Edge check
 
 Inside the window card, the **edge check** looks at buying the current favorite. It compares the live ask plus Polymarket's taker fee (`0.07 × p × (1 − p)` per share) against how often favorites at that price and minute actually won in the backfill. It counts three signals: our model at least as confident as the market, last-minute momentum, and 5-minute velocity. The history comes from `data/edge.json`, which `tools/tune.mjs` rebuilds nightly.

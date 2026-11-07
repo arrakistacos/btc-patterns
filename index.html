@@ -72,6 +72,11 @@
   .checks li { padding: 1px 0; } .checks .ok { color: var(--up); } .checks .no { color: var(--muted); } .checks .info { color: var(--muted); font-style: italic; }
   .edgehist { color: var(--muted); margin: 6px 0; } .edgehist b { color: var(--text); }
   .edgepaper { color: var(--muted); padding-top: 6px; border-top: 1px dashed var(--line); } .edgepaper b { color: var(--text); }
+  .setrow { margin: 6px 0 10px; }
+  .setlbl { display: flex; justify-content: space-between; font-size: 13px; }
+  .setrow input[type=range] { width: 100%; accent-color: var(--accent); margin: 6px 0 2px; }
+  .settuned { font-size: 11px; }
+  #setReset:disabled { opacity: .4; cursor: default; }
   .plist { display: flex; flex-direction: column; gap: 6px; }
   .pitem { display: grid; grid-template-columns: 18px 1fr auto; gap: 2px 8px; align-items: center; padding: 8px 10px; border-radius: 9px; background: var(--panel2); border: 1px solid var(--line); cursor: pointer; }
   .pitem:hover { border-color: #33405a; }
@@ -155,6 +160,27 @@
         <div class="edgepaper" id="edgePaper"></div>
       </div>
       <div class="drivers" id="winNote"></div>
+    </div>
+
+    <div class="card" id="setCard">
+      <h3>Model settings <button id="setReset">Reset to tuned</button></h3>
+      <div class="setrow">
+        <div class="setlbl"><span>Volatility lookback</span><b class="num" id="setVolVal"></b></div>
+        <input type="range" id="setVol" min="1" max="48" step="1">
+        <div class="settuned muted" id="setVolTuned"></div>
+      </div>
+      <div class="setrow">
+        <div class="setlbl"><span>Velocity lookback</span><b class="num" id="setVelVal"></b></div>
+        <input type="range" id="setVel" min="1" max="12" step="1">
+        <div class="settuned muted" id="setVelTuned"></div>
+      </div>
+      <div class="setrow">
+        <div class="setlbl"><span>Volatility multiplier</span><b class="num" id="setScaleVal"></b></div>
+        <input type="range" id="setScale" min="0.5" max="2" step="0.05">
+        <div class="settuned muted" id="setScaleTuned"></div>
+      </div>
+      <div class="drivers" id="setReadout"></div>
+      <div class="muted" style="font-size:11px;margin-top:8px">Lookbacks count 5-minute candles. Shorter reacts faster to a change in pace but is noisier. The multiplier makes the model more cautious (above 1) or more confident (below 1). Settings are saved in this browser.</div>
     </div>
 
     <div class="card" id="predCard">

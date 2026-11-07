@@ -644,8 +644,11 @@
   }
 
   state.params = Object.assign({}, E.DEFAULT_WINDOW_PARAMS);
+  state.overrides = store.get('overrides', {});        // user slider settings; empty = use tuned values
+  const params = () => Object.assign({}, state.params, state.overrides);
   fetch('params.json', { cache: 'no-store' }).then((r) => r.ok ? r.json() : null).then((j) => {
     if (j && j.window) { state.params = Object.assign({}, E.DEFAULT_WINDOW_PARAMS, j.window); state.paramsTuned = j.generated; }
+    syncSettingsUI();
   }).catch(() => { /* defaults */ });
 
   const pm = { t: null, token: null, ws: null, bid: null, ask: null, last: null, lastMsg: 0, poll: null, ping: null, status: '' };
@@ -715,7 +718,7 @@
     const cur = C[C.length - 1];
     const K = cur.t === Ws ? cur.o : closed[closed.length - 1].c;
     const S = cur.c;
-    const P = state.params, i = closed.length - 1;
+    const P = params(), i = closed.length - 1;
     const sig0 = E.parkinsonSigma(closed, i, P.volBars, INTERVAL);
     const pVol = E.windowUpProb({
       S, K, sigma: sig0 * P.volScale, elapsed: e, mode: P.mode, W: INTERVAL,
@@ -754,10 +757,60 @@
       (diff != null ? `Ours is <b>${Math.abs(diff).toFixed(1)} pts ${diff >= 0 ? 'more bullish' : 'more bearish'}</b> than the market. ` : '') +
       `Polymarket: ${esc(stale ? 'stale' : pm.status)}` +
       (pm.token ? ` · <a href="https://polymarket.com/event/btc-updown-5m-${w.Ws}" target="_blank" rel="noopener" style="color:var(--accent)">open market ↗</a>` : '') +
-      `<br>Model: ${esc(state.params.mode)} settlement, ${state.params.volBars * 5}-min volatility, velocity γ ${state.params.gamma}` +
-      (state.paramsTuned ? ` · tuned ${new Date(state.paramsTuned).toLocaleDateString()}` : ' · default params') +
+      `<br>Model: ${esc(params().mode)} settlement, ${params().volBars * 5}-min volatility, ${params().velBars * 5}-min velocity` +
+      (Object.keys(state.overrides).length ? ' · <b>your slider settings</b>' : state.paramsTuned ? ` · tuned ${new Date(state.paramsTuned).toLocaleDateString()}` : ' · default params') +
       `. Start price is Coinbase's; Polymarket settles on Chainlink, which can differ by a few dollars.`;
     renderEdge(w, mk);
+    renderSettingsReadout(w);
+  }
+
+  // ---------- model settings (sliders) ----------
+  const SLIDERS = [
+    { id: 'setVol', key: 'volBars', fmt: (v) => `${v} candle${v > 1 ? 's' : ''} (${fmtMin(v * 5)})` },
+    { id: 'setVel', key: 'velBars', fmt: (v) => `${v} candle${v > 1 ? 's' : ''} (${fmtMin(v * 5)})` },
+    { id: 'setScale', key: 'volScale', fmt: (v) => `×${(+v).toFixed(2)}` },
+  ];
+  function fmtMin(m) { return m < 60 ? m + ' min' : (m / 60).toFixed(m % 60 ? 1 : 0) + ' h'; }
+  function syncSettingsUI() {
+    const P = params();
+    for (const sl of SLIDERS) {
+      const el = $(sl.id);
+      if (!el) continue;
+      el.value = P[sl.key];
+      $(sl.id + 'Val').textContent = sl.fmt(P[sl.key]);
+      const tuned = state.params[sl.key];
+      $(sl.id + 'Tuned').textContent = 'tuned: ' + sl.fmt(tuned) + (state.overrides[sl.key] != null && state.overrides[sl.key] !== tuned ? '' : ' ✓');
+    }
+    $('setReset').disabled = !Object.keys(state.overrides).length;
+  }
+  for (const sl of SLIDERS) {
+    const el = $(sl.id);
+    if (!el) continue;
+    el.oninput = () => {
+      const v = sl.key === 'volScale' ? +(+el.value).toFixed(2) : Math.round(+el.value);
+      if (v === state.params[sl.key]) delete state.overrides[sl.key]; else state.overrides[sl.key] = v;
+      store.set('overrides', state.overrides);
+      syncSettingsUI();
+      renderWindow();
+    };
+  }
+  $('setReset').onclick = () => { state.overrides = {}; store.set('overrides', {}); syncSettingsUI(); renderWindow(); };
+  syncSettingsUI();
+
+  function renderSettingsReadout(w) {
+    const el = $('setReadout');
+    if (!el || !w) return;
+    const perMin = w.sigma * Math.sqrt(60);
+    const left = Math.max(1, w.left);
+    const overLeft = w.sigma * Math.sqrt(left);
+    const gap95 = 1.645 * overLeft;   // one-sided 95%
+    const gapNow = Math.abs(w.S - w.K);
+    el.innerHTML =
+      `Typical move: <b>$${perMin.toFixed(0)}</b> per minute · <b>$${overLeft.toFixed(0)}</b> over the ${Math.floor(left / 60)}:${String(Math.floor(left % 60)).padStart(2, '0')} left<br>` +
+      `Gap needed for 95% sure right now: <b>$${gap95.toFixed(0)}</b> · current gap <b class="${gapNow >= gap95 ? 'up' : 'muted'}">$${gapNow.toFixed(0)}</b>` +
+      (gapNow >= gap95 ? ' ✓' : '') +
+      `<br>Velocity (last ${fmtMin(params().velBars * 5)}): <b class="${w.vel >= 0 ? 'up' : 'down'}">${w.vel >= 0 ? '+' : ''}${w.vel.toFixed(2)}</b> typical moves` +
+      (Object.keys(state.overrides).length ? '<br><span class="flat">Edge-check history was built with the tuned settings, so its win rates may not match your custom ones.</span>' : '');
   }
 
   // ---------- edge check + paper trading ----------
