@@ -89,6 +89,14 @@
   .setrow input[type=range] { width: 100%; accent-color: var(--accent); margin: 6px 0 2px; }
   .settuned { font-size: 11px; }
   #setReset:disabled { opacity: .4; cursor: default; }
+  .targetrow { display: flex; gap: 8px; align-items: stretch; margin-top: 10px; }
+  .targetrow select { flex: none; }
+  .target { flex: 1; padding: 8px 10px; border-radius: 10px; background: #161b25; border: 1px solid var(--line); font-size: 13px; color: var(--muted); }
+  .target b { color: var(--text); }
+  .target span { display: block; font-size: 11px; font-weight: 400; opacity: .8; }
+  .target.hit { font-weight: 800; font-size: 15px; letter-spacing: .02em; }
+  .target.hit.up { background: rgba(22,199,132,.16); border-color: var(--up); color: var(--up); }
+  .target.hit.down { background: rgba(234,57,67,.16); border-color: var(--down); color: var(--down); }
   .plist { display: flex; flex-direction: column; gap: 6px; }
   .pitem { display: grid; grid-template-columns: 18px 1fr auto; gap: 2px 8px; align-items: center; padding: 8px 10px; border-radius: 9px; background: var(--panel2); border: 1px solid var(--line); cursor: pointer; }
   .pitem:hover { border-color: #33405a; }
@@ -140,6 +148,7 @@
       <label class="chip"><input type="checkbox" id="showMarks" checked> Candle patterns</label>
       <label class="chip"><input type="checkbox" id="showLines" checked> Chart patterns</label>
       <label class="chip"><input type="checkbox" id="showPred" checked> Prediction</label>
+      <label class="chip" title="Hollow candle showing the pattern-based guess for the current candle"><input type="checkbox" id="showGhost"> Pattern candle</label>
       <span class="chip"><label style="display:inline-flex;gap:6px;align-items:center;cursor:pointer"><input type="checkbox" id="showLevels" checked> Levels</label>
         <select id="minTouches" aria-label="Minimum touches" style="padding:1px 4px;border-radius:6px">
           <option value="2">2+ touches</option><option value="3">3+ touches</option><option value="4">4+ touches</option><option value="5">5+ touches</option><option value="6">6+ touches</option>
@@ -149,7 +158,7 @@
       <button id="fit" title="Jump to the latest candles">Latest ⟶</button>
     </div>
     <div id="chart"></div>
-    <div class="legend" id="legend">Solid line = this window's start price, labelled with live odds of finishing Up · orange dotted lines = 85% safe, green/red dotted = 95% safe with the time left (they close in as the clock runs down) · hollow candle = pattern call when patterns have a read.</div>
+    <div class="legend" id="legend">Solid line = this window's start price, labelled with live odds of finishing Up · orange dotted lines = 85% safe, green/red dotted = 95% safe with the time left (they close in as the clock runs down) · hollow candle (Pattern candle toggle, off by default) = pattern-based guess for the current candle.</div>
   </section>
 
   <aside>
@@ -167,6 +176,12 @@
         <dt title="Typical move over the time left: depends only on volatility and time remaining">σ for time left</dt><dd class="num" id="winSigma">—</dd>
         <dt title="How many typical moves of cushion the gap gives">Cushion</dt><dd class="num" id="winRatio">—</dd>
       </dl>
+      <div class="targetrow">
+        <div class="target" id="winTarget">—</div>
+        <select id="targetSel" aria-label="Target confidence">
+          <option value="70">70%</option><option value="75">75%</option><option value="80">80%</option><option value="85">85%</option><option value="90">90%</option><option value="95">95%</option>
+        </select>
+      </div>
       <div class="edge" id="edgeBox">
         <div class="edgehead"><span>Worth buying the favorite?</span><span class="verdict grey" id="edgeVerdict">—</span></div>
         <ul class="checks" id="edgeChecks"></ul>

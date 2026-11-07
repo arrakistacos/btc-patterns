@@ -19,7 +19,7 @@
   const state = {
     candles: [],
     enabled: store.get('enabled', {}),
-    view: Object.assign({ marks: true, lines: true, pred: true, minConf: 55, levels: true, minTouches: 3 }, store.get('view', {})),
+    view: Object.assign({ marks: true, lines: true, pred: true, minConf: 55, levels: true, minTouches: 3, target: 80, ghost: false }, store.get('view', {})),
     source: store.get('source', 'auto'),
     result: null,
     lastAnalyzed: null,
@@ -513,7 +513,7 @@
     for (const pl of priceLines) candleSeries.removePriceLine(pl);
     priceLines = [];
     // Ghost candle only when the patterns actually have a directional read
-    if (state.view.pred && pr && pr.signal && pr.dir !== 0) {
+    if (state.view.ghost && pr && pr.signal && pr.dir !== 0) {
       ghostSeries.setData([{ time: pr.forTime, open: pr.ghost.o, high: pr.ghost.h, low: pr.ghost.l, close: pr.ghost.c }]);
     } else ghostSeries.setData([]);
 
@@ -752,8 +752,18 @@
     $('winNow').textContent = usd(w.S, 2);
     const sigLeft = w.sigma * Math.sqrt(Math.max(1, w.left));   // σ: typical move over the time left (volatility + time only)
     $('winGap').innerHTML = `<span class="${d >= 0 ? 'up' : 'down'}">${signed(d)}</span>`;
-    $('winSigma').textContent = '$' + sigLeft.toFixed(0);
-    $('winRatio').innerHTML = `<span class="${d >= 0 ? 'up' : 'down'}">${(Math.abs(d) / sigLeft).toFixed(2)}σ</span> <span class="muted">(gap ÷ σ)</span>`;
+    const tgt = state.view.target || 80, zT = Z_FOR[tgt] || 0.8416;
+    const need = zT * sigLeft, reached = Math.abs(d) >= need;
+    $('winSigma').innerHTML = `$${sigLeft.toFixed(0)} <span class="muted">· ${tgt}% needs</span> <b>$${need.toFixed(0)}</b>`;
+    $('winRatio').innerHTML = `${(Math.abs(d) / sigLeft).toFixed(2)}σ <span class="muted">(${tgt}% = ${zT.toFixed(2)}σ)</span>`;
+    const badge = $('winTarget');
+    if (reached) {
+      badge.className = 'target hit ' + (d >= 0 ? 'up' : 'down');
+      badge.innerHTML = `✓ ${tgt}% REACHED · ${d >= 0 ? 'UP' : 'DOWN'} side <span>gap $${Math.abs(d).toFixed(0)} ≥ $${need.toFixed(0)}</span>`;
+    } else {
+      badge.className = 'target';
+      badge.innerHTML = `Not yet ${tgt}% · needs <b>$${(need - Math.abs(d)).toFixed(0)}</b> more gap <span>(or less time left)</span>`;
+    }
     const stale = pm.lastMsg && Date.now() - pm.lastMsg > 30000;
     const diff = mk != null ? (w.p - mk) * 100 : null;
     $('winNote').innerHTML =
@@ -770,6 +780,7 @@
 
   // Start price (target) labelled with live P(Up), plus 95% safe-zone lines that tighten as time runs out
   const winLines = {};
+  const Z_FOR = { 70: 0.5244, 75: 0.6745, 80: 0.8416, 85: 1.0364, 90: 1.2816, 95: 1.6449 };
   function drawWindowLines(w) {
     const want = state.view.pred && w;
     if (!want) { for (const k of Object.keys(winLines)) { candleSeries.removePriceLine(winLines[k]); delete winLines[k]; } return; }
@@ -979,11 +990,13 @@
   }
 
   // ---------- wiring ----------
-  const viewBoxes = { showMarks: 'marks', showLines: 'lines', showPred: 'pred', showLevels: 'levels' };
+  const viewBoxes = { showMarks: 'marks', showLines: 'lines', showPred: 'pred', showLevels: 'levels', showGhost: 'ghost' };
+  $('targetSel').value = String(state.view.target);
+  $('targetSel').onchange = () => { state.view.target = +$('targetSel').value; store.set('view', state.view); renderWindow(); };
   $('minTouches').value = String(state.view.minTouches);
   $('minTouches').onchange = () => { state.view.minTouches = +$('minTouches').value; store.set('view', state.view); computeLevels(); renderLevels(); };
   for (const [id, k] of Object.entries(viewBoxes)) {
-    $(id).checked = state.view[k] !== false;
+    $(id).checked = !!state.view[k];
     $(id).onchange = () => { state.view[k] = $(id).checked; store.set('view', state.view); renderAnalysis(); renderWindow(); };
   }
   function showLatest() {
