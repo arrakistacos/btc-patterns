@@ -861,20 +861,25 @@
     if (!out) return;
     const S = state.sizing, B = +S.bankroll;
     if (!(B > 0)) { out.innerHTML = '<span class="muted">Enter your bankroll to see bet sizes.</span>'; return; }
-    if (!info) { out.innerHTML = 'Suggested bet: <b>—</b> <span class="muted">(no reading right now)</span>'; return; }
+    if (!info) { out.innerHTML = 'Suggested bet: <b>—</b> <span class="muted">(only shown between 0:40 and 4:30 into a window, once Polymarket odds are in)</span>'; return; }
     const q = S.basis === 'average' ? info.winRate : info.ciLo;     // win chance used for sizing
     const c = info.cost;                                            // ask + fee, per $1 payout
+    const live = `<br><span class="muted">Live check: win chance ${(q * 100).toFixed(1)}% (${S.basis}) vs cost ${(c * 100).toFixed(1)}¢ · ${new Date().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit', second: '2-digit' })}</span>`;
+    if (info.ask >= 0.95) {
+      out.innerHTML = `Suggested bet: <b>$0</b> <span class="muted">— at ${Math.round(info.ask * 100)}¢ the payoff is too thin for the risk</span>` + live;
+      return;
+    }
     const fullKelly = Math.max(0, (q - c) / (1 - c));
     const f = Math.min(S.cap, fullKelly * S.kelly);
     if (f <= 0) {
-      out.innerHTML = `Suggested bet: <b>$0</b> <span class="muted">— ${S.basis === 'average' ? 'history' : 'even the cautious end of history'} doesn't beat the ${Math.round(c * 100)}¢ cost</span>`;
+      out.innerHTML = `Suggested bet: <b>$0</b> <span class="muted">— ${S.basis === 'average' ? 'history' : 'even the cautious end of history'} doesn't beat the cost</span>` + live;
       return;
     }
     const amt = B * f, shares = Math.floor(amt / c), spend = shares * c;
-    if (shares < 1) { out.innerHTML = `Suggested bet: <b>$0</b> <span class="muted">— the edge is too small to buy even 1 share with this bankroll</span>`; return; }
+    if (shares < 1) { out.innerHTML = `Suggested bet: <b>$0</b> <span class="muted">— the edge is too small to buy even 1 share with this bankroll</span>` + live; return; }
     const tip = `Win chance used: ${(q * 100).toFixed(1)}% (${S.basis}). Full Kelly: ${(fullKelly * 100).toFixed(1)}% of bankroll; using ${S.kelly === 1 ? 'full' : S.kelly === 0.5 ? '½' : '¼'} Kelly${fullKelly * S.kelly > S.cap ? `, capped at ${S.cap * 100}%` : ''}.`;
     out.innerHTML = `<span title="${esc(tip)}">Suggested bet: <b>${(f * 100).toFixed(1)}%</b> = <b>$${spend.toFixed(2)}</b> <span class="muted">(${shares} shares at ${Math.round(info.ask * 100)}¢)</span></span>` +
-      `<br><span class="muted">If it loses: <b class="down">−$${spend.toFixed(2)}</b> · if it wins: <b class="up">+$${(shares - spend).toFixed(2)}</b>${fullKelly * S.kelly > S.cap ? ` · capped at ${S.cap * 100}%` : ''}</span>`;
+      `<br><span class="muted">If it loses: <b class="down">−$${spend.toFixed(2)}</b> · if it wins: <b class="up">+$${(shares - spend).toFixed(2)}</b>${fullKelly * S.kelly > S.cap ? ` · capped at ${S.cap * 100}%` : ''}</span>` + live;
   }
 
   const row = (k, v, cls, tip) => `<div class="erow"${tip ? ` title="${esc(tip)}"` : ''}><span>${k}</span><b class="num ${cls || ''}">${v}</b></div>`;
