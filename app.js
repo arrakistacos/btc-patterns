@@ -750,7 +750,10 @@
     const d = w.S - w.K;
     $('winK').textContent = usd(w.K, 2);
     $('winNow').textContent = usd(w.S, 2);
-    $('winGap').innerHTML = `<span class="${d >= 0 ? 'up' : 'down'}">${signed(d)}</span> · ${(d / (w.sigma * Math.sqrt(Math.max(1, w.left)))).toFixed(2)}σ of time left`;
+    const sigLeft = w.sigma * Math.sqrt(Math.max(1, w.left));   // σ: typical move over the time left (volatility + time only)
+    $('winGap').innerHTML = `<span class="${d >= 0 ? 'up' : 'down'}">${signed(d)}</span>`;
+    $('winSigma').textContent = '$' + sigLeft.toFixed(0);
+    $('winRatio').innerHTML = `<span class="${d >= 0 ? 'up' : 'down'}">${(Math.abs(d) / sigLeft).toFixed(2)}σ</span> <span class="muted">(gap ÷ σ)</span>`;
     const stale = pm.lastMsg && Date.now() - pm.lastMsg > 30000;
     const diff = mk != null ? (w.p - mk) * 100 : null;
     $('winNote').innerHTML =
