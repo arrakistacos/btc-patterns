@@ -57,6 +57,16 @@ A paper trade is logged the first time all three signals agree between 1:40 and 
 
 Known gap: Polymarket's "price to beat" is the Chainlink price at the window open. That price is only streamed to authenticated API users, so the app uses Coinbase's price instead, which can differ by a few dollars.
 
+### Bet sizing
+
+Enter a bankroll in the edge check to get a suggested bet as a percentage of the bankroll, a dollar amount, and a share count, plus what you'd lose or win. Sizing uses the Kelly formula for a binary contract: f = (q − c) / (1 − c). Here q is the win chance from history and c is the ask plus the fee.
+
+Defaults are deliberately conservative:
+- **Cautious** uses the low end of the historical range, so it suggests $0 unless the edge is proven.
+- **¼ Kelly**, with a **2% cap** per bet.
+
+You can switch to Average, ½ or Full Kelly, and 1–5% caps in Model settings. The bankroll is stored only in your browser.
+
 ### Second-by-second recorder (e.g. Raspberry Pi)
 
 ```bash

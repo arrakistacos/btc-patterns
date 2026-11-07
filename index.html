@@ -75,6 +75,13 @@
   .erow[title] { cursor: help; }
   .erow b.up { color: var(--up); } .erow b.down { color: var(--down); }
   .warn { color: var(--amber); margin-top: 4px; }
+  .sizing { margin-top: 8px; padding-top: 8px; border-top: 1px dashed var(--line); font-size: 13px; }
+  .bank { display: flex; align-items: center; gap: 6px; margin-bottom: 6px; color: var(--muted); }
+  .bank input { flex: 1; min-width: 0; background: var(--panel); color: var(--text); border: 1px solid var(--line); border-radius: 8px; padding: 5px 8px; font: inherit; font-family: var(--mono); }
+  .bank .dollar { color: var(--text); }
+  #sizeOut b { color: var(--text); } #sizeOut b.up { color: var(--up); } #sizeOut b.down { color: var(--down); }
+  .sizeopts { display: flex; flex-direction: column; gap: 6px; font-size: 12px; color: var(--muted); margin-top: 6px; }
+  .sizeopts label { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
   .edgehist { color: var(--muted); margin: 6px 0; } .edgehist b { color: var(--text); }
   .edgepaper { color: var(--muted); padding-top: 6px; border-top: 1px dashed var(--line); } .edgepaper b { color: var(--text); }
   .setrow { margin: 6px 0 10px; }
@@ -162,6 +169,10 @@
         <div class="edgehead"><span>Worth buying the favorite?</span><span class="verdict grey" id="edgeVerdict">—</span></div>
         <ul class="checks" id="edgeChecks"></ul>
         <div class="edgehist" id="edgeHist"></div>
+        <div class="sizing">
+          <label class="bank">Bankroll <span class="dollar">$</span><input id="bankroll" type="number" inputmode="decimal" min="0" step="1" placeholder="e.g. 500" aria-label="Bankroll in dollars"></label>
+          <div id="sizeOut"></div>
+        </div>
         <div class="edgepaper" id="edgePaper"></div>
       </div>
       <div class="drivers" id="winNote"></div>
@@ -185,6 +196,13 @@
         <div class="settuned muted" id="setScaleTuned"></div>
       </div>
       <div class="drivers" id="setReadout"></div>
+      <div class="setlbl" style="margin-top:12px"><span>Bet sizing</span></div>
+      <div class="sizeopts">
+        <label>Win chance from history <select id="sizeBasis"><option value="cautious">Cautious (low end)</option><option value="average">Average</option></select></label>
+        <label>Kelly fraction <select id="sizeKelly"><option value="0.25">¼ Kelly</option><option value="0.5">½ Kelly</option><option value="1">Full Kelly</option></select></label>
+        <label>Max per bet <select id="sizeCap"><option value="0.01">1% of bankroll</option><option value="0.02">2% of bankroll</option><option value="0.05">5% of bankroll</option></select></label>
+      </div>
+      <div class="muted" style="font-size:11px;margin-top:6px">Kelly is the standard formula for sizing a bet from your edge. Full Kelly is very aggressive when the win rate is uncertain, so ¼ Kelly with a cap is the usual safe setting. Your bankroll is stored only in this browser and never sent anywhere.</div>
       <div class="muted" style="font-size:11px;margin-top:8px">Lookbacks count 5-minute candles. Shorter reacts faster to a change in pace but is noisier. The multiplier makes the model more cautious (above 1) or more confident (below 1). Settings are saved in this browser.</div>
     </div>
 

@@ -26,6 +26,7 @@
     pending: null,                 // prediction waiting for its candle to close
     live: store.get('live', []),   // scored live predictions
     skew: 0,                       // exchange clock minus local clock (s)
+    sizing: Object.assign({ bankroll: null, basis: 'cautious', kelly: 0.25, cap: 0.02 }, store.get('sizing', {})),
   };
   const isOn = (t) => state.enabled[t] !== false;
   const minConf = () => (state.view.minConf || 0) / 100;
@@ -817,6 +818,12 @@
     };
   }
   $('setReset').onclick = () => { state.overrides = {}; store.set('overrides', {}); syncSettingsUI(); renderWindow(); };
+  $('bankroll').value = state.sizing.bankroll || '';
+  $('bankroll').oninput = () => { const v = parseFloat($('bankroll').value); state.sizing.bankroll = v > 0 ? v : null; saveSizing(); };
+  for (const [id, key, parse] of [['sizeBasis', 'basis', String], ['sizeKelly', 'kelly', Number], ['sizeCap', 'cap', Number]]) {
+    $(id).value = String(state.sizing[key]);
+    $(id).onchange = () => { state.sizing[key] = parse($(id).value); saveSizing(); };
+  }
   syncSettingsUI();
 
   function renderSettingsReadout(w) {
@@ -847,13 +854,36 @@
     return best;
   }
 
+  // ---------- bet sizing (fractional Kelly with a hard cap) ----------
+  function saveSizing() { store.set('sizing', state.sizing); renderWindow(); }
+  function renderSizing(info) {
+    const out = $('sizeOut');
+    if (!out) return;
+    const S = state.sizing, B = +S.bankroll;
+    if (!(B > 0)) { out.innerHTML = '<span class="muted">Enter your bankroll to see bet sizes.</span>'; return; }
+    if (!info) { out.innerHTML = 'Suggested bet: <b>—</b> <span class="muted">(no reading right now)</span>'; return; }
+    const q = S.basis === 'average' ? info.winRate : info.ciLo;     // win chance used for sizing
+    const c = info.cost;                                            // ask + fee, per $1 payout
+    const fullKelly = Math.max(0, (q - c) / (1 - c));
+    const f = Math.min(S.cap, fullKelly * S.kelly);
+    if (f <= 0) {
+      out.innerHTML = `Suggested bet: <b>$0</b> <span class="muted">— ${S.basis === 'average' ? 'history' : 'even the cautious end of history'} doesn't beat the ${Math.round(c * 100)}¢ cost</span>`;
+      return;
+    }
+    const amt = B * f, shares = Math.floor(amt / c), spend = shares * c;
+    if (shares < 1) { out.innerHTML = `Suggested bet: <b>$0</b> <span class="muted">— the edge is too small to buy even 1 share with this bankroll</span>`; return; }
+    const tip = `Win chance used: ${(q * 100).toFixed(1)}% (${S.basis}). Full Kelly: ${(fullKelly * 100).toFixed(1)}% of bankroll; using ${S.kelly === 1 ? 'full' : S.kelly === 0.5 ? '½' : '¼'} Kelly${fullKelly * S.kelly > S.cap ? `, capped at ${S.cap * 100}%` : ''}.`;
+    out.innerHTML = `<span title="${esc(tip)}">Suggested bet: <b>${(f * 100).toFixed(1)}%</b> = <b>$${spend.toFixed(2)}</b> <span class="muted">(${shares} shares at ${Math.round(info.ask * 100)}¢)</span></span>` +
+      `<br><span class="muted">If it loses: <b class="down">−$${spend.toFixed(2)}</b> · if it wins: <b class="up">+$${(shares - spend).toFixed(2)}</b>${fullKelly * S.kelly > S.cap ? ` · capped at ${S.cap * 100}%` : ''}</span>`;
+  }
+
   const row = (k, v, cls, tip) => `<div class="erow"${tip ? ` title="${esc(tip)}"` : ''}><span>${k}</span><b class="num ${cls || ''}">${v}</b></div>`;
   function renderEdge(w, mk) {
     const box = $('edgeBox');
     if (!box) return;
     const vEl = $('edgeVerdict');
     const setVerdict = (cls, text) => { vEl.className = 'verdict ' + cls; vEl.textContent = text; };
-    if (mk == null || pm.bid == null || pm.ask == null) { setVerdict('grey', 'Waiting'); $('edgeChecks').innerHTML = ''; $('edgeHist').textContent = 'Waiting for Polymarket odds…'; renderPaper(); return; }
+    if (mk == null || pm.bid == null || pm.ask == null) { setVerdict('grey', 'Waiting'); $('edgeChecks').innerHTML = ''; $('edgeHist').textContent = 'Waiting for Polymarket odds…'; renderSizing(null); renderPaper(); return; }
     const favUp = mk >= 0.5;
     const sign = favUp ? 1 : -1;
     const favMid = favUp ? mk : 1 - mk;
@@ -876,6 +906,7 @@
     if (!E_ || w.e < 40 || w.e > 270 || !E_.checkpoints[cp]) {
       setVerdict('grey', w.e < 40 ? 'Wait' : w.e > 270 ? 'Too late' : 'No data');
       $('edgeHist').innerHTML = row('Buy ' + favName + ' at', `${(ask * 100).toFixed(0)}¢`, favUp ? 'up' : 'down') + row('Need to win', `${(breakeven * 100).toFixed(0)}%`);
+      renderSizing(null);
       renderPaper();
       return;
     }
@@ -898,6 +929,7 @@
       row('Has won', cell.n >= 20 ? `${(cell.winRate * 100).toFixed(0)}% <span class="muted">of ${cell.n}</span>` : '—', '', details) +
       (cell.n >= 20 ? row('Per $100', `${per100 >= 0 ? '+' : '−'}$${Math.abs(per100).toFixed(2)}`, per100 >= 0 ? 'up' : 'down') : '') +
       (ask >= 0.95 ? `<div class="warn">⚠ One loss wipes out ~${Math.round(ask / Math.max(0.001, 1 - ask - fee(ask)))} wins</div>` : '');
+    renderSizing(cell.n >= 20 ? { winRate: cell.winRate, ciLo: cell.ciLo, cost: breakeven, ask } : null);
 
     // Paper trade: first all-agree, non-grey reading between 1:40 and 3:20 into the window
     if (agree && cls !== 'grey' && w.e >= 100 && w.e <= 200 && !state.paper.some((x) => x.t === w.Ws)) {
