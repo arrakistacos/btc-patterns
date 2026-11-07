@@ -4,7 +4,8 @@
   const INTERVAL = 300;          // 5 minutes
   const HISTORY = 1200;          // ~4 days of candles to learn hit rates from
   const MAX_CANDLES = 1500;
-  const STALE_SEC = 25;          // reconnect the socket if silent this long
+  const STALE_SEC = 15;          // reconnect the socket if silent this long
+  const HEALTH_RED_SEC = 5;      // health dot turns red after this long without new data
   const E = window.PatternEngine;
   const P = E.PATTERNS;
   const COLORS = { up: '#16c784', down: '#ea3943', flat: '#f5b041' };
@@ -610,18 +611,48 @@
     $('statusText').textContent = text;
   }
 
-  function tick() {
-    const name = feed.key ? PROVIDERS[feed.key].name : '';
-    const age = Date.now() / 1000 - feed.lastMsg;
-    if (!feed.key) { /* still loading */ }
-    else if (feed.open && age < 10) {
-      const ta = feed.lastTrade ? Date.now() / 1000 - feed.lastTrade : null;
-      setStatus('live', 'Live · ' + name + (ta == null ? '' : ta < 2 ? ' · trading' : ` · last trade ${Math.round(ta)}s ago`));
+  // ---------- feed health monitor (runs 4×/s) ----------
+  const fmtAge = (a) => a == null ? '' : a < 10 ? a.toFixed(1) + 's' : a < 60 ? Math.round(a) + 's' : Math.floor(a / 60) + 'm' + String(Math.round(a % 60)).padStart(2, '0');
+  let lastKick = 0, lastPmKick = 0;
+  function renderHealth() {
+    const nowS = Date.now() / 1000;
+    let bad = false;
+    // Coinbase (or whichever exchange is active): age of the newest trade
+    if (!feed.key) { $('ageCB').textContent = ''; }
+    else {
+      const name = PROVIDERS[feed.key].name;
+      const ta = nowS - (feed.lastTrade || feed.lastMsg || nowS);
+      const red = ta >= HEALTH_RED_SEC;
+      bad = bad || red;
+      $('dot').className = 'dot ' + (red ? 'err' : 'live');
+      $('statusText').textContent = name + (feed.open ? '' : ' · polling');
+      $('ageCB').textContent = fmtAge(ta);
+      $('ageCB').className = 'num' + (red ? ' stale' : '');
+      // self-heal: pull fresh candles over REST, and reconnect a socket that went silent
+      if (ta > 10 && nowS - lastKick > 10) { lastKick = nowS; resync(); }
+      if (feed.open && nowS - feed.lastMsg > STALE_SEC) { feed.error = 'stale socket'; connectStream(); }
     }
-    else if (feed.open) setStatus('warn', name + ' · quiet ' + Math.round(age) + 's');
-    else setStatus('warn', name + ' · polling (socket reconnecting)');
-    if (feed.open && age > STALE_SEC) { feed.error = 'stale socket'; connectStream(); }
-    $('status').title = feed.error ? 'Last issue: ' + feed.error : 'Streaming from ' + name;
+    // Polymarket: age of the newest odds update for this window
+    if (!pm.token) {
+      $('dotPM').className = 'dot warn';
+      $('agePM').textContent = pm.status && pm.status !== 'live' ? '…' : '';
+      $('agePM').className = 'num';
+    } else {
+      const pa = pm.lastMsg ? nowS - pm.lastMsg / 1000 : nowS - (pm.t || nowS);
+      const red = pa >= HEALTH_RED_SEC;
+      bad = bad || red;
+      $('dotPM').className = 'dot ' + (red ? 'err' : 'live');
+      $('agePM').textContent = fmtAge(pa);
+      $('agePM').className = 'num' + (red ? ' stale' : '');
+      if (pa > 15 && nowS - lastPmKick > 15) { lastPmKick = nowS; pmConnect(pm.token, pm.t); }
+    }
+    $('status').classList.toggle('bad', bad);
+    $('status').title = (bad ? 'A feed has sent no new data for 5+ seconds. ' : 'All feeds healthy. ') +
+      'Dots turn red after 5s without new data; the app reconnects on its own.' + (feed.error ? ' Last issue: ' + feed.error : '');
+  }
+  setInterval(renderHealth, 250);
+
+  function tick() {
     if (state.result && state.result.prediction) {
       const left = Math.max(0, state.result.prediction.forTime + INTERVAL - now());
       $('countdown').textContent = Math.floor(left / 60) + ':' + String(Math.floor(left % 60)).padStart(2, '0');
@@ -715,7 +746,7 @@
       if (pm.t !== t) return clearInterval(pm.poll);
       try { const j = await getJSON(`https://clob.polymarket.com/midpoint?token_id=${token}`); const m = +j.mid; if (isFinite(m)) { pm.bid = pm.ask = m; pm.lastMsg = Date.now(); } } catch (e) { /* keep last */ }
     };
-    go(); pm.poll = setInterval(go, 5000);
+    go(); pm.poll = setInterval(go, 2000);
   }
   function pmMid() {
     if (pm.bid == null || pm.ask == null) return pm.last;

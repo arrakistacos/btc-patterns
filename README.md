@@ -20,6 +20,8 @@ Patterns are evaluated on **closed candles only**, so nothing repaints.
 
 ## How it stays live
 
+The **health monitor** in the header shows each feed (Coinbase price, Polymarket odds) with a dot and the seconds since its last new data. A dot turns **red after 5 seconds** without data, and the app then re-syncs and reconnects on its own.
+
 1. Loads ~1,200 candles of history over REST.
 2. Streams trades over a WebSocket and builds the forming candle tick by tick.
 3. Re-syncs from REST every 60 s (every 8 s if the socket is down), on tab focus, and after any gap.

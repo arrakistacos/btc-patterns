@@ -27,7 +27,14 @@
   .pill { display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px; border-radius: 999px; background: var(--panel2); border: 1px solid var(--line); font-size: 12px; white-space: nowrap; }
   .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
   .dot.live { background: var(--up); box-shadow: 0 0 0 0 rgba(22,199,132,.6); animation: pulse 2s infinite; }
-  .dot.warn { background: var(--amber); } .dot.err { background: var(--down); }
+  .dot.warn { background: var(--amber); } .dot.err { background: var(--down); animation: pulsered 1s infinite; }
+  @keyframes pulsered { 0% { box-shadow: 0 0 0 0 rgba(234,57,67,.7); } 70% { box-shadow: 0 0 0 7px rgba(234,57,67,0); } 100% { box-shadow: 0 0 0 0 rgba(234,57,67,0); } }
+  .health { gap: 10px; }
+  .health.bad { border-color: var(--down); background: rgba(234,57,67,.12); }
+  .hfeed { display: inline-flex; align-items: center; gap: 6px; }
+  .hfeed b { font-weight: 600; min-width: 34px; color: var(--muted); }
+  .hfeed b.stale { color: var(--down); }
+  .hsep { width: 1px; height: 14px; background: var(--line); }
   @keyframes pulse { 0% { box-shadow: 0 0 0 0 rgba(22,199,132,.55); } 70% { box-shadow: 0 0 0 7px rgba(22,199,132,0); } 100% { box-shadow: 0 0 0 0 rgba(22,199,132,0); } }
   select, button { background: var(--panel2); color: var(--text); border: 1px solid var(--line); border-radius: 8px; padding: 5px 9px; font: inherit; font-size: 12px; cursor: pointer; }
   button:hover, select:hover { border-color: #33405a; }
@@ -133,7 +140,11 @@
   <div class="brand">₿ BTC/USD <small>5-minute · Pattern Watch</small></div>
   <div><span id="price" class="px num">—</span> <span id="chg" class="chg num muted"></span></div>
   <div class="spacer"></div>
-  <span class="pill" id="status" title="Data feed status"><span class="dot" id="dot"></span><span id="statusText">Connecting…</span></span>
+  <span class="pill health" id="status" title="Feed health: a dot turns red when that feed has sent no new data for 5 seconds">
+    <span class="hfeed"><span class="dot" id="dot"></span><span id="statusText">Connecting…</span> <b class="num" id="ageCB"></b></span>
+    <span class="hsep"></span>
+    <span class="hfeed"><span class="dot" id="dotPM"></span>Polymarket <b class="num" id="agePM"></b></span>
+  </span>
   <select id="source" aria-label="Data source">
     <option value="auto">Source: Auto</option>
     <option value="coinbase">Coinbase</option>
