@@ -173,6 +173,46 @@ writeFileSync(resolve(ROOT, 'params.json'), JSON.stringify({
   note: 'Tuned by tools/tune.mjs on resolved Polymarket 5m BTC markets. window = best vs outcomes; marketMatch = closest to Polymarket odds.',
 }, null, 1));
 
+// ---------- Edge table: buying the market favorite at each minute, by price bucket and signal agreement ----------
+// Cost per share = price + half-spread (0.5¢) + taker fee 0.07·p·(1−p). Wilson 95% intervals on win rate.
+const FEE = (p) => 0.07 * p * (1 - p);
+const HALF_SPREAD = 0.005;
+const wilson = (k, n) => { if (!n) return [0, 1]; const z = 1.96, ph = k / n, den = 1 + z * z / n, c = (ph + z * z / (2 * n)) / den, h = z * Math.sqrt(ph * (1 - ph) / n + z * z / (4 * n * n)) / den; return [c - h, c + h]; };
+const BUCKETS = [[0.5, 0.6], [0.6, 0.7], [0.7, 0.8], [0.8, 0.9], [0.9, 0.97], [0.97, 1.0001]];
+const edgeRows = [];
+for (const s of samples) {
+  if (s.e === 0) continue;
+  const favUp = s.mkt >= 0.5, fav = favUp ? s.mkt : 1 - s.mkt, sign = favUp ? 1 : -1;
+  const pUp = modelP(s, P), oursFav = favUp ? pUp : 1 - pUp;
+  const prev = c1.get(s.t + s.e - 60);
+  const mom = prev ? Math.sign(s.S - prev.o) : 0;
+  const vel = velAt(s.i5, P.velBars, P.volBars);
+  const agree = oursFav >= fav && mom === sign && Math.sign(vel) === sign;
+  edgeRows.push({ e: s.e, fav, won: (s.up === 1) === favUp ? 1 : 0, agree });
+}
+function cell(set) {
+  const n = set.length;
+  if (!n) return { n: 0 };
+  const wins = set.reduce((a, r) => a + r.won, 0);
+  const price = set.reduce((a, r) => a + r.fav, 0) / n;
+  const breakeven = set.reduce((a, r) => a + r.fav + HALF_SPREAD + FEE(r.fav), 0) / n;
+  const [lo, hi] = wilson(wins, n);
+  return { n, wins, winRate: wins / n, price, breakeven, ev: wins / n - breakeven, ciLo: lo, ciHi: hi };
+}
+const edge = { generated: report.generated, from: data.start, to: data.end, halfSpread: HALF_SPREAD, feeRate: 0.07, buckets: BUCKETS, checkpoints: {} };
+for (const e of [60, 120, 180, 240]) {
+  const R = edgeRows.filter((r) => r.e === e);
+  edge.checkpoints[e] = {
+    all: cell(R), agree: cell(R.filter((r) => r.agree)),
+    byBucket: BUCKETS.map(([lo, hi]) => {
+      const B = R.filter((r) => r.fav >= lo && r.fav < hi);
+      return { lo, hi, all: cell(B), agree: cell(B.filter((r) => r.agree)) };
+    }),
+  };
+}
+writeFileSync(resolve(ROOT, 'data/edge.json'), JSON.stringify(edge, null, 1));
+console.log('\nEdge (buy favorite, after fees): ' + [60, 120, 180, 240].map((e) => { const c = edge.checkpoints[e]; return `${e / 60}:00 all ${(c.all.ev * 100).toFixed(1)}¢ (n${c.all.n}) · agree ${(c.agree.ev * 100).toFixed(1)}¢ (n${c.agree.n}, CI low ${(c.agree.ciLo * 100).toFixed(0)}% vs need ${(c.agree.breakeven * 100).toFixed(0)}%)`; }).join('\n  '));
+
 // Console summary
 const f = (x) => x.toFixed(4);
 console.log(`\nData: ${windowsUsed.size} windows, ${samples.length} samples · test = last 30% (${test.length})`);

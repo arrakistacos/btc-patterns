@@ -39,6 +39,18 @@ node tools/tune.mjs         # grid search; test = last 30% of windows → params
 
 Results are at **[calibration.html](https://arrakistacos.github.io/btc-patterns/calibration.html)**. A GitHub Action (`.github/workflows/recalibrate.yml`) re-runs both every night and commits the new parameters.
 
+### Edge check
+
+Inside the window card, the **edge check** looks at buying the current favorite. It compares the live ask plus Polymarket's taker fee (`0.07 × p × (1 − p)` per share) against how often favorites at that price and minute actually won in the backfill. It counts three signals: our model at least as confident as the market, last-minute momentum, and 5-minute velocity. The history comes from `data/edge.json`, which `tools/tune.mjs` rebuilds nightly.
+
+- **Green:** even the low end of the 95% range beats break-even.
+- **Amber:** the average beats break-even but the range doesn't.
+- **Grey:** no edge.
+
+A paper trade is logged the first time all three signals agree between 1:40 and 3:20. It is resolved from Polymarket's result, so the app forward-tests itself in your browser.
+
+Known gap: Polymarket's "price to beat" is the Chainlink price at the window open. That price is only streamed to authenticated API users, so the app uses Coinbase's price instead, which can differ by a few dollars.
+
 ### Second-by-second recorder (e.g. Raspberry Pi)
 
 ```bash
