@@ -511,12 +511,9 @@
     const pr = R.prediction;
     for (const pl of priceLines) candleSeries.removePriceLine(pl);
     priceLines = [];
-    if (state.view.pred && pr) {
+    // Ghost candle only when the patterns actually have a directional read
+    if (state.view.pred && pr && pr.signal && pr.dir !== 0) {
       ghostSeries.setData([{ time: pr.forTime, open: pr.ghost.o, high: pr.ghost.h, low: pr.ghost.l, close: pr.ghost.c }]);
-      const col = pr.dir > 0 ? COLORS.up : pr.dir < 0 ? COLORS.down : COLORS.flat;
-      priceLines.push(candleSeries.createPriceLine({ price: pr.close, color: col, lineWidth: 1, lineStyle: LW.LineStyle.Dashed, axisLabelVisible: true, title: 'pred' }));
-      priceLines.push(candleSeries.createPriceLine({ price: pr.high, color: 'rgba(125,136,153,0.6)', lineWidth: 1, lineStyle: LW.LineStyle.Dotted, axisLabelVisible: false, title: '' }));
-      priceLines.push(candleSeries.createPriceLine({ price: pr.low, color: 'rgba(125,136,153,0.6)', lineWidth: 1, lineStyle: LW.LineStyle.Dotted, axisLabelVisible: false, title: '' }));
     } else ghostSeries.setData([]);
 
     $('predFor').textContent = 'Pattern call at ' + tLocal(pr.forTime) + ' open · candle closes ' + tLocal(pr.forTime + INTERVAL);
@@ -764,6 +761,25 @@
       `. Start price is Coinbase's; Polymarket settles on Chainlink, which can differ by a few dollars.`;
     renderEdge(w, mk);
     renderSettingsReadout(w);
+    drawWindowLines(w);
+  }
+
+  // Start price (target) labelled with live P(Up), plus 95% safe-zone lines that tighten as time runs out
+  const winLines = {};
+  function drawWindowLines(w) {
+    const want = state.view.pred && w;
+    if (!want) { for (const k of Object.keys(winLines)) { candleSeries.removePriceLine(winLines[k]); delete winLines[k]; } return; }
+    const gap95 = 1.645 * w.sigma * Math.sqrt(Math.max(1, w.left));
+    const upCol = COLORS.up, dnCol = COLORS.down;
+    const spec = {
+      start: { price: w.K, color: w.p >= 0.5 ? upCol : dnCol, lineWidth: 2, lineStyle: LW.LineStyle.Solid, axisLabelVisible: true,
+               title: `Start · Up ${(w.p * 100).toFixed(0)}%` },
+      hi: { price: w.K + gap95, color: 'rgba(22,199,132,0.7)', lineWidth: 1, lineStyle: LW.LineStyle.Dotted, axisLabelVisible: true, title: 'Up 95%' },
+      lo: { price: w.K - gap95, color: 'rgba(234,57,67,0.7)', lineWidth: 1, lineStyle: LW.LineStyle.Dotted, axisLabelVisible: true, title: 'Down 95%' },
+    };
+    for (const [k, o] of Object.entries(spec)) {
+      if (winLines[k]) winLines[k].applyOptions(o); else winLines[k] = candleSeries.createPriceLine(o);
+    }
   }
 
   // ---------- model settings (sliders) ----------
@@ -922,7 +938,7 @@
   $('minTouches').onchange = () => { state.view.minTouches = +$('minTouches').value; store.set('view', state.view); computeLevels(); renderLevels(); };
   for (const [id, k] of Object.entries(viewBoxes)) {
     $(id).checked = state.view[k] !== false;
-    $(id).onchange = () => { state.view[k] = $(id).checked; store.set('view', state.view); renderAnalysis(); };
+    $(id).onchange = () => { state.view[k] = $(id).checked; store.set('view', state.view); renderAnalysis(); renderWindow(); };
   }
   function showLatest() {
     const n = state.candles.length, bars = chartEl.clientWidth < 600 ? 60 : 140;
