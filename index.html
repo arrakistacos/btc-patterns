@@ -69,7 +69,12 @@
   .verdict.amber { background: rgba(245,176,65,.18); color: var(--amber); }
   .verdict.grey { background: #222a37; color: var(--muted); }
   .checks { list-style: none; margin: 0 0 6px; padding: 0; }
-  .checks li { padding: 1px 0; } .checks .ok { color: var(--up); } .checks .no { color: var(--muted); } .checks .info { color: var(--muted); font-style: italic; }
+  .checks { display: flex; gap: 6px; flex-wrap: wrap; }
+  .checks li { padding: 2px 8px; border-radius: 999px; background: #1d2431; cursor: help; } .checks .ok { color: var(--up); } .checks .no { color: var(--muted); }
+  .erow { display: flex; justify-content: space-between; font-size: 13px; padding: 1px 0; color: var(--muted); } .erow b { color: var(--text); }
+  .erow[title] { cursor: help; }
+  .erow b.up { color: var(--up); } .erow b.down { color: var(--down); }
+  .warn { color: var(--amber); margin-top: 4px; }
   .edgehist { color: var(--muted); margin: 6px 0; } .edgehist b { color: var(--text); }
   .edgepaper { color: var(--muted); padding-top: 6px; border-top: 1px dashed var(--line); } .edgepaper b { color: var(--text); }
   .setrow { margin: 6px 0 10px; }
@@ -154,7 +159,7 @@
         <dt>Distance</dt><dd class="num" id="winGap">—</dd>
       </dl>
       <div class="edge" id="edgeBox">
-        <div class="edgehead"><span>Edge check · buying the favorite</span><span class="verdict grey" id="edgeVerdict">—</span></div>
+        <div class="edgehead"><span>Worth buying the favorite?</span><span class="verdict grey" id="edgeVerdict">—</span></div>
         <ul class="checks" id="edgeChecks"></ul>
         <div class="edgehist" id="edgeHist"></div>
         <div class="edgepaper" id="edgePaper"></div>

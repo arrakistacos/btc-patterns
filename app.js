@@ -847,12 +847,13 @@
     return best;
   }
 
+  const row = (k, v, cls, tip) => `<div class="erow"${tip ? ` title="${esc(tip)}"` : ''}><span>${k}</span><b class="num ${cls || ''}">${v}</b></div>`;
   function renderEdge(w, mk) {
     const box = $('edgeBox');
     if (!box) return;
     const vEl = $('edgeVerdict');
     const setVerdict = (cls, text) => { vEl.className = 'verdict ' + cls; vEl.textContent = text; };
-    if (mk == null || pm.bid == null || pm.ask == null) { setVerdict('grey', 'waiting for odds'); $('edgeChecks').innerHTML = ''; $('edgeHist').textContent = ''; renderPaper(); return; }
+    if (mk == null || pm.bid == null || pm.ask == null) { setVerdict('grey', 'Waiting'); $('edgeChecks').innerHTML = ''; $('edgeHist').textContent = 'Waiting for Polymarket odds…'; renderPaper(); return; }
     const favUp = mk >= 0.5;
     const sign = favUp ? 1 : -1;
     const favMid = favUp ? mk : 1 - mk;
@@ -862,21 +863,19 @@
     const p60 = priceAgo(60);
     const mom = p60 != null ? Math.sign(w.S - p60) : null;   // null = not enough tick history yet
     const checks = [
-      { ok: oursFav >= favMid, txt: `Our model ${(oursFav * 100).toFixed(1)}% vs market ${(favMid * 100).toFixed(1)}%` },
-      { ok: mom === sign, txt: mom == null ? 'Last-minute momentum: warming up (needs 60s of live ticks)' : 'Last-minute momentum ' + (mom === sign ? 'with' : mom === 0 ? 'flat vs' : 'against') + ' the favorite' },
-      { ok: Math.sign(w.vel) === sign, txt: '5-min velocity ' + (Math.sign(w.vel) === sign ? 'with' : 'against') + ' the favorite' },
+      { ok: oursFav >= favMid, txt: 'Model', tip: `Our model ${(oursFav * 100).toFixed(1)}% vs market ${(favMid * 100).toFixed(1)}%` },
+      { ok: mom === sign, txt: 'Momentum', tip: mom == null ? 'Needs 60s of live prices' : 'Price over the last minute moved ' + (mom === sign ? 'toward' : 'away from') + ' the favorite' },
+      { ok: Math.sign(w.vel) === sign, txt: 'Velocity', tip: 'Recent 5-min trend ' + (Math.sign(w.vel) === sign ? 'toward' : 'away from') + ' the favorite' },
     ];
     const agree = checks.every((c) => c.ok);
-    const z = w.z || 0;
-    $('edgeChecks').innerHTML = checks.map((c) => `<li class="${c.ok ? 'ok' : 'no'}">${c.ok ? '✓' : '✗'} ${esc(c.txt)}</li>`).join('') +
-      `<li class="info">${z === 0 ? '· No pattern lean' : (Math.sign(z) === sign ? '· Patterns lean with it (info only — no proven value)' : '· Patterns lean against it (info only)')}</li>`;
+    $('edgeChecks').innerHTML = checks.map((c) => `<li class="${c.ok ? 'ok' : 'no'}" title="${esc(c.tip)}">${c.ok ? '✓' : '✗'} ${c.txt}</li>`).join('');
 
     const favName = favUp ? 'Up' : 'Down';
     const E_ = state.edge;
     const cp = Math.round(w.e / 60) * 60;
     if (!E_ || w.e < 40 || w.e > 270 || !E_.checkpoints[cp]) {
-      setVerdict('grey', w.e < 40 ? 'too early' : w.e > 270 ? 'too late' : 'no history yet');
-      $('edgeHist').innerHTML = `Favorite: <b>${favName}</b> at ${(ask * 100).toFixed(1)}¢ ask · break-even ${(breakeven * 100).toFixed(1)}% after fee.`;
+      setVerdict('grey', w.e < 40 ? 'Wait' : w.e > 270 ? 'Too late' : 'No data');
+      $('edgeHist').innerHTML = row('Buy ' + favName + ' at', `${(ask * 100).toFixed(0)}¢`, favUp ? 'up' : 'down') + row('Need to win', `${(breakeven * 100).toFixed(0)}%`);
       renderPaper();
       return;
     }
@@ -886,16 +885,19 @@
     if (!cell.n || cell.n < 20) { cell = agree ? C.agree : C.all; scope = 'any favorite price (too few at this price)'; }
     const cond = agree ? 'all three signals agreed' : 'signals did not all agree';
     let cls, text;
-    if (cell.n < 20) { cls = 'grey'; text = 'not enough history'; }
-    else if (cell.ciLo > breakeven) { cls = 'green'; text = 'historical edge'; }
-    else if (cell.winRate > breakeven) { cls = 'amber'; text = 'leaning positive · unproven'; }
-    else { cls = 'grey'; text = 'no edge at this price'; }
+    if (cell.n < 20) { cls = 'grey'; text = 'Not enough data'; }
+    else if (cell.ciLo > breakeven) { cls = 'green'; text = 'Edge'; }
+    else if (cell.winRate > breakeven) { cls = 'amber'; text = 'Maybe'; }
+    else { cls = 'grey'; text = 'No edge'; }
     setVerdict(cls, text);
+    const per100 = (cell.winRate - breakeven) / ask * 100;
+    const details = `Past windows at ~${cp / 60}:00, favorite priced ${Math.round(b.lo * 100)}–${Math.min(100, Math.round(b.hi * 100))}%, ${agree ? 'all 3 checks passing' : 'not all checks passing'}: won ${cell.wins} of ${cell.n} (likely range ${(cell.ciLo * 100).toFixed(0)}–${(cell.ciHi * 100).toFixed(0)}%). Cost includes the ${(fee(ask) * 100).toFixed(1)}¢ fee.`;
     $('edgeHist').innerHTML =
-      `Favorite: <b class="${favUp ? 'up' : 'down'}">${favName}</b> at <b>${(ask * 100).toFixed(1)}¢</b> ask → needs to win <b>${(breakeven * 100).toFixed(1)}%</b> to break even after the ${(fee(ask) * 100).toFixed(1)}¢ fee.<br>` +
-      `History at ~${cp / 60}:00 when ${cond}, ${scope}: won <b>${(cell.winRate * 100).toFixed(1)}%</b> of ${cell.n} (95% range ${(cell.ciLo * 100).toFixed(0)}–${(cell.ciHi * 100).toFixed(0)}%).` +
-      (cell.n >= 20 ? ` If that holds: <b class="${cell.winRate >= breakeven ? 'up' : 'down'}">${cell.winRate >= breakeven ? '+' : '−'}$${Math.abs((cell.winRate - breakeven) / ask * 100).toFixed(2)}</b> per $100 staked.` : '') +
-      (ask >= 0.95 ? `<br><span class="down">Thin payoff: at ${(ask * 100).toFixed(0)}¢ one loss erases ~${Math.round(ask / (1 - ask - fee(ask)))} wins.</span>` : '');
+      row('Buy ' + favName + ' at', `${(ask * 100).toFixed(0)}¢`, favUp ? 'up' : 'down') +
+      row('Need to win', `${(breakeven * 100).toFixed(0)}%`) +
+      row('Has won', cell.n >= 20 ? `${(cell.winRate * 100).toFixed(0)}% <span class="muted">of ${cell.n}</span>` : '—', '', details) +
+      (cell.n >= 20 ? row('Per $100', `${per100 >= 0 ? '+' : '−'}$${Math.abs(per100).toFixed(2)}`, per100 >= 0 ? 'up' : 'down') : '') +
+      (ask >= 0.95 ? `<div class="warn">⚠ One loss wipes out ~${Math.round(ask / Math.max(0.001, 1 - ask - fee(ask)))} wins</div>` : '');
 
     // Paper trade: first all-agree, non-grey reading between 1:40 and 3:20 into the window
     if (agree && cls !== 'grey' && w.e >= 100 && w.e <= 200 && !state.paper.some((x) => x.t === w.Ws)) {
@@ -926,12 +928,12 @@
     resolvePaper();
     const done = state.paper.filter((x) => x.result != null);
     const open = state.paper.length - done.length;
-    if (!state.paper.length) { $('edgePaper').innerHTML = 'Paper trades: none yet. One is logged automatically the first time all signals agree between 1:40 and 3:20 into a window.'; return; }
+    if (!state.paper.length) { $('edgePaper').innerHTML = 'Paper trades: none yet <span title="Logged automatically when all 3 checks pass between 1:40 and 3:20 into a window">ⓘ</span>'; return; }
     const wins = done.filter((x) => x.result === 1).length;
     const pnl = done.reduce((a, x) => a + x.result - x.ask - x.fee, 0);
-    $('edgePaper').innerHTML = `Paper trades (this browser): <b>${wins}/${done.length}</b> won` +
-      (done.length ? ` · net <b class="${pnl >= 0 ? 'up' : 'down'}">${pnl >= 0 ? '+' : '−'}$${Math.abs(pnl).toFixed(2)}</b> per 1-share bets ($${(pnl / done.length).toFixed(3)} avg)` : '') +
-      (open ? ` · ${open} awaiting result` : '') + ` · <a href="#" id="paperReset" style="color:var(--muted)">reset</a>`;
+    $('edgePaper').innerHTML = `Paper trades: <b>${wins} of ${done.length}</b> won` +
+      (done.length ? ` · <b class="${pnl >= 0 ? 'up' : 'down'}">${pnl >= 0 ? '+' : '−'}$${Math.abs(pnl * 100 / done.length).toFixed(2)}</b> per $100` : '') +
+      (open ? ` · ${open} pending` : '') + ` · <a href="#" id="paperReset" style="color:var(--muted)">reset</a>`;
     const r = $('paperReset');
     if (r) r.onclick = (ev) => { ev.preventDefault(); if (confirm('Clear paper-trade history?')) { state.paper = []; store.set('paper', []); renderPaper(); } };
   }
