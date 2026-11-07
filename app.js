@@ -308,7 +308,9 @@
       borderColor: '#222a37', timeVisible: true, secondsVisible: false, rightOffset: 4, barSpacing: 8,
       tickMarkFormatter: (t, type) => {
         const d = new Date(t * 1000);
-        return type < 3 ? d.toLocaleDateString([], { month: 'short', day: 'numeric' }) : d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+        // The chart marks day boundaries in UTC; only show a date label at real local midnight
+        const localMidnight = d.getHours() === 0 && d.getMinutes() === 0;
+        return type < 3 && localMidnight ? d.toLocaleDateString([], { month: 'short', day: 'numeric' }) : d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
       },
     },
     localization: {
