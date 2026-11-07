@@ -769,13 +769,17 @@
   function drawWindowLines(w) {
     const want = state.view.pred && w;
     if (!want) { for (const k of Object.keys(winLines)) { candleSeries.removePriceLine(winLines[k]); delete winLines[k]; } return; }
-    const gap95 = 1.645 * w.sigma * Math.sqrt(Math.max(1, w.left));
+    const spread = w.sigma * Math.sqrt(Math.max(1, w.left));
+    const gap95 = 1.645 * spread;   // one-sided 95%
+    const gap85 = 1.036 * spread;   // one-sided 85%
     const upCol = COLORS.up, dnCol = COLORS.down;
     const spec = {
       start: { price: w.K, color: w.p >= 0.5 ? upCol : dnCol, lineWidth: 2, lineStyle: LW.LineStyle.Solid, axisLabelVisible: true,
                title: `Start · Up ${(w.p * 100).toFixed(0)}%` },
       hi: { price: w.K + gap95, color: 'rgba(22,199,132,0.7)', lineWidth: 1, lineStyle: LW.LineStyle.Dotted, axisLabelVisible: true, title: 'Up 95%' },
       lo: { price: w.K - gap95, color: 'rgba(234,57,67,0.7)', lineWidth: 1, lineStyle: LW.LineStyle.Dotted, axisLabelVisible: true, title: 'Down 95%' },
+      hi85: { price: w.K + gap85, color: 'rgba(245,176,65,0.85)', lineWidth: 1, lineStyle: LW.LineStyle.Dotted, axisLabelVisible: true, title: 'Up 85%' },
+      lo85: { price: w.K - gap85, color: 'rgba(245,176,65,0.85)', lineWidth: 1, lineStyle: LW.LineStyle.Dotted, axisLabelVisible: true, title: 'Down 85%' },
     };
     for (const [k, o] of Object.entries(spec)) {
       if (winLines[k]) winLines[k].applyOptions(o); else winLines[k] = candleSeries.createPriceLine(o);
