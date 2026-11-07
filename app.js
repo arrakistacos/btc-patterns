@@ -241,6 +241,7 @@
 
   function onTrade(price, size, ts) {
     noteClock(ts);
+    feed.lastTrade = Date.now() / 1000;
     pushTick(ts || now(), price);
     const t = bucket(ts || now());
     const C = state.candles;
@@ -257,6 +258,7 @@
 
   function onCandle(k, ts) {
     noteClock(ts);
+    feed.lastTrade = Date.now() / 1000;
     pushTick(ts || now(), k.c);
     const C = state.candles;
     const last = C[C.length - 1];
@@ -612,7 +614,10 @@
     const name = feed.key ? PROVIDERS[feed.key].name : '';
     const age = Date.now() / 1000 - feed.lastMsg;
     if (!feed.key) { /* still loading */ }
-    else if (feed.open && age < 10) setStatus('live', 'Live · ' + name);
+    else if (feed.open && age < 10) {
+      const ta = feed.lastTrade ? Date.now() / 1000 - feed.lastTrade : null;
+      setStatus('live', 'Live · ' + name + (ta == null ? '' : ta < 2 ? ' · trading' : ` · last trade ${Math.round(ta)}s ago`));
+    }
     else if (feed.open) setStatus('warn', name + ' · quiet ' + Math.round(age) + 's');
     else setStatus('warn', name + ' · polling (socket reconnecting)');
     if (feed.open && age > STALE_SEC) { feed.error = 'stale socket'; connectStream(); }
