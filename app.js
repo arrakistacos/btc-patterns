@@ -651,10 +651,18 @@
   state.params = Object.assign({}, E.DEFAULT_WINDOW_PARAMS);
   state.overrides = store.get('overrides', {});        // user slider settings; empty = use tuned values
   const params = () => Object.assign({}, state.params, state.overrides);
-  fetch('params.json', { cache: 'no-store' }).then((r) => r.ok ? r.json() : null).then((j) => {
-    if (j && j.window) { state.params = Object.assign({}, E.DEFAULT_WINDOW_PARAMS, j.window); state.paramsTuned = j.generated; }
+  // Calibration made with "Calibrate now" in this browser wins when it is newer than the site's
+  const localCal = (() => { try { return JSON.parse(localStorage.getItem('btcpw.calib') || 'null'); } catch (e) { return null; } })();
+  fetch('params.json', { cache: 'no-store' }).then((r) => r.ok ? r.json() : null).catch(() => null).then((j) => {
+    const lp = localCal && localCal.params;
+    const use = lp && (!j || lp.generated > j.generated) ? lp : j;
+    if (use && use.window) {
+      state.params = Object.assign({}, E.DEFAULT_WINDOW_PARAMS, use.window);
+      state.paramsTuned = use.generated;
+      state.paramsLocal = use === lp;
+    }
     syncSettingsUI();
-  }).catch(() => { /* defaults */ });
+  });
 
   const pm = { t: null, token: null, ws: null, bid: null, ask: null, last: null, lastMsg: 0, poll: null, ping: null, status: '' };
   async function pmRoll(t) {
@@ -776,7 +784,7 @@
       `Polymarket: ${esc(stale ? 'stale' : pm.status)}` +
       (pm.token ? ` · <a href="https://polymarket.com/event/btc-updown-5m-${w.Ws}" target="_blank" rel="noopener" style="color:var(--accent)">open market ↗</a>` : '') +
       `<br>Model: ${esc(params().mode)} settlement, ${params().volBars * 5}-min volatility, ${params().velBars * 5}-min velocity` +
-      (Object.keys(state.overrides).length ? ' · <b>your slider settings</b>' : state.paramsTuned ? ` · tuned ${new Date(state.paramsTuned).toLocaleDateString()}` : ' · default params') +
+      (Object.keys(state.overrides).length ? ' · <b>your slider settings</b>' : state.paramsTuned ? ` · ${state.paramsLocal ? 'your calibration' : 'tuned'} ${new Date(state.paramsTuned).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}` : ' · default params') +
       `. Start price is Coinbase's; Polymarket settles on Chainlink, which can differ by a few dollars.`;
     renderEdge(w, mk);
     renderSettingsReadout(w);
@@ -863,7 +871,10 @@
 
   // ---------- edge check + paper trading ----------
   state.edge = null;
-  fetch('data/edge.json', { cache: 'no-store' }).then((r) => r.ok ? r.json() : null).then((j) => { state.edge = j; }).catch(() => {});
+  fetch('data/edge.json', { cache: 'no-store' }).then((r) => r.ok ? r.json() : null).catch(() => null).then((j) => {
+    const le = localCal && localCal.edge;
+    state.edge = le && (!j || le.generated > j.generated) ? le : j;
+  });
   state.paper = store.get('paper', []);
   const fee = (p) => 0.07 * p * (1 - p);
   function priceAgo(sec) {

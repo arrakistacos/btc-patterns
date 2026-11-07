@@ -5,6 +5,8 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Calibration vs Polymarket</title>
 <meta name="theme-color" content="#0b0e14">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%230b0e14'/%3E%3Crect x='7' y='9' width='5' height='13' fill='%2316c784'/%3E%3Crect x='19' y='12' width='5' height='10' fill='%23ea3943'/%3E%3C/svg%3E">
+
 <style>
   :root { --bg:#0b0e14; --panel:#11151d; --line:#222a37; --text:#d6dde8; --muted:#7d8899; --up:#16c784; --down:#ea3943; --accent:#5aa9ff; --amber:#f5b041; --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace; }
   * { box-sizing: border-box; }
@@ -31,6 +33,15 @@
   .legend { display:flex; gap:14px; font-size:12px; color:var(--muted); margin-top:6px; flex-wrap:wrap; }
   .sw { display:inline-block; width:10px; height:10px; border-radius:2px; margin-right:5px; vertical-align:-1px; }
   code { font-family:var(--mono); font-size:12px; background:#161b25; padding:1px 5px; border-radius:4px; }
+  .calbar { max-width: 1100px; margin: 12px auto 0; padding: 0 16px; }
+  .calrow { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+  button, select { background: #161b25; color: var(--text); border: 1px solid var(--line); border-radius: 8px; padding: 7px 12px; font: inherit; font-size: 13px; cursor: pointer; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #06121f; font-weight: 700; }
+  button:disabled { opacity: .5; cursor: default; }
+  .progress { height: 6px; background: #161b25; border-radius: 3px; margin: 10px 0 6px; overflow: hidden; }
+  .progress i { display: block; height: 100%; width: 0; background: var(--accent); transition: width .3s; }
+  .small { font-size: 12px; margin-top: 6px; } .small a { color: var(--accent); }
+  .ok { color: var(--up); } .err { color: var(--down); }
   @media (max-width: 820px) { main { grid-template-columns: 1fr; } }
 </style>
 </head>
@@ -41,13 +52,73 @@
   <span style="flex:1"></span>
   <a href="./">← Back to the chart</a>
 </header>
+<section class="calbar">
+  <div class="calrow">
+    <button id="calBtn" class="primary">⟳ Calibrate now</button>
+    <select id="calDays" aria-label="Days of history">
+      <option value="4" selected>last 4 days</option><option value="7">last 7 days (slower, steadier)</option>
+    </select>
+    <span id="calSource" class="muted"></span>
+    <span style="flex:1"></span>
+    <button id="calRevert" hidden>Use site calibration</button>
+  </div>
+  <div class="progress" id="calProg" hidden><i id="calBar"></i></div>
+  <div class="muted small" id="calStatus">Pulls the latest resolved 5-minute markets and Coinbase candles, re-tunes the model in this browser (about 1–2 minutes) and applies it to the chart right away.
+    <a href="https://github.com/arrakistacos/btc-patterns/actions/workflows/recalibrate.yml" target="_blank" rel="noopener">Update the site for all devices on GitHub ↗</a> (Run workflow).</div>
+</section>
 <main id="main"></main>
+<script src="engine.js"></script>
+<script src="calib.js"></script>
 <script>
 (async () => {
   const main = document.getElementById('main');
-  let R;
-  try { R = await (await fetch('data/calibration.json', { cache: 'no-store' })).json(); }
-  catch (e) { main.innerHTML = '<div class="card wide">No calibration report yet. Run <code>node tools/backfill.mjs</code> then <code>node tools/tune.mjs</code>.</div>'; return; }
+  const LS_KEY = 'btcpw.calib';
+  const readLocal = () => { try { return JSON.parse(localStorage.getItem(LS_KEY) || 'null'); } catch (e) { return null; } };
+  let site = null;
+  try { site = await (await fetch('data/calibration.json', { cache: 'no-store' })).json(); } catch (e) { /* none yet */ }
+
+  function pickAndRender() {
+    const local = readLocal();
+    const useLocal = local && local.report && (!site || local.report.generated > site.generated);
+    const R = useLocal ? local.report : site;
+    document.getElementById('calSource').innerHTML = useLocal
+      ? `<span class="ok">Using your calibration from ${new Date(local.report.generated).toLocaleString()}</span>`
+      : (site ? 'Using the site calibration' : '');
+    document.getElementById('calRevert').hidden = !useLocal;
+    if (!R) { main.innerHTML = '<div class="card wide">No calibration report yet — press <b>Calibrate now</b>.</div>'; return; }
+    render(R);
+  }
+
+  // ---- Calibrate now ----
+  const btn = document.getElementById('calBtn'), bar = document.getElementById('calBar'), prog = document.getElementById('calProg'), status = document.getElementById('calStatus');
+  const STAGES = { markets: [0, 5, 'Finding resolved markets'], odds: [5, 55, 'Downloading Polymarket odds'], candles5m: [55, 65, 'Downloading 5-min candles'], candles1m: [65, 80, 'Downloading 1-min candles'], patterns: [80, 83, 'Running pattern engine'], grid: [83, 99, 'Testing parameter combinations'], done: [100, 100, 'Done'] };
+  btn.onclick = async () => {
+    btn.disabled = true; prog.hidden = false; bar.style.width = '0';
+    const days = +document.getElementById('calDays').value;
+    const t0 = Date.now();
+    const onProgress = (stage, done, total) => {
+      const [a, b, label] = STAGES[stage] || [0, 0, stage];
+      const pct = a + (b - a) * (total ? done / total : 0);
+      bar.style.width = pct.toFixed(1) + '%';
+      status.textContent = `${label}… ${total > 1 ? done + '/' + total : ''} · ${Math.round((Date.now() - t0) / 1000)}s`;
+    };
+    try {
+      const data = await Calib.backfill({ days, onProgress });
+      const out = await Calib.tune(data, PatternEngine, { onProgress });
+      localStorage.setItem(LS_KEY, JSON.stringify(out));
+      status.innerHTML = `<span class="ok">✓ Calibrated on ${out.report.data.windows} windows in ${Math.round((Date.now() - t0) / 1000)}s. The chart uses it on its next load (reload any open chart tab).</span>`;
+      pickAndRender();
+    } catch (e) {
+      status.innerHTML = `<span class="err">Calibration failed: ${String(e.message || e)}. Nothing was changed.</span>`;
+    } finally {
+      btn.disabled = false; setTimeout(() => { prog.hidden = true; }, 1500);
+    }
+  };
+  document.getElementById('calRevert').onclick = () => { localStorage.removeItem(LS_KEY); status.textContent = 'Back to the site calibration.'; pickAndRender(); };
+
+  pickAndRender();
+
+  function render(R) {
 
   const f4 = (x) => x == null ? '—' : x.toFixed(4);
   const pc = (x) => x == null ? '—' : (x * 100).toFixed(1) + '%';
@@ -123,6 +194,7 @@
     for (const [m, k] of R.scatter) g += `<circle cx="${sc(m).toFixed(1)}" cy="${sy(k).toFixed(1)}" r="1.8" fill="#5aa9ff" fill-opacity=".35"/>`;
     g += `<text x="${S / 2}" y="${S - 0}" text-anchor="middle">ours →</text><text x="8" y="${pad - 12}">Polymarket ↑</text>`;
     return g + '</svg>';
+  }
   }
 })();
 </script>

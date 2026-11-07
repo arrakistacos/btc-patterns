@@ -37,6 +37,8 @@ node tools/backfill.mjs 4   # resolved 5m markets + minute odds + Coinbase candl
 node tools/tune.mjs         # grid search; test = last 30% of windows → params.json + data/calibration.json
 ```
 
+The calibration page has a **Calibrate now** button. It runs the same backfill and tuning in your browser using the shared `calib.js` (4 or 7 days of history, about 1–2 minutes) and applies the result to the chart in that browser. A link there starts the GitHub Action, which updates the site for every device.
+
 Results are at **[calibration.html](https://arrakistacos.github.io/btc-patterns/calibration.html)**. A GitHub Action (`.github/workflows/recalibrate.yml`) re-runs both every night and commits the new parameters.
 
 ### Model settings
