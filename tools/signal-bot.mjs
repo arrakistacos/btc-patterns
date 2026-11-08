@@ -20,6 +20,7 @@
  *   TZ_NAME      time zone for times in alerts (default America/Chicago)
  *   LOG_EVERY    seconds between status lines in the log (default 60)
  *   LOG_FILE     also append the log to this file
+ *   MARKET_URL   page a BUY alert opens when tapped (default https://polymarket.us/)
  *
  * Requires Node 22+ (built-in fetch and WebSocket). No exchange or Polymarket keys needed.
  */
@@ -43,6 +44,7 @@ const BANKROLL = +process.env.BANKROLL || 0;
 const MAX_PER_WINDOW = Math.max(1, +process.env.MAX_PER_WINDOW || 1);
 const SITE = (process.env.SITE || 'https://arrakistacos.github.io/btc-patterns/').replace(/\/?$/, '/');
 const TZ_NAME = process.env.TZ_NAME || 'America/Chicago';
+const MARKET_URL = process.env.MARKET_URL || 'https://polymarket.us/';   // where tapping a BUY alert takes you
 const W = 300, HEALTH_SEC = 5;
 const LOG_EVERY = Math.max(1, +process.env.LOG_EVERY || 60);   // seconds between status lines
 
@@ -277,7 +279,7 @@ function evaluate() {
           : `Bet ${(r.f * 100).toFixed(1)}% of bankroll. `) +
           `${fmtLeft(left)} left in the ${clock(Ws)} window. Check the price before buying.`;
         log('BUY →', title, '|', body);
-        push({ title, body, priority: 5, tags: 'rotating_light,moneybag', click: `https://polymarket.com/event/btc-updown-5m-${Ws}` });
+        push({ title, body, priority: 5, tags: 'rotating_light,moneybag', click: MARKET_URL });
       }
       wasBuy = true;
       why = 'BUY';

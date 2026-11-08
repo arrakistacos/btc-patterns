@@ -818,7 +818,7 @@
     $('winNote').innerHTML =
       (diff != null ? `Ours is <b>${Math.abs(diff).toFixed(1)} pts ${diff >= 0 ? 'more bullish' : 'more bearish'}</b> than the market. ` : '') +
       `Polymarket: ${esc(stale ? 'stale' : pm.status)}` +
-      (pm.token ? ` · <a href="https://polymarket.com/event/btc-updown-5m-${w.Ws}" target="_blank" rel="noopener" style="color:var(--accent)">open market ↗</a>` : '') +
+      (pm.token ? ` · <a href="https://polymarket.us/" target="_blank" rel="noopener" style="color:var(--accent)">open Polymarket US ↗</a>` : '') +
       `<br>Model: ${esc(params().mode)} settlement, ${params().volBars * 5}-min volatility, ${params().velBars * 5}-min velocity` +
       (Object.keys(state.overrides).length ? ' · <b>your slider settings</b>' : state.paramsTuned ? ` · ${state.paramsLocal ? 'your calibration' : 'tuned'} ${new Date(state.paramsTuned).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}` : ' · default params') +
       `. Start price is Coinbase's; Polymarket settles on Chainlink, which can differ by a few dollars.`;

@@ -101,7 +101,7 @@ A web page can't reliably ring a locked phone: phones pause a page's code soon a
 
 ### 1. Signal bot → ntfy push (works with the phone locked)
 
-`tools/signal-bot.mjs` runs 24/7 on an always-on machine, such as a Raspberry Pi. It watches the same feeds and makes **exactly the same BUY / WAIT decision** as the app, through the shared `signal.js` and `engine.js`. When BUY NOW fires, it sends an urgent push through [ntfy](https://ntfy.sh), a free iPhone/Android app with a loud alert. That's one alert per 5-minute window, so a flickering signal doesn't spam you. Tapping the alert opens that window's Polymarket market.
+`tools/signal-bot.mjs` runs 24/7 on an always-on machine, such as a Raspberry Pi. It watches the same feeds and makes **exactly the same BUY / WAIT decision** as the app, through the shared `signal.js` and `engine.js`. When BUY NOW fires, it sends an urgent push through [ntfy](https://ntfy.sh), a free iPhone/Android app with a loud alert. That's one alert per 5-minute window, so a flickering signal doesn't spam you. Tapping the alert opens Polymarket US (polymarket.us), since polymarket.com blocks trading from the US.
 
 **Phone:** install **ntfy** (App Store / Google Play) → **+** → subscribe to your topic. Pick a long random name: anyone who knows it can read the alerts. On Android, long-press the topic → *Notification settings* → **Max priority** so it sounds even on Do Not Disturb.
 
