@@ -49,6 +49,19 @@ Sliders set the **volatility lookback** (1–48 five-minute candles), the **velo
 
 A live readout shows the typical move per minute and over the time left. It also shows the **gap needed for 95% certainty** next to the current gap, plus velocity.
 
+### BUY / WAIT signal
+
+A banner above the chart shows **WAIT** (yellow, with the reason) or **BUY NOW** (green). BUY NOW shows the side, the exact dollar amount and share count for your bankroll, the chance to win, and what you'd win or lose. It turns green only when **all** of these hold:
+
+1. Both data feeds are healthy (no red dots).
+2. It is between 0:40 and 4:30 into the window.
+3. The gap from the start price has reached the target confidence (default 80%).
+4. That side is also Polymarket's favorite.
+5. The price is under 95¢.
+6. **Both** our live model and the historical win rate beat the price plus fee by at least 2 points.
+
+The bet is ¼ Kelly on the lower of those two win chances, kept between **1% and 2%** of the bankroll. The first BUY NOW in each window is paper-traded and scored against the real result.
+
 ### Edge check
 
 Inside the window card, the **edge check** looks at buying the current favorite. It compares the live ask plus Polymarket's taker fee (`0.07 × p × (1 − p)` per share) against how often favorites at that price and minute actually won in the backfill. It counts three signals: our model at least as confident as the market, last-minute momentum, and 5-minute velocity. The history comes from `data/edge.json`, which `tools/tune.mjs` rebuilds nightly.
