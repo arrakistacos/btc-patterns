@@ -19,6 +19,7 @@
  *   SITE         where to fetch tuned params.json / data/edge.json (default the GitHub Pages site)
  *   TZ_NAME      time zone for times in alerts (default America/Chicago)
  *   LOG_EVERY    seconds between status lines in the log (default 60)
+ *   LOG_FILE     also append the log to this file
  *
  * Requires Node 22+ (built-in fetch and WebSocket). No exchange or Polymarket keys needed.
  */
@@ -52,6 +53,17 @@ const iso = (t) => new Date(t * 1000).toISOString();
 const clock = (t) => new Date(t * 1000).toLocaleTimeString('en-US', { timeZone: TZ_NAME, hour: 'numeric', minute: '2-digit' });
 const fmtLeft = (s) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}`;
 const log = (...a) => console.log(new Date().toISOString().slice(11, 19), ...a);
+
+// Optional log file (used by the Windows installer); also record crashes so the restart loop leaves a trace
+if (process.env.LOG_FILE) {
+  const { appendFileSync } = await import('node:fs');
+  for (const k of ['log', 'warn', 'error']) {
+    const orig = console[k].bind(console);
+    console[k] = (...a) => { orig(...a); try { appendFileSync(process.env.LOG_FILE, a.map((x) => (x && x.stack) || String(x)).join(' ') + '\n'); } catch { /* disk full / locked */ } };
+  }
+}
+process.on('uncaughtException', (e) => { console.error(new Date().toISOString(), 'fatal:', (e && e.stack) || e); process.exit(1); });
+process.on('unhandledRejection', (e) => { console.error(new Date().toISOString(), 'unhandled:', (e && e.stack) || e); });
 
 if (!DRY && !NTFY_TOPIC) { console.error('Set NTFY_TOPIC (or use --dry). See the comments at the top of this file.'); process.exit(1); }
 

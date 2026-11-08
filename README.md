@@ -105,6 +105,19 @@ A web page can't reliably ring a locked phone: phones pause a page's code soon a
 
 **Phone:** install **ntfy** (App Store / Google Play) → **+** → subscribe to your topic. Pick a long random name: anyone who knows it can read the alerts. On Android, long-press the topic → *Notification settings* → **Max priority** so it sounds even on Do Not Disturb.
 
+**Windows laptop (one line):** open PowerShell with *Run as administrator* and paste:
+```powershell
+irm https://raw.githubusercontent.com/arrakistacos/btc-patterns/main/tools/install-windows.ps1 -OutFile $env:TEMP\btc-bot.ps1; powershell -ExecutionPolicy Bypass -File $env:TEMP\btc-bot.ps1 -Topic your-topic -Target 80 -Bankroll 1000
+```
+The installer does the following:
+- installs Node.js if needed
+- copies the bot to `%USERPROFILE%\dev\btc-patterns-bot`
+- sets it to start hidden at logon and restart itself if it stops
+- stops the laptop sleeping while plugged in, including with the lid closed (skip with `-KeepAwake:$false`)
+- sends a test alert
+
+Run it again to update the bot or change settings; `-Uninstall` removes it. To watch the log: `Get-Content $env:USERPROFILE\dev\btc-patterns-bot\signal-bot.log -Wait -Tail 20 -Encoding UTF8`.
+
 **Raspberry Pi (Node 22+):**
 ```bash
 curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash - && sudo apt install -y nodejs git
@@ -133,7 +146,7 @@ The **🔔 Alerts** button in the signal banner beeps, vibrates (Android) and sh
 - `params.json` — tuned window-model parameters (rewritten nightly)
 - `signal.js` — the BUY / WAIT decision, shared by the app and the signal bot
 - `sw.js` — tiny service worker so the page can show system notifications
-- `tools/signal-bot.mjs`, `tools/signal-bot.service` — 24/7 phone-alert bot (ntfy) and its systemd unit
+- `tools/signal-bot.mjs` — 24/7 phone-alert bot (ntfy); `tools/install-windows.ps1` (Windows) and `tools/signal-bot.service` (Linux/Pi) keep it running
 - `tools/backfill.mjs`, `tools/tune.mjs`, `tools/record.mjs` — data collection and tuning (Node 22+)
 - `vendor/` — TradingView Lightweight Charts v4.2.3 (Apache-2.0)
 
