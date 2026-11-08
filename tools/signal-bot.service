@@ -1,0 +1,23 @@
+# systemd service for the signal bot (Raspberry Pi / any Linux box)
+#   1. Edit User, WorkingDirectory and the Environment lines below
+#   2. sudo cp tools/signal-bot.service /etc/systemd/system/
+#   3. sudo systemctl daemon-reload && sudo systemctl enable --now signal-bot
+#   4. Logs: journalctl -u signal-bot -f
+[Unit]
+Description=BTC Pattern Watch signal bot (ntfy phone alerts)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=pi
+WorkingDirectory=/home/pi/btc-patterns
+Environment=NTFY_TOPIC=CHANGE-ME-to-a-long-random-topic
+Environment=TARGET=80
+Environment=BANKROLL=0
+ExecStart=/usr/bin/node tools/signal-bot.mjs
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

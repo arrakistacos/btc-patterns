@@ -104,6 +104,9 @@
   .slbadge.now { background: var(--up); color: #03140c; }
   .slmain b { font-weight: 700; } .slmain b.up { color: var(--up); } .slmain b.down { color: var(--down); }
   .slsub { font-size: 12px; color: var(--muted); }
+  .alertbtn { background: var(--panel); color: var(--muted); border: 1px solid var(--line); border-radius: 8px; padding: 6px 10px; font: inherit; font-size: 13px; cursor: pointer; white-space: nowrap; }
+  .alertbtn.on { color: var(--up); border-color: var(--up); }
+  .alertbtn.arm { color: var(--amber); border-color: var(--amber); animation: pulse 2s infinite; }
   .sigbank { display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--muted); }
   .sigbank span { color: var(--text); }
   .sigbank input { width: 110px; background: var(--panel); color: var(--text); border: 1px solid var(--line); border-radius: 8px; padding: 6px 8px; font: inherit; font-family: var(--mono); }
@@ -188,6 +191,7 @@
           <div class="sigline2" id="sigLine2"></div>
         </div>
       </div>
+      <button class="alertbtn" id="alertBtn" type="button">🔕 Alerts off</button>
       <label class="sigbank">Bankroll <span>$</span><input id="bankroll" type="number" inputmode="decimal" min="0" step="1" placeholder="e.g. 1000" aria-label="Bankroll in dollars"></label>
     </div>
     <div class="siglog" id="sigLog" hidden></div>
@@ -315,6 +319,7 @@
 
 <script src="vendor/lightweight-charts.standalone.production.js"></script>
 <script src="engine.js"></script>
+<script src="signal.js"></script>
 <script src="app.js"></script>
 </body>
 </html>
