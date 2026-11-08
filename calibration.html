@@ -67,8 +67,18 @@
     <a href="https://github.com/arrakistacos/btc-patterns/actions/workflows/recalibrate.yml" target="_blank" rel="noopener">Update the site for all devices on GitHub ↗</a> (Run workflow).</div>
 </section>
 <main id="main"></main>
-<script src="engine.js"></script>
-<script src="calib.js"></script>
+<script>
+  // Always load the latest app code: GitHub Pages lets browsers cache files for 10+ minutes,
+  // which can leave a phone running old logic after an update. Re-checked at most once a minute.
+  (function () {
+    var v = Math.floor(Date.now() / 60000).toString(36);
+    ['engine.js', 'calib.js'].forEach(function (f) {
+      var s = document.createElement('script');
+      s.src = f + '?v=' + v; s.async = false;
+      document.body.appendChild(s);
+    });
+  })();
+</script>
 <script>
 (async () => {
   const main = document.getElementById('main');
