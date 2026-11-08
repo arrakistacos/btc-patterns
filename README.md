@@ -150,6 +150,8 @@ The signal bot can buy each BUY alert on **Polymarket US** for you, through Poly
 - **Practice mode (the default)** uses the real order book and real results with pretend money; no key is needed. **Live mode** places real orders and needs your API key.
 - Every trade is followed to settlement and scored: win rate, profit today and all-time, and a daily table.
 
+**Losing streak pause:** after **2 losses in a row** it pauses for **1 hour**, sends a push, then resumes on its own, and the count starts over. Both numbers are adjustable on the page (0 = never pause), and **Resume** ends a pause early.
+
 **It halts itself and sends an urgent push when:**
 - the money runs out: Polymarket US buying power under $1, checked every minute and before every order, or an order refused for insufficient funds;
 - the daily loss limit is hit (default 50% of the day's starting balance); it resumes the next day;

@@ -26,9 +26,11 @@ export const AUTOPILOT_VERSION = '1.0.0';
 const W = 300;
 const DEFAULTS = {
   enabled: true, mode: 'practice', betPct: 20, dailyStopPct: 50, notifyFills: true, notifyResults: true,
+  lossStreak: 2, cooldownMin: 60,        // pause this long after this many losses in a row (0 = never)
+  streak: { practice: 0, live: 0 },      // current run of losses
   minModel: null, minMarket: null,      // null = use the bot's MIN_MODEL / MIN_MARKET
   practice: { balance: 1000, start: 1000 },
-  halted: null,                          // { reason, detail, at, untilDay? }
+  halted: null,                          // { reason, detail, at, untilDay? | untilTs?, kind? }
   trades: [], days: {}, stats: { practice: null, live: null }, liveBal: null,
 };
 const zeroStats = () => ({ n: 0, w: 0, l: 0, pnl: 0, staked: 0, nofill: 0 });
@@ -55,6 +57,7 @@ export function createAutopilot(o) {
   let S = JSON.parse(JSON.stringify(DEFAULTS));
   try { if (existsSync(STATE_FILE)) S = Object.assign(S, JSON.parse(readFileSync(STATE_FILE, 'utf8'))); } catch (e) { log('autopilot: could not read state, starting fresh:', e.message); }
   S.stats.practice = S.stats.practice || zeroStats(); S.stats.live = S.stats.live || zeroStats();
+  S.streak = Object.assign({ practice: 0, live: 0 }, S.streak);
   function save() {
     try { writeFileSync(STATE_FILE + '.tmp', JSON.stringify(S)); renameSync(STATE_FILE + '.tmp', STATE_FILE); }
     catch (e) { log('autopilot: could not save state:', e.message); }
@@ -129,9 +132,11 @@ export function createAutopilot(o) {
     if (S.halted && S.halted.reason === reason) return;
     S.halted = Object.assign({ reason, detail, at: Date.now() }, extra || {});
     save(); publishSoon();
-    log('AUTOPILOT HALTED:', reason, '-', detail);
-    push({ title: 'AUTOPILOT HALTED', body: `${reason}. ${detail}`, priority: 5, tags: 'octagonal_sign', click: o.site + 'autopilot.html' });
+    const pause = S.halted.kind === 'pause';
+    log(pause ? 'AUTOPILOT PAUSED:' : 'AUTOPILOT HALTED:', reason, '-', detail);
+    push({ title: pause ? 'AUTOPILOT PAUSED' : 'AUTOPILOT HALTED', body: `${reason}. ${detail}`, priority: pause ? 4 : 5, tags: pause ? 'pause_button' : 'octagonal_sign', click: o.site + 'autopilot.html' });
   }
+  const clockAt = (ms) => new Date(ms).toLocaleTimeString('en-US', { timeZone: tzName, hour: 'numeric', minute: '2-digit' });
   const outOfMoney = (bal, why) => halt('Out of money', `${why || `${S.mode === 'live' ? 'Polymarket US buying power' : 'Practice balance'} is ${money(bal)}.`} Add funds, then tap Resume on the autopilot page.`);
 
   // ------------------------------------------------------------ trading
@@ -261,7 +266,14 @@ export function createAutopilot(o) {
       if (t.mode === 'practice' && won) S.practice.balance = r2(S.practice.balance + t.qty);
       log(`AUTOPILOT ${t.mode} ${t.side} ${won ? 'WON' : 'LOST'} ${money(t.pnl)}`);
       if (S.notifyResults) push({ title: `${t.mode === 'live' ? '' : 'PRACTICE '}${won ? 'WON' : 'LOST'} ${money(t.pnl)}`, body: `${t.side} ${t.qty} @ ${cents(t.px)} · today ${money(day.pnl)}`, priority: won ? 2 : 3, tags: won ? 'white_check_mark' : 'x', click: o.site + 'autopilot.html' });
-      // Daily loss limit
+      // Losing streak: pause for a while (then the count starts over)
+      S.streak[t.mode] = won ? 0 : (S.streak[t.mode] || 0) + 1;
+      if (!won && S.lossStreak > 0 && t.mode === S.mode && S.streak[t.mode] >= S.lossStreak) {
+        S.streak[t.mode] = 0;
+        const until = Date.now() + S.cooldownMin * 60000;
+        halt(`Paused after ${S.lossStreak} losses in a row`, `Trading resumes automatically at ${clockAt(until)} (${S.cooldownMin} min), or tap Resume.`, { kind: 'pause', untilTs: until });
+      }
+      // Daily loss limit (overrides a pause)
       if (S.dailyStopPct > 0 && t.mode === S.mode && day.startBal > 0 && day.pnl <= -S.dailyStopPct / 100 * day.startBal) {
         const tomorrow = dayOf(Date.now() + 86400000);
         halt('Daily loss limit reached', `Down ${money(-day.pnl)} today (${Math.round(-day.pnl / day.startBal * 100)}% of ${money(day.startBal)}). Trading resumes automatically tomorrow, or tap Resume.`, { untilDay: tomorrow });
@@ -280,7 +292,7 @@ export function createAutopilot(o) {
     const tr = (t) => [t.ts, t.Ws, t.mode[0], t.side, t.status, t.qty || 0, t.px || 0, t.cost || 0, t.result, t.pnl, t.msg || '', t.q ? Math.round(t.q * 100) : null];
     const snap = {
       v: 1, ts: Date.now(), ver: AUTOPILOT_VERSION, since: STARTED, why: botWhy, note: lastNote, keys: !!KEY,
-      ap: { enabled: S.enabled, mode: S.mode, betPct: S.betPct, dailyStopPct: S.dailyStopPct, notifyFills: S.notifyFills, notifyResults: S.notifyResults, minModel: minModel(o.defMinModel), minMarket: minMarket(o.defMinMarket), halted: S.halted },
+      ap: { enabled: S.enabled, mode: S.mode, betPct: S.betPct, dailyStopPct: S.dailyStopPct, lossStreak: S.lossStreak, cooldownMin: S.cooldownMin, streak: S.streak[S.mode] || 0, notifyFills: S.notifyFills, notifyResults: S.notifyResults, minModel: minModel(o.defMinModel), minMarket: minMarket(o.defMinMarket), halted: S.halted },
       bal: { live: S.liveBal, practice: S.practice }, stats: S.stats, days, acks: acks.slice(-5),
       trades: S.trades.slice(-12).map(tr),
     };
@@ -321,7 +333,7 @@ export function createAutopilot(o) {
         break;
       case 'set': {
         const num = (v, lo, hi) => (typeof v === 'number' && isFinite(v) && v >= lo && v <= hi ? v : undefined);
-        const upd = { betPct: num(a.betPct, 1, 100), dailyStopPct: num(a.dailyStopPct, 0, 100), minModel: a.minModel === null ? null : num(a.minModel, 50, 99), minMarket: a.minMarket === null ? null : num(a.minMarket, 50, 99) };
+        const upd = { betPct: num(a.betPct, 1, 100), dailyStopPct: num(a.dailyStopPct, 0, 100), lossStreak: num(a.lossStreak, 0, 10), cooldownMin: num(a.cooldownMin, 5, 1440), minModel: a.minModel === null ? null : num(a.minModel, 50, 99), minMarket: a.minMarket === null ? null : num(a.minMarket, 50, 99) };
         for (const [k, v] of Object.entries(upd)) if (v !== undefined && k in a) S[k] = v;
         for (const k of ['notifyFills', 'notifyResults']) if (typeof a[k] === 'boolean') S[k] = a[k];
         msg = 'Settings saved'; break;
@@ -332,7 +344,7 @@ export function createAutopilot(o) {
         S.halted = null; msg = 'Resumed'; break;
       case 'resetPractice': {
         const b = typeof a.balance === 'number' && a.balance >= 10 && a.balance <= 1e7 ? r2(a.balance) : 1000;
-        S.practice = { balance: b, start: b }; S.stats.practice = zeroStats();
+        S.practice = { balance: b, start: b }; S.stats.practice = zeroStats(); S.streak.practice = 0;
         for (const d of Object.values(S.days)) delete d.practice;
         S.trades = S.trades.filter((t) => t.mode !== 'practice');
         if (S.halted && S.mode === 'practice') S.halted = null;
@@ -383,6 +395,10 @@ export function createAutopilot(o) {
     botWhy = why || botWhy;
     const now = Date.now();
     if (now - lastSettleCheck > 10000) { lastSettleCheck = now; settle().catch((e) => log('autopilot settle:', e.message)); }
+    if (S.halted && S.halted.untilTs && now >= S.halted.untilTs) {
+      S.halted = null; save(); publishSoon();
+      push({ title: 'Autopilot resumed', body: `Pause over: trading again at ${S.betPct}% per BUY alert.`, priority: 3, tags: 'arrow_forward', click: o.site + 'autopilot.html' });
+    }
     if (S.halted && S.halted.untilDay && dayOf(now) >= S.halted.untilDay) {
       S.halted = null; save(); publishSoon();
       push({ title: 'Autopilot resumed', body: 'New day: the daily loss limit has reset.', priority: 3, tags: 'arrow_forward', click: o.site + 'autopilot.html' });
