@@ -825,7 +825,7 @@
 
   // Start price (target) labelled with live P(Up), plus 95% safe-zone lines that tighten as time runs out
   const winLines = {};
-  const Z_FOR = { 70: 0.5244, 75: 0.6745, 80: 0.8416, 85: 1.0364, 90: 1.2816, 95: 1.6449 };
+  const Z_FOR = { 60: 0.2533, 65: 0.3853, 70: 0.5244, 75: 0.6745, 80: 0.8416, 85: 1.0364, 90: 1.2816, 95: 1.6449 };
   function drawWindowLines(w) {
     const want = state.view.pred && w;
     if (!want) { for (const k of Object.keys(winLines)) { candleSeries.removePriceLine(winLines[k]); delete winLines[k]; } return; }
@@ -916,7 +916,10 @@
   // on the same side as the market favorite · price under 95¢ · both our live model AND history beat the price
   // (ask + fee) by 2+ points. Size: ¼ Kelly on the lower of the two win chances, kept between 1% and 2%.
   const MARGIN = 0.02, MIN_F = 0.01, MAX_F = 0.02;
-  state.paper = store.get('paper2', []);
+  const TARGETS = [60, 65, 70, 75, 80, 85, 90, 95];
+  // Shadow paper trades: for every target, the first BUY in each window is logged and later scored.
+  state.shadow = store.get('shadow', []);
+  state.shadowSince = store.get('shadowSince', null);
   function saveSizing() { store.set('sizing', state.sizing); renderWindow(); }
   function setSignal(buy, line1, line2) {
     $('signal').className = 'signal ' + (buy ? 'buy' : 'wait');
@@ -924,21 +927,46 @@
     $('sigLine1').innerHTML = line1;
     $('sigLine2').innerHTML = line2 || '';
   }
-  function renderSignal(x) {
-    // x: { w, reason } for WAIT, or full context
-    if (x.reason) return setSignal(false, x.reason, x.sub);
+  // Pure decision for one target. Returns { buy:false, why, sub } or { buy:true, q, f }
+  function evalSignal(x, tgt) {
     const { w, favUp, ask, cost, oursFav, hist } = x;
-    const side = favUp ? 'UP' : 'DOWN', cls = favUp ? 'up' : 'down';
+    const side = favUp ? 'UP' : 'DOWN';
     const d = w.S - w.K, sigLeft = w.sigma * Math.sqrt(Math.max(1, w.left));
-    const tgt = state.view.target || 80, need = (Z_FOR[tgt] || 0.8416) * sigLeft;
-    const left = `${Math.floor(w.left / 60)}:${String(Math.floor(w.left % 60)).padStart(2, '0')} left`;
-    if (Math.abs(d) < need) return setSignal(false, `Gap not safe yet · needs $${(need - Math.abs(d)).toFixed(0)} more`, `${tgt}% target · ${left}`);
-    if ((d >= 0) !== favUp) return setSignal(false, 'Market disagrees with the gap', `Gap says ${d >= 0 ? 'UP' : 'DOWN'}, Polymarket favors ${side} · likely a start-price difference`);
-    if (ask >= 0.95) return setSignal(false, `Price too high · ${side} costs ${Math.round(ask * 100)}¢`, 'Payoff too small for the risk');
-    if (!hist || hist.n < 20) return setSignal(false, 'Not enough history at this price', left);
+    const need = (Z_FOR[tgt] || 0.8416) * sigLeft;
+    if (Math.abs(d) < need) return { buy: false, why: `Gap not safe yet · needs $${(need - Math.abs(d)).toFixed(0)} more`, sub: `${tgt}% target` };
+    if ((d >= 0) !== favUp) return { buy: false, why: 'Market disagrees with the gap', sub: `Gap says ${d >= 0 ? 'UP' : 'DOWN'}, Polymarket favors ${side} · likely a start-price difference` };
+    if (ask >= 0.95) return { buy: false, why: `Price too high · ${side} costs ${Math.round(ask * 100)}¢`, sub: 'Payoff too small for the risk' };
+    if (!hist || hist.n < 20) return { buy: false, why: 'Not enough history at this price', sub: '' };
     const q = Math.min(oursFav, hist.winRate);
-    if (q < cost + MARGIN) return setSignal(false, `Price too high · ${Math.round(ask * 100)}¢ for a ${Math.round(q * 100)}% chance`, `Needs ${Math.round((cost + MARGIN) * 100)}%+ to be worth it · ${left}`);
-    const f = Math.min(MAX_F, Math.max(MIN_F, 0.25 * (q - cost) / (1 - cost)));
+    if (q < cost + MARGIN) return { buy: false, why: `Price too high · ${Math.round(ask * 100)}¢ for a ${Math.round(q * 100)}% chance`, sub: `Needs ${Math.round((cost + MARGIN) * 100)}%+ to be worth it` };
+    return { buy: true, q, f: Math.min(MAX_F, Math.max(MIN_F, 0.25 * (q - cost) / (1 - cost))) };
+  }
+  function recordShadow(x) {
+    const { w, favUp, ask } = x;
+    let changed = false;
+    for (const T of TARGETS) {
+      if (state.shadow.some((p) => p.t === w.Ws && p.T === T)) continue;
+      const r = evalSignal(x, T);
+      if (!r.buy) continue;
+      state.shadow.push({ t: w.Ws, T, side: favUp ? 'Up' : 'Down', ask: +ask.toFixed(4), fee: +fee(ask).toFixed(4), q: +r.q.toFixed(3), at: Math.round(w.e), result: null });
+      changed = true;
+    }
+    if (changed) {
+      if (!state.shadowSince) { state.shadowSince = Date.now(); store.set('shadowSince', state.shadowSince); }
+      state.shadow = state.shadow.slice(-6000);
+      store.set('shadow', state.shadow);
+    }
+  }
+  function renderSignal(x) {
+    if (x.reason) return setSignal(false, x.reason, x.sub);
+    recordShadow(x);
+    const { w, favUp, ask, cost } = x;
+    const tgt = state.view.target || 80;
+    const side = favUp ? 'UP' : 'DOWN', cls = favUp ? 'up' : 'down';
+    const left = `${Math.floor(w.left / 60)}:${String(Math.floor(w.left % 60)).padStart(2, '0')} left`;
+    const r = evalSignal(x, tgt);
+    if (!r.buy) return setSignal(false, r.why, [r.sub, left].filter(Boolean).join(' · '));
+    const { q, f } = r;
     const B = +state.sizing.bankroll;
     let line1, line2;
     if (B > 0) {
@@ -951,12 +979,6 @@
       line2 = `<b>${Math.round(q * 100)}%</b> chance to win · enter your bankroll for the exact amount · ${left}`;
     }
     setSignal(true, line1, line2 + ' · confirm price on Polymarket');
-    // Paper-trade the signal itself: first BUY in each window
-    if (!state.paper.some((p) => p.t === w.Ws)) {
-      state.paper.push({ t: w.Ws, side: favUp ? 'Up' : 'Down', ask: +ask.toFixed(4), fee: +fee(ask).toFixed(4), q: +q.toFixed(3), at: Math.round(w.e), result: null });
-      state.paper = state.paper.slice(-300);
-      store.set('paper2', state.paper);
-    }
   }
 
   const row = (k, v, cls, tip) => `<div class="erow"${tip ? ` title="${esc(tip)}"` : ''}><span>${k}</span><b class="num ${cls || ''}">${v}</b></div>`;
@@ -1015,40 +1037,70 @@
     renderPaper();
   }
 
+  // Resolve shadow trades: one Gamma request per 25 finished windows
   let paperChecking = 0;
   async function resolvePaper() {
-    const due = state.paper.filter((x) => x.result == null && x.t + INTERVAL < now() - 30);
-    if (!due.length || Date.now() - paperChecking < 15000) return;
+    const due = [...new Set(state.shadow.filter((x) => x.result == null && x.t + INTERVAL < now() - 30).map((x) => x.t))];
+    if (!due.length || Date.now() - paperChecking < 20000) return;
     paperChecking = Date.now();
-    for (const x of due.slice(0, 5)) {
-      try {
-        const m = (await getJSON(`https://gamma-api.polymarket.com/markets?closed=true&slug=btc-updown-5m-${x.t}`))[0];
-        if (!m) continue;
-        const prices = JSON.parse(m.outcomePrices || '[]'), outs = JSON.parse(m.outcomes || '[]');
-        const i = outs.indexOf(x.side);
-        if (prices[i] === '1' || prices[i] === '0') x.result = prices[i] === '1' ? 1 : 0;
-      } catch (e) { /* try later */ }
-    }
-    store.set('paper2', state.paper);
+    try {
+      const q = due.slice(0, 25).map((t) => 'slug=btc-updown-5m-' + t).join('&');
+      const rows = await getJSON(`https://gamma-api.polymarket.com/markets?limit=50&closed=true&${q}`);
+      const upWon = new Map();
+      for (const m of rows) {
+        const outs = JSON.parse(m.outcomes || '[]'), prices = JSON.parse(m.outcomePrices || '[]');
+        const i = outs.indexOf('Up');
+        if (prices[i] === '1' || prices[i] === '0') upWon.set(+m.slug.split('-').pop(), prices[i] === '1');
+      }
+      for (const x of state.shadow) if (x.result == null && upWon.has(x.t)) x.result = (x.side === 'Up') === upWon.get(x.t) ? 1 : 0;
+      store.set('shadow', state.shadow);
+      renderScoreboard();
+    } catch (e) { /* try later */ }
+  }
+  function statsFor(T) {
+    const all = state.shadow.filter((x) => x.T === T);
+    const done = all.filter((x) => x.result != null);
+    const wins = done.filter((x) => x.result === 1).length;
+    // profit per $100 staked: average of (payout − cost) / cost
+    const per100 = done.length ? done.reduce((a, x) => { const c = x.ask + x.fee; return a + (x.result - c) / c; }, 0) / done.length * 100 : null;
+    return { n: done.length, pending: all.length - done.length, wins, per100 };
   }
   function renderPaper() {
     resolvePaper();
-    const done = state.paper.filter((x) => x.result != null);
-    const open = state.paper.length - done.length;
-    if (!state.paper.length) { $('edgePaper').innerHTML = 'Paper trades: none yet <span title="The first BUY NOW in each window is logged and scored against the real result">ⓘ</span>'; return; }
-    const wins = done.filter((x) => x.result === 1).length;
-    const pnl = done.reduce((a, x) => a + x.result - x.ask - x.fee, 0);
-    $('edgePaper').innerHTML = `Paper trades: <b>${wins} of ${done.length}</b> won` +
-      (done.length ? ` · <b class="${pnl >= 0 ? 'up' : 'down'}">${pnl >= 0 ? '+' : '−'}$${Math.abs(pnl * 100 / done.length).toFixed(2)}</b> per $100` : '') +
-      (open ? ` · ${open} pending` : '') + ` · <a href="#" id="paperReset" style="color:var(--muted)">reset</a>`;
-    const r = $('paperReset');
-    if (r) r.onclick = (ev) => { ev.preventDefault(); if (confirm('Clear paper-trade history?')) { state.paper = []; store.set('paper2', []); renderPaper(); } };
+    const T = state.view.target || 80, st = statsFor(T);
+    if (!st.n && !st.pending) { $('edgePaper').innerHTML = `Paper trades (${T}%): none yet <span title="The first BUY NOW in each window is logged and scored against the real result">ⓘ</span>`; return; }
+    $('edgePaper').innerHTML = `Paper trades (${T}%): <b>${st.wins} of ${st.n}</b> won` +
+      (st.n ? ` · <b class="${st.per100 >= 0 ? 'up' : 'down'}">${st.per100 >= 0 ? '+' : '−'}$${Math.abs(st.per100).toFixed(2)}</b> per $100` : '') +
+      (st.pending ? ` · ${st.pending} pending` : '') + ' · <a href="#targets" style="color:var(--muted)">all targets ↓</a>';
   }
+  let lastBoard = 0;
+  function renderScoreboard(force) {
+    const box = $('scoreBody');
+    if (!box || (!force && Date.now() - lastBoard < 5000)) return;
+    lastBoard = Date.now();
+    const cur = state.view.target || 80;
+    box.innerHTML = TARGETS.map((T) => {
+      const st = statsFor(T);
+      const pct = st.n ? (st.wins / st.n * 100).toFixed(0) + '%' : '—';
+      const p = st.per100 == null ? '—' : `<span class="${st.per100 >= 0 ? 'up' : 'down'}">${st.per100 >= 0 ? '+' : '−'}$${Math.abs(st.per100).toFixed(2)}</span>`;
+      return `<tr class="${T === cur ? 'cur' : ''}"><td>${T}%${T === cur ? ' ◀' : ''}</td><td class="num">${st.n}${st.pending ? `<span class="muted">+${st.pending}</span>` : ''}</td><td class="num">${pct}</td><td class="num">${p}</td></tr>`;
+    }).join('');
+    const since = state.shadowSince ? new Date(state.shadowSince).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : null;
+    const maxN = Math.max(0, ...TARGETS.map((T) => statsFor(T).n));
+    $('scoreNote').innerHTML = (since ? `Tracking in this browser since ${since}. ` : 'Starts recording at the next BUY signal for any target. ') +
+      (maxN < 100 ? `Differences mean little until rows have ~100+ trades (largest so far: ${maxN}).` : 'Rows with 100+ trades are starting to mean something.') +
+      ' Only counts while this page is open. <a href="#" id="scoreReset" style="color:var(--muted)">reset</a>';
+    $('scoreReset').onclick = (ev) => {
+      ev.preventDefault();
+      if (confirm('Clear the paper-trade scoreboard for all targets?')) { state.shadow = []; state.shadowSince = null; store.set('shadow', []); store.set('shadowSince', null); renderScoreboard(true); renderPaper(); }
+    };
+  }
+  setInterval(() => renderScoreboard(), 5000);
 
   // ---------- wiring ----------
   const viewBoxes = { showMarks: 'marks', showLines: 'lines', showPred: 'pred', showLevels: 'levels', showGhost: 'ghost' };
   $('targetSel').value = String(state.view.target);
-  $('targetSel').onchange = () => { state.view.target = +$('targetSel').value; store.set('view', state.view); renderWindow(); };
+  $('targetSel').onchange = () => { state.view.target = +$('targetSel').value; store.set('view', state.view); renderWindow(); renderScoreboard(true); };
   $('minTouches').value = String(state.view.minTouches);
   $('minTouches').onchange = () => { state.view.minTouches = +$('minTouches').value; store.set('view', state.view); computeLevels(); renderLevels(); };
   for (const [id, k] of Object.entries(viewBoxes)) {

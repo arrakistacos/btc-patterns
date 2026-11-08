@@ -60,7 +60,9 @@ A banner above the chart shows **WAIT** (yellow, with the reason) or **BUY NOW**
 5. The price is under 95¢.
 6. **Both** our live model and the historical win rate beat the price plus fee by at least 2 points.
 
-The bet is ¼ Kelly on the lower of those two win chances, kept between **1% and 2%** of the bankroll. The first BUY NOW in each window is paper-traded and scored against the real result.
+The bet is ¼ Kelly on the lower of those two win chances, kept between **1% and 2%** of the bankroll. The target confidence is selectable from 60% to 95% (default 80%).
+
+**Which target works best?** For every target at once, the app paper-trades the first BUY signal each target would have given in each window. It scores each one against Polymarket's real result and shows a scoreboard (trades, win rate, profit per $100). It records only while the page is open and is stored in that browser.
 
 ### Edge check
 
