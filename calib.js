@@ -48,6 +48,10 @@
     return out;
   }
 
+  // Polymarket US market for a window (slug = window start in UTC)
+  const usSlug = (Ws) => 'btc-updown-5m-' + new Date(Ws * 1000).toISOString().slice(0, 16).replace('T', '-').replace(':', '') + 'z';
+  const US_EVENT_API = 'https://web.polymarket.us/gateway.events.v1.EventsService/GetEventBySlug';
+
   // ---------------------------------------------------------------- backfill
   async function backfill(opts) {
     opts = opts || {};
@@ -97,6 +101,23 @@
       } catch (e) { return null; }
     }, (d, n) => progress('odds', d, n))).filter(Boolean);
 
+    // 2b) Official Polymarket US terms per window: price to beat + settlement (CF Benchmarks BRTI, 60-second averages).
+    //     These are the start price and the result for the market actually traded from the US.
+    progress('usterms', 0, windows.length);
+    await pool(windows, 6, async (w) => {
+      for (let a = 0; a < 3; a++) {
+        try {
+          const r = await fetch(US_EVENT_API, { method: 'POST', headers: { 'content-type': 'application/json', 'connect-protocol-version': '1' }, body: JSON.stringify({ slug: usSlug(w.t) }) });
+          if (!r.ok) throw new Error('HTTP ' + r.status);
+          const j = await r.json();
+          const t = j && j.event && j.event.markets && j.event.markets[0] && j.event.markets[0].assetPriceTerms;
+          const val = (x) => (x && x.value != null && isFinite(+x.value) && +x.value > 0 ? +x.value : null);
+          w.usK = val(t && t.priceToBeat); w.usSettle = val(t && t.settlementPrice);
+          return;
+        } catch (e) { await sleep(800 * (a + 1)); }
+      }
+    }, (d, n) => progress('usterms', d, n));
+
     // 3) Coinbase candles: 5m with 2 days of warm-up for pattern hit rates; 1m for intra-window prices
     async function candles(gran, from, to, label) {
       const per = 290, map = new Map(), spans = [];
@@ -130,18 +151,26 @@
     const zByTime = new Map(A.zSeries);
     progress('patterns', 1, 1);
 
+    // Train against Polymarket US when its official terms are in the data: start = official price to beat,
+    // answer = official US result (settlement >= price to beat). Otherwise fall back to polymarket.com.
+    const usCount = data.windows.filter((w) => w.usK != null && w.usSettle != null).length;
+    const US = usCount >= 200;
+    const label = (w) => (US ? (w.usSettle >= w.usK ? 1 : 0) : w.up);
+    const MODES = US ? ['end60'] : ['spot', 'end60', 'full'];   // US settles on a 60-second average at the close
+
     // Replay samples: one per (window, checkpoint)
     const samples = [];
     for (const w of data.windows) {
       const i5 = idx5.get(w.t - W);
       const k0 = c1.get(w.t);
       if (i5 == null || i5 < 60 || !k0) continue;
+      if (US && (w.usK == null || w.usSettle == null)) continue;
       let sum = 0, cnt = 0;
       for (const e of CPS) {
         const m = c1.get(w.t + e);
         const mkt = w.odds[e];
         if (!m || mkt == null) continue;
-        samples.push({ t: w.t, e, up: w.up, mkt, S: m.o, K: k0.o, avgSoFar: cnt ? sum / cnt : m.o, i5, z: zByTime.get(w.t) || 0 });
+        samples.push({ t: w.t, e, up: label(w), mkt, S: m.o, K: US ? w.usK : k0.o, avgSoFar: cnt ? sum / cnt : m.o, i5, z: zByTime.get(w.t) || 0 });
         sum += (m.o + m.h + m.l + m.c) / 4; cnt++;
       }
     }
@@ -177,8 +206,8 @@
 
     // Grid search
     const grid = [];
-    for (const mode of ['spot', 'end60', 'full'])
-      for (const volBars of [3, 6, 12, 24, 48])
+    for (const mode of MODES)
+      for (const volBars of [3, 6, 12, 24, 48, 96])
         for (const volScale of [0.5, 0.7, 0.85, 1, 1.2, 1.5, 2])
           for (const beta of [0, 0.5, 1])
             for (const gamma of [-0.3, -0.15, 0, 0.15, 0.3])
@@ -195,6 +224,13 @@
     progress('grid', grid.length, grid.length);
 
     const P = bestOutcome.P;
+    // Optional: score other parameter sets (e.g. the ones live now) on the same held-out windows
+    const accOf = (set, Pp) => set.reduce((a, s) => a + (((modelP(s, Pp) >= 0.5 ? 1 : 0) === s.up) ? 1 : 0), 0) / set.length;
+    const compare = (opts.compare || []).map((c) => {
+      const Pc = Object.assign({}, P, c.params, US ? { mode: 'end60' } : {});
+      return { name: c.name, params: Pc, test: Object.assign(score(test, Pc), { acc: accOf(test, Pc) }) };
+    });
+    compare.unshift({ name: 'new', params: P, test: Object.assign(score(test, P), { acc: accOf(test, P) }) });
     const ablate = (patch) => score(test, Object.assign({}, P, patch));
     function blendScore(set, beta, gamma, vb) {
       let ll = 0;
@@ -240,8 +276,11 @@
     const generated = new Date().toISOString();
     const report = {
       generated,
-      data: { from: data.start, to: data.end, windows: windowsUsed.size, samples: samples.length, train: train.length, test: test.length, upRate: data.windows.reduce((a, w) => a + w.up, 0) / data.windows.length },
+      data: { from: data.start, to: data.end, windows: windowsUsed.size, samples: samples.length, train: train.length, test: test.length, upRate: samples.filter((x) => x.e === CPS[0]).reduce((a, x) => a + x.up, 0) / Math.max(1, samples.filter((x) => x.e === CPS[0]).length),
+        outcomes: US ? 'Polymarket US (official price to beat and settlement, CF Benchmarks BRTI)' : 'polymarket.com',
+        comUsDisagree: US ? data.windows.filter((w) => w.usK != null && w.usSettle != null && (w.usSettle >= w.usK ? 1 : 0) !== w.up).length : null },
       bestOutcome: { params: P, train: bestOutcome.sc, test: score(test, P) },
+      compare,
       bestMarketMatch: { params: bestMarket.P, train: bestMarket.sc, test: score(test, bestMarket.P) },
       market: { test: marketScore(test) },
       coinFlip: { logloss: Math.log(2), brier: 0.25 },
@@ -258,7 +297,8 @@
     };
     const params = {
       generated, window: P, marketMatch: bestMarket.P,
-      note: 'Tuned on resolved Polymarket 5m BTC markets. window = best vs outcomes; marketMatch = closest to Polymarket odds.',
+      outcomes: US ? 'polymarket.us' : 'polymarket.com',
+      note: 'Tuned on resolved 5m BTC markets' + (US ? ' (Polymarket US official start price and results)' : '') + '. window = best vs outcomes; marketMatch = closest to Polymarket odds.',
     };
 
     // Edge table: buying the market favorite at each minute, by price bucket and signal agreement.

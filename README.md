@@ -39,6 +39,8 @@ node tools/backfill.mjs 4   # resolved 5m markets + minute odds + Coinbase candl
 node tools/tune.mjs         # grid search; test = last 30% of windows → params.json + data/calibration.json
 ```
 
+**Training uses Polymarket US data.** For every window, the backfill reads the official **price to beat** and **settlement price** from Polymarket US. The model is trained with that official start price, scored on the US result (settlement ≥ price to beat), and priced with the 60-second-average close that US uses. Polymarket's minute odds still come from polymarket.com, the only public odds history; those odds track the US market closely. If US data is unavailable, training falls back to polymarket.com results. Each run also scores the settings that were live before it on the same held-out windows and shows both on the calibration page.
+
 The calibration page has a **Calibrate now** button. It runs the same backfill and tuning in your browser using the shared `calib.js` (4 or 7 days of history, about 1–2 minutes) and applies the result to the chart in that browser. A link there starts the GitHub Action, which updates the site for every device.
 
 Results are at **[calibration.html](https://arrakistacos.github.io/btc-patterns/calibration.html)**. A GitHub Action (`.github/workflows/recalibrate.yml`) re-runs both **twice a day** (about 3:17 AM and 3:17 PM Central) and commits the new parameters. The site and the signal bot pick them up automatically; the bot re-reads them every 30 minutes.
@@ -74,7 +76,7 @@ Inside the window card, the **edge check** looks at buying the current favorite.
 
 A paper trade is logged the first time all three signals agree between 1:40 and 3:20. It is resolved from Polymarket's result, so the app forward-tests itself in your browser.
 
-Known gap: Polymarket's "price to beat" is the Chainlink price at the window open. That price is only streamed to authenticated API users, so the app uses Coinbase's price instead, which can differ by a few dollars.
+The edge history is scored on **Polymarket US results**, the market you actually trade.
 
 ### Bet sizing
 

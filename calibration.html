@@ -101,7 +101,7 @@
 
   // ---- Calibrate now ----
   const btn = document.getElementById('calBtn'), bar = document.getElementById('calBar'), prog = document.getElementById('calProg'), status = document.getElementById('calStatus');
-  const STAGES = { markets: [0, 5, 'Finding resolved markets'], odds: [5, 55, 'Downloading Polymarket odds'], candles5m: [55, 65, 'Downloading 5-min candles'], candles1m: [65, 80, 'Downloading 1-min candles'], patterns: [80, 83, 'Running pattern engine'], grid: [83, 99, 'Testing parameter combinations'], done: [100, 100, 'Done'] };
+  const STAGES = { markets: [0, 5, 'Finding resolved markets'], odds: [5, 45, 'Downloading Polymarket odds'], usterms: [45, 55, 'Downloading Polymarket US start prices and results'], candles5m: [55, 65, 'Downloading 5-min candles'], candles1m: [65, 80, 'Downloading 1-min candles'], patterns: [80, 83, 'Running pattern engine'], grid: [83, 99, 'Testing parameter combinations'], done: [100, 100, 'Done'] };
   btn.onclick = async () => {
     btn.disabled = true; prog.hidden = false; bar.style.width = '0';
     const days = +document.getElementById('calDays').value;
@@ -144,13 +144,15 @@
   const blendGain = R.blend.marketTestLogloss - R.blend.testLogloss;
 
   const findings = [
+    R.data.outcomes ? `Trained on <b>${R.data.outcomes}</b>${R.data.comUsDisagree != null ? ` — polymarket.com resolved differently in ${R.data.comUsDisagree} of ${R.data.windows} windows` : ''}.` : null,
+    (R.compare || []).find((c) => c.name === 'current') ? (() => { const c = R.compare.find((x) => x.name === 'current'), n = R.compare.find((x) => x.name === 'new'); return `Versus the settings that were live before this run, on the same held-out windows: log loss <b>${f4(n.test.logloss)}</b> vs ${f4(c.test.logloss)} (lower is better), right <b>${pc(n.test.acc)}</b> vs ${pc(c.test.acc)}.`; })() : null,
     `On held-out windows our model removes <b>${pc(skill(T.logloss))}</b> of coin-flip uncertainty; Polymarket removes <b>${pc(skill(M.logloss))}</b>.`,
     `Settlement behaves like <b>${modes[0][0] === 'spot' ? 'the spot price' : modes[0][0] === 'end60' ? 'a 60-second TWAP at the close' : 'a whole-window TWAP'}</b> at the close (best fit); a whole-window average fits ${modes.find((m) => m[0] === 'full')[1].logloss > modes[0][1].logloss + 0.02 ? 'much worse' : 'about as well'}.`,
     `Volatility lookback that fits best: <b>${P.volBars * 5} minutes</b> (×${P.volScale}). Closest match to Polymarket's own odds: <b>${R.bestMarketMatch.params.volBars * 5} minutes</b>, ${R.bestMarketMatch.params.mode} settlement, ×${R.bestMarketMatch.params.volScale}.`,
     `Velocity (momentum) term: γ = ${P.gamma} over ${P.velBars * 5} min — ${Math.abs(velHelps) < 0.002 ? 'a <b>negligible</b>' : velHelps > 0 ? 'a <b>helpful</b>' : 'a <b>harmful</b>'} effect (Δ log loss ${velHelps >= 0 ? '−' : '+'}${Math.abs(velHelps).toFixed(4)}).`,
     `Chart patterns: ${Math.abs(patHelps) < 0.002 ? '<b>no measurable value</b>' : patHelps > 0 ? '<b>small value</b>' : '<b>hurt</b>'} once volatility and distance are known (Δ log loss ${patHelps >= 0 ? '−' : '+'}${Math.abs(patHelps).toFixed(4)}).`,
     `Adding our signals on top of Polymarket's odds ${blendGain > 0.001 ? '<b>improves</b>' : '<b>does not improve</b>'} them (log loss ${f4(R.blend.testLogloss)} vs ${f4(R.blend.marketTestLogloss)}).`,
-    `The biggest gap is late in the window (${gap[gap.length - 1].e / 60}+ min in): market ${pc(gap[gap.length - 1].marketAcc)} right vs ours ${pc(gap[gap.length - 1].modelAcc)} — traders see the Chainlink price and sub-minute moves we don't sample here.`,
+    `The biggest gap is late in the window (${gap[gap.length - 1].e / 60}+ min in): market ${pc(gap[gap.length - 1].marketAcc)} right vs ours ${pc(gap[gap.length - 1].modelAcc)} — traders see the live index price and sub-minute moves we don't sample here.`,
   ];
 
   main.innerHTML = `
@@ -166,7 +168,7 @@
       </div>
       <p class="muted" style="margin:10px 0 0">Lower is better for log loss and Brier. Up resolved ${pc(R.data.upRate)} of the time in this sample.</p>
     </div>
-    <div class="card wide"><h2>What the data says</h2><ul class="find">${findings.map((x) => '<li>' + x + '</li>').join('')}</ul></div>
+    <div class="card wide"><h2>What the data says</h2><ul class="find">${findings.filter(Boolean).map((x) => '<li>' + x + '</li>').join('')}</ul></div>
     <div class="card"><h2>Reliability — when it says X%, does Up happen X% of the time?</h2>${reliabilitySvg()}
       <div class="legend"><span><i class="sw" style="background:var(--accent)"></i>Our model</span><span><i class="sw" style="background:var(--amber)"></i>Polymarket</span><span><i class="sw" style="background:#3a4252"></i>Perfect calibration</span></div></div>
     <div class="card"><h2>Our P(Up) vs Polymarket at the same moment</h2>${scatterSvg()}
