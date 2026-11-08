@@ -753,6 +753,8 @@
     };
     go(); pm.poll = setInterval(go, 2000);
   }
+  // This window's market on Polymarket US (slug = window start in UTC), e.g. .../btc-updown-5m-2026-11-08-2050z
+  const usMarketUrl = (Ws) => 'https://polymarket.us/event/btc-updown-5m-' + new Date(Ws * 1000).toISOString().slice(0, 16).replace('T', '-').replace(':', '') + 'z';
   function pmMid() {
     if (pm.bid == null || pm.ask == null) return pm.last;
     if (pm.ask - pm.bid > 0.1 && pm.last != null) return pm.last;
@@ -818,7 +820,7 @@
     $('winNote').innerHTML =
       (diff != null ? `Ours is <b>${Math.abs(diff).toFixed(1)} pts ${diff >= 0 ? 'more bullish' : 'more bearish'}</b> than the market. ` : '') +
       `Polymarket: ${esc(stale ? 'stale' : pm.status)}` +
-      (pm.token ? ` · <a href="https://polymarket.us/" target="_blank" rel="noopener" style="color:var(--accent)">open Polymarket US ↗</a>` : '') +
+      (pm.token ? ` · <a href="${usMarketUrl(w.Ws)}" target="_blank" rel="noopener" style="color:var(--accent)">open on Polymarket US ↗</a>` : '') +
       `<br>Model: ${esc(params().mode)} settlement, ${params().volBars * 5}-min volatility, ${params().velBars * 5}-min velocity` +
       (Object.keys(state.overrides).length ? ' · <b>your slider settings</b>' : state.paramsTuned ? ` · ${state.paramsLocal ? 'your calibration' : 'tuned'} ${new Date(state.paramsTuned).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}` : ' · default params') +
       `. Start price is Coinbase's; Polymarket settles on Chainlink, which can differ by a few dollars.`;
@@ -984,7 +986,7 @@
     if (navigator.vibrate) navigator.vibrate([400, 120, 400, 120, 800]);
     const title = `${info.side === 'UP' ? '🟢' : '🔴'} BUY ${info.side}`;
     const body = `MODEL ${Math.round(info.q * 100)}% · POLYMARKET ${Math.round((info.mkt || 0) * 100)}%`;
-    const opts = { body, tag: 'btc-buy', renotify: true, requireInteraction: true, vibrate: [400, 120, 400, 120, 800], data: { url: location.href } };
+    const opts = { body, tag: 'btc-buy', renotify: true, requireInteraction: true, vibrate: [400, 120, 400, 120, 800], data: { url: usMarketUrl(Ws) } };
     try {
       if ('Notification' in window && Notification.permission === 'granted') {
         if (A.reg && A.reg.showNotification) A.reg.showNotification(title, opts);

@@ -22,7 +22,7 @@
  *   TZ_NAME      time zone for times in alerts (default America/Chicago)
  *   LOG_EVERY    seconds between status lines in the log (default 60)
  *   LOG_FILE     also append the log to this file
- *   MARKET_URL   page a BUY alert opens when tapped (default https://polymarket.us/)
+ *   MARKET_URL   fixed page a BUY alert opens when tapped (default: that window's market on polymarket.us)
  *
  * Requires Node 22+ (built-in fetch and WebSocket). No exchange or Polymarket keys needed.
  */
@@ -48,7 +48,11 @@ const MIN_MODEL = process.env.MIN_MODEL != null && process.env.MIN_MODEL !== '' 
 const MIN_MARKET = process.env.MIN_MARKET != null && process.env.MIN_MARKET !== '' ? +process.env.MIN_MARKET : 80; // % Polymarket odds for that side
 const SITE = (process.env.SITE || 'https://arrakistacos.github.io/btc-patterns/').replace(/\/?$/, '/');
 const TZ_NAME = process.env.TZ_NAME || 'America/Chicago';
-const MARKET_URL = process.env.MARKET_URL || 'https://polymarket.us/';   // where tapping a BUY alert takes you
+// Tapping a BUY alert opens that window's market on Polymarket US, e.g.
+//   https://polymarket.us/event/btc-updown-5m-2026-11-08-2050z  (window start, UTC)
+// Set MARKET_URL to override with a fixed page.
+const usMarketUrl = (Ws) => 'https://polymarket.us/event/btc-updown-5m-' + new Date(Ws * 1000).toISOString().slice(0, 16).replace('T', '-').replace(':', '') + 'z';
+const marketUrl = (Ws) => process.env.MARKET_URL || usMarketUrl(Ws);
 const W = 300, HEALTH_SEC = 5;
 const LOG_EVERY = Math.max(1, +process.env.LOG_EVERY || 60);   // seconds between status lines
 
@@ -282,7 +286,7 @@ function evaluate() {
         const title = `BUY ${side}`;
         const body = `MODEL ${Math.round(modelPct)}% · POLYMARKET ${Math.round(marketPct)}%`;
         log('ALERT →', side === 'UP' ? '[green]' : '[red]', title, '|', body, `| ask ${Math.round(ask * 100)}c, ${fmtLeft(left)} left`);
-        push({ title, body, priority: 5, tags: side === 'UP' ? 'green_circle' : 'red_circle', click: MARKET_URL });
+        push({ title, body, priority: 5, tags: side === 'UP' ? 'green_circle' : 'red_circle', click: marketUrl(Ws) });
       }
       wasBuy = true;
       why = 'BUY';
