@@ -54,5 +54,24 @@
     return { shares, spend: shares * cost, profitIfWin: shares - shares * cost };
   }
 
-  return { Z_FOR, TARGETS, MARGIN, MIN_F, MAX_F, MAX_PRICE, START_SEC, END_SEC, fee, histCell, evalSignal, sizeBet };
+  // ---------- Polymarket US market for a 5-minute window ----------
+  // Slug = window start in UTC, e.g. btc-updown-5m-2026-11-08-2050z
+  const usSlug = (Ws) => 'btc-updown-5m-' + new Date(Ws * 1000).toISOString().slice(0, 16).replace('T', '-').replace(':', '') + 'z';
+  const usMarketUrl = (Ws) => 'https://polymarket.us/event/' + usSlug(Ws);
+  const US_EVENT_API = 'https://web.polymarket.us/gateway.events.v1.EventsService/GetEventBySlug';
+  // Official terms: priceToBeat (60-second average of CF Benchmarks BRTI before the start), and settlementPrice once closed.
+  // Public, no key, CORS-enabled. Returns nulls for values not published yet.
+  async function fetchUsTerms(Ws, fetchFn) {
+    const f = fetchFn || fetch;
+    const r = await f(US_EVENT_API, { method: 'POST', headers: { 'content-type': 'application/json', 'connect-protocol-version': '1' }, body: JSON.stringify({ slug: usSlug(Ws) }) });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const j = await r.json();
+    const ev = j && j.event, m = ev && ev.markets && ev.markets[0], t = m && m.assetPriceTerms;
+    const val = (x) => (x && x.value != null && isFinite(+x.value) && +x.value > 0 ? +x.value : null);
+    return { priceToBeat: val(t && t.priceToBeat), settlementPrice: val(t && t.settlementPrice), closed: !!(ev && ev.closed), index: (t && t.indexSymbol) || null };
+  }
+  // The US market settles on a 60-second average at the close, so price the window that way
+  const US_SETTLEMENT_MODE = 'end60';
+
+  return { Z_FOR, TARGETS, MARGIN, MIN_F, MAX_F, MAX_PRICE, START_SEC, END_SEC, fee, histCell, evalSignal, sizeBet, usSlug, usMarketUrl, fetchUsTerms, US_SETTLEMENT_MODE };
 });

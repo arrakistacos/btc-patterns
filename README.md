@@ -95,6 +95,10 @@ node tools/record.mjs                      # Node 22+; appends to data/recording
 
 It logs the Coinbase price and Polymarket's bid/ask for the current window every second. This is finer data than the minute-level backfill, for tuning the last minute of each window.
 
+## Price to beat (Polymarket US)
+
+Polymarket US's 5-minute BTC markets settle on the **CF Benchmarks BRTI** index. The start and end values are each the average of 60 BRTI prices in the minute before that time. The app and the bot read each window's official **price to beat** from Polymarket US's public event API (`signal.js` → `fetchUsTerms`). They price the window as a 60-second average at the close, and **never show or send BUY until the official price is in**, which takes a few seconds into each window. Until then, the app shows a Coinbase estimate marked *est.*
+
 ## Phone alerts
 
 A web page can't reliably ring a locked phone: phones pause a page's code soon after the screen turns off. So there are two kinds of alerts:

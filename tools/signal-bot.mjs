@@ -51,7 +51,7 @@ const TZ_NAME = process.env.TZ_NAME || 'America/Chicago';
 // Tapping a BUY alert opens that window's market on Polymarket US, e.g.
 //   https://polymarket.us/event/btc-updown-5m-2026-11-08-2050z  (window start, UTC)
 // Set MARKET_URL to override with a fixed page.
-const usMarketUrl = (Ws) => 'https://polymarket.us/event/btc-updown-5m-' + new Date(Ws * 1000).toISOString().slice(0, 16).replace('T', '-').replace(':', '') + 'z';
+const usMarketUrl = (Ws) => Signal.usMarketUrl(Ws);
 const marketUrl = (Ws) => process.env.MARKET_URL || usMarketUrl(Ws);
 const W = 300, HEALTH_SEC = 5;
 const LOG_EVERY = Math.max(1, +process.env.LOG_EVERY || 60);   // seconds between status lines
@@ -231,11 +231,23 @@ function refreshPattern(closed) {
   patternFor = last.t;
 }
 
+// ---------------------------------------------------------------- official price to beat (Polymarket US)
+const ptb = { Ws: null, K: null, lastTry: 0, err: null };
+function ensurePtb(Ws) {
+  if (ptb.Ws !== Ws) Object.assign(ptb, { Ws, K: null, lastTry: 0, err: null });
+  if (ptb.K != null || Date.now() - ptb.lastTry < 3000) return;
+  ptb.lastTry = Date.now();
+  Signal.fetchUsTerms(Ws).then((r) => {
+    if (ptb.Ws === Ws && r.priceToBeat) { ptb.K = r.priceToBeat; ptb.err = null; log(`price to beat ${clock(Ws)} window: ${ptb.K.toFixed(2)} (Polymarket US, ${r.index || 'BRTI'})`); }
+  }).catch((e) => { if (ptb.Ws === Ws) ptb.err = e.message; });
+}
+
 // ---------------------------------------------------------------- the decision, once per second
 let sent = { Ws: null, n: 0 }, wasBuy = false, feedDownSince = null, feedDownWarned = false, lastStatus = 0, lastWhy = '';
 function evaluate() {
   const t = nowS(), Ws = bucket(t), e = t - Ws, left = W - e;
   pmRoll(Ws);
+  ensurePtb(Ws);
   if (sent.Ws !== Ws) { sent = { Ws, n: 0 }; wasBuy = false; }
 
   // health: both feeds must have fresh data
@@ -259,13 +271,14 @@ function evaluate() {
   else if (!healthy) why = `feeds stale (coinbase ${cbAge.toFixed(1)}s, polymarket ${isFinite(pmAge) ? pmAge.toFixed(1) + 's' : '—'})`;
   else if (mk == null || pm.bid == null || pm.ask == null) why = 'waiting for odds';
   else if (e < Signal.START_SEC || e > Signal.END_SEC) why = e < Signal.START_SEC ? 'too early' : 'too late';
+  else if (ptb.Ws !== Ws || ptb.K == null) why = 'waiting for the official price to beat' + (ptb.err ? ` (${ptb.err})` : '');
   else {
     refreshPattern(closed);
     const cur = C[C.length - 1];
-    const K = cur.t === Ws ? cur.o : closed[closed.length - 1].c;
+    const K = ptb.K;   // official price to beat (Polymarket US)
     const S = cur.c, i = closed.length - 1;
     const sig0 = E.parkinsonSigma(closed, i, params.volBars, W);
-    const pVol = E.windowUpProb({ S, K, sigma: sig0 * params.volScale, elapsed: e, mode: params.mode, W, avgSoFar: twAvg(Ws, t), avgLast60: twAvg(Ws + W - 60, t) });
+    const pVol = E.windowUpProb({ S, K, sigma: sig0 * params.volScale, elapsed: e, mode: Signal.US_SETTLEMENT_MODE, W, avgSoFar: twAvg(Ws, t), avgLast60: twAvg(Ws + W - 60, t) });
     const vel = E.velocity(closed, i, params.velBars, sig0, W);
     const pUp = E.combineWindow(pVol, patternFor === closed[i].t ? patternZ : 0, vel, params);
     const favUp = mk >= 0.5, sign = favUp ? 1 : -1, favMid = favUp ? mk : 1 - mk;

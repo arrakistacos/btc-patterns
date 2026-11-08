@@ -753,8 +753,21 @@
     };
     go(); pm.poll = setInterval(go, 2000);
   }
-  // This window's market on Polymarket US (slug = window start in UTC), e.g. .../btc-updown-5m-2026-11-08-2050z
-  const usMarketUrl = (Ws) => 'https://polymarket.us/event/btc-updown-5m-' + new Date(Ws * 1000).toISOString().slice(0, 16).replace('T', '-').replace(':', '') + 'z';
+  // This window's market on Polymarket US (slug = window start in UTC)
+  const usMarketUrl = (Ws) => window.Signal.usMarketUrl(Ws);
+
+  // Official price to beat for the current window, from Polymarket US (polled until published)
+  state.ptb = { Ws: null, K: null, lastTry: 0, err: null };
+  function ensurePtb(Ws) {
+    const P = state.ptb;
+    if (P.Ws !== Ws) Object.assign(P, { Ws, K: null, lastTry: 0, err: null });
+    if (P.K != null || Date.now() - P.lastTry < 3000) return;
+    P.lastTry = Date.now();
+    window.Signal.fetchUsTerms(Ws).then((r) => {
+      if (P.Ws === Ws && r.priceToBeat) { P.K = r.priceToBeat; P.err = null; }
+    }).catch((e) => { if (P.Ws === Ws) P.err = e.message; });
+  }
+
   function pmMid() {
     if (pm.bid == null || pm.ask == null) return pm.last;
     if (pm.ask - pm.bid > 0.1 && pm.last != null) return pm.last;
@@ -767,19 +780,21 @@
     const closed = closedCandles();
     if (closed.length < 60 || !C.length) return null;
     const cur = C[C.length - 1];
-    const K = cur.t === Ws ? cur.o : closed[closed.length - 1].c;
+    ensurePtb(Ws);
+    const kOfficial = state.ptb.Ws === Ws && state.ptb.K != null;
+    const K = kOfficial ? state.ptb.K : (cur.t === Ws ? cur.o : closed[closed.length - 1].c);
     const S = cur.c;
     const P = params(), i = closed.length - 1;
     const sig0 = E.parkinsonSigma(closed, i, P.volBars, INTERVAL);
     const pVol = E.windowUpProb({
-      S, K, sigma: sig0 * P.volScale, elapsed: e, mode: P.mode, W: INTERVAL,
+      S, K, sigma: sig0 * P.volScale, elapsed: e, mode: kOfficial ? window.Signal.US_SETTLEMENT_MODE : P.mode, W: INTERVAL,
       avgSoFar: twAvg(Ws, t), avgLast60: twAvg(Ws + INTERVAL - 60, t),
     });
     const pr = state.result && state.result.prediction;
     const z = pr && pr.forTime === Ws ? pr.z : 0;
     const vel = E.velocity(closed, i, P.velBars, sig0, INTERVAL);
     const p = E.combineWindow(pVol, z, vel, P);
-    return { Ws, e, K, S, p, pVol, z, vel, sigma: sig0 * P.volScale, left: INTERVAL - e };
+    return { Ws, e, K, kOfficial, S, p, pVol, z, vel, sigma: sig0 * P.volScale, left: INTERVAL - e };
   }
 
   function renderWindow() {
@@ -799,7 +814,7 @@
     const mk = pmMid();
     setBar('barPoly', 'pPoly', mk);
     const d = w.S - w.K;
-    $('winK').textContent = usd(w.K, 2);
+    $('winK').innerHTML = usd(w.K, 2) + (w.kOfficial ? ' <span class="up" title="Official price to beat from Polymarket US (60-second average of the CF Benchmarks BRTI index)">✓ official</span>' : ' <span class="flat" title="Waiting for Polymarket US to publish the price to beat; estimated from Coinbase meanwhile">est.</span>');
     $('winNow').textContent = usd(w.S, 2);
     const sigLeft = w.sigma * Math.sqrt(Math.max(1, w.left));   // σ: typical move over the time left (volatility + time only)
     $('winGap').innerHTML = `<span class="${d >= 0 ? 'up' : 'down'}">${signed(d)}</span>`;
@@ -821,9 +836,9 @@
       (diff != null ? `Ours is <b>${Math.abs(diff).toFixed(1)} pts ${diff >= 0 ? 'more bullish' : 'more bearish'}</b> than the market. ` : '') +
       `Polymarket: ${esc(stale ? 'stale' : pm.status)}` +
       (pm.token ? ` · <a href="${usMarketUrl(w.Ws)}" target="_blank" rel="noopener" style="color:var(--accent)">open on Polymarket US ↗</a>` : '') +
-      `<br>Model: ${esc(params().mode)} settlement, ${params().volBars * 5}-min volatility, ${params().velBars * 5}-min velocity` +
+      `<br>Model: ${w.kOfficial ? '60-second-average' : esc(params().mode)} settlement, ${params().volBars * 5}-min volatility, ${params().velBars * 5}-min velocity` +
       (Object.keys(state.overrides).length ? ' · <b>your slider settings</b>' : state.paramsTuned ? ` · ${state.paramsLocal ? 'your calibration' : 'tuned'} ${new Date(state.paramsTuned).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}` : ' · default params') +
-      `. Start price is Coinbase's; Polymarket settles on Chainlink, which can differ by a few dollars.`;
+      (w.kOfficial ? '. Start price is Polymarket US\'s official price to beat; the result is the CF Benchmarks BRTI average over the last minute.' : '. Waiting for the official price to beat; using a Coinbase estimate meanwhile (no BUY until it arrives).');
     renderEdge(w, mk);
     renderSettingsReadout(w);
     drawWindowLines(w);
@@ -1141,7 +1156,7 @@
       row('Has won', cell.n >= 20 ? `${(cell.winRate * 100).toFixed(0)}% <span class="muted">of ${cell.n}</span>` : '—', '', details) +
       (cell.n >= 20 ? row('Per $100', `${per100 >= 0 ? '+' : '−'}$${Math.abs(per100).toFixed(2)}`, per100 >= 0 ? 'up' : 'down') : '') +
       (ask >= 0.95 ? `<div class="warn">⚠ One loss wipes out ~${Math.round(ask / Math.max(0.001, 1 - ask - fee(ask)))} wins</div>` : '');
-    renderSignal(state.healthBad ? { reason: 'Data is stale · don\'t trade', sub: 'Waiting for the feeds to come back' } : { w, favUp, ask, cost: breakeven, oursFav, hist: cell, favMid });
+    renderSignal(state.healthBad ? { reason: 'Data is stale · don\'t trade', sub: 'Waiting for the feeds to come back' } : !w.kOfficial ? { reason: 'Waiting for the official price to beat', sub: 'Polymarket US publishes it a few seconds into each window' } : { w, favUp, ask, cost: breakeven, oursFav, hist: cell, favMid });
     renderPaper();
   }
 
