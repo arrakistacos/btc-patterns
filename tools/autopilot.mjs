@@ -95,8 +95,11 @@ export function createAutopilot(o) {
     if (!r.ok) throw new ApiError(r.status, text, path);
     return text ? JSON.parse(text) : {};
   }
+  // The public gateway sits behind a CDN that serves copies up to 30 s old (even a cached "not found" for a
+  // window that just opened), so every request carries a unique query string to get live data.
+  let bust = 0;
   async function gw(path) {
-    const r = await fetch(GATEWAY + path, { headers: { Accept: 'application/json' } });
+    const r = await fetch(GATEWAY + path + (path.includes('?') ? '&' : '?') + '_=' + Date.now().toString(36) + (bust++).toString(36), { headers: { Accept: 'application/json', 'Cache-Control': 'no-cache' } });
     const text = await r.text();
     if (!r.ok) throw new ApiError(r.status, text, path);
     return JSON.parse(text);
@@ -124,7 +127,7 @@ export function createAutopilot(o) {
   async function book(slug) {
     const md = (await gw(`/v1/markets/${slug}/book`)).marketData || {};
     const lv = (a) => (a || []).map((x) => [+x.px.value, +x.qty]).filter(([p, q]) => p > 0 && q > 0);
-    return { bids: lv(md.bids).sort((a, b) => b[0] - a[0]), asks: lv(md.asks).sort((a, b) => a[0] - b[0]), state: md.state };
+    return { bids: lv(md.bids).sort((a, b) => b[0] - a[0]), asks: lv(md.offers || md.asks).sort((a, b) => a[0] - b[0]), state: md.state };   // Polymarket US calls the sell side "offers"
   }
 
   // ------------------------------------------------------------ halts
@@ -421,10 +424,9 @@ export function createAutopilot(o) {
     const out = { keyId: KEY_ID ? KEY_ID.slice(0, 8) + '…' : null, keyLoaded: !!KEY, password: !!PASSWORD, topics: T };
     if (!KEY) return out;
     out.balance = await refreshLive().catch((e) => ({ error: e.message }));
-    const mkt = await marketFor(Ws);
-    out.market = mkt;
-    const bk = await book(mkt.slug);
-    out.book = { bestBid: bk.bids[0] || null, bestAsk: bk.asks[0] || null };
+    let mkt;
+    try { mkt = await marketFor(Ws); out.market = mkt; } catch (e) { out.market = { error: e.message }; return out; }
+    try { const bk = await book(mkt.slug); out.book = { bestBid: bk.bids[0] || null, bestAsk: bk.asks[0] || null, state: bk.state }; } catch (e) { out.book = { error: e.message }; }
     // Previews never trade. Prices are far from the market on purpose.
     const prev = (intent, yes) => api('POST', '/v1/order/preview', { request: { marketSlug: mkt.slug, intent, type: 'ORDER_TYPE_LIMIT', price: { value: yes, currency: 'USD' }, quantity: 1, tif: 'TIME_IN_FORCE_IMMEDIATE_OR_CANCEL', manualOrderIndicator: 'MANUAL_ORDER_INDICATOR_AUTOMATIC' } }).catch((e) => ({ error: e.message }));
     out.previewBuyUp = await prev('ORDER_INTENT_BUY_LONG', '0.02');
