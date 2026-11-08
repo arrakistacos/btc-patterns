@@ -139,6 +139,34 @@ git pull && sudo systemctl restart signal-bot   # update later
 ```
 It re-reads the tuned settings from the site every 30 minutes. If price data stops for over a minute, it sends a warning push, then an "all clear" when data returns.
 
+### Autopilot: trade the alerts automatically
+
+The signal bot can buy each BUY alert on **Polymarket US** for you, through Polymarket's official API (`tools/autopilot.mjs`). You control and watch it on the **[autopilot page](https://arrakistacos.github.io/btc-patterns/autopilot.html)**.
+
+**How it trades:**
+- It trades only when the bot sends a BUY alert, at most once per 5-minute window.
+- It reads the live Polymarket US order book and buys the favored side with an **immediate-or-cancel limit order**, at most 1¢ above the best price. It buys only if the model's win chance still beats that price plus Polymarket's fee by 2 points, and the price is under 95¢. "Down" is placed the way Polymarket US requires: buying NO, priced as the YES price.
+- **Bet size is a fixed % of the balance: 20% by default**, changeable on the page.
+- **Practice mode (the default)** uses the real order book and real results with pretend money; no key is needed. **Live mode** places real orders and needs your API key.
+- Every trade is followed to settlement and scored: win rate, profit today and all-time, and a daily table.
+
+**It halts itself and sends an urgent push when:**
+- the money runs out: Polymarket US buying power under $1, checked every minute and before every order, or an order refused for insufficient funds;
+- the daily loss limit is hit (default 50% of the day's starting balance); it resumes the next day;
+- Polymarket rejects the API key.
+
+Tap **Resume** on the page once it's fixed. **Turn off** on the page stops all new trades immediately.
+
+**Phone notifications:** each trade placed and each win or loss (both can be turned off), plus halts and switching to live.
+
+**Setup (Windows):** create an API key at [polymarket.us/developer](https://polymarket.us/developer). It needs your verified Polymarket US account; the secret is shown only once. Then re-run the installer with `-Autopilot`:
+```powershell
+irm https://raw.githubusercontent.com/arrakistacos/btc-patterns/main/tools/install-windows.ps1 -OutFile $env:TEMP\btc-bot.ps1; powershell -ExecutionPolicy Bypass -File $env:TEMP\btc-bot.ps1 -Topic your-topic -Autopilot
+```
+It asks for the Key ID, the secret and a password for the autopilot page. It saves them in `polymarket.env` next to the bot, readable only by your Windows account, and checks the key. On a Pi, create that file yourself with `PM_KEY_ID=…`, `PM_SECRET_KEY=…` and `AUTOPILOT_PASSWORD=…` lines. Check a key any time with `node tools/signal-bot.mjs --check-autopilot`.
+
+**How the page connects:** your Polymarket key never leaves the laptop. The bot publishes its status to the ntfy topic `<your-topic>-ap`, encrypted (AES-256-GCM) with a key derived from your autopilot password. The page sends commands to `<your-topic>-apc`, each signed (HMAC-SHA256) and valid for 2 minutes. Anyone who learns the topic sees only scrambled text and can't send commands. Log in with your topic and password. Status refreshes about every 20 minutes and right after any change, which keeps well inside ntfy.sh's free limit of 250 messages a day. Settings and history are saved in `autopilot-state.json` next to the bot.
+
 ### 2. In-browser alerts (page open)
 
 The **🔔 Alerts** button in the signal banner beeps, vibrates (Android) and shows a system notification on each new BUY NOW, at most once per 20 seconds. It keeps working in a background tab on a computer. On phones it works only while the page is on screen, and on iPhone only from a Home Screen web app. Browsers need one tap after each page load before they allow sound, so the button shows "Tap to arm".
@@ -151,6 +179,7 @@ The **🔔 Alerts** button in the signal banner beeps, vibrates (Android) and sh
 - `calibration.html` — model vs Polymarket report
 - `params.json` — tuned window-model parameters (rewritten twice a day)
 - `signal.js` — the BUY / WAIT decision, shared by the app and the signal bot
+- `autopilot.html` — autopilot control page; `apcrypto.js` — its encrypted link to the bot; `tools/autopilot.mjs` — the trading module inside the bot
 - `sw.js` — tiny service worker so the page can show system notifications
 - `tools/signal-bot.mjs` — 24/7 phone-alert bot (ntfy); `tools/install-windows.ps1` (Windows) and `tools/signal-bot.service` (Linux/Pi) keep it running
 - `tools/backfill.mjs`, `tools/tune.mjs`, `tools/record.mjs` — data collection and tuning (Node 22+)

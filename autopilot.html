@@ -1,0 +1,381 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>BTC Autopilot</title>
+<meta name="description" content="Control and track the BTC Pattern Watch autopilot that trades BUY alerts on Polymarket US.">
+<meta name="theme-color" content="#0b0e14">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%230b0e14'/%3E%3Cpath d='M16 5l9 22-9-5-9 5z' fill='%235aa9ff'/%3E%3C/svg%3E">
+<style>
+  :root {
+    --bg: #0b0e14; --panel: #11151d; --panel2: #161b25; --line: #222a37;
+    --text: #d6dde8; --muted: #7d8899; --up: #16c784; --down: #ea3943; --amber: #f5b041; --accent: #5aa9ff;
+    --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  a { color: var(--accent); }
+  .num { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+  .up { color: var(--up); } .down { color: var(--down); } .muted { color: var(--muted); } .amber { color: var(--amber); }
+  header { display: flex; align-items: center; gap: 12px; padding: 10px 16px; border-bottom: 1px solid var(--line); background: var(--panel); position: sticky; top: 0; z-index: 5; }
+  .brand { font-weight: 700; letter-spacing: .02em; } .brand small { color: var(--muted); font-weight: 500; margin-left: 6px; }
+  .spacer { flex: 1; }
+  main { max-width: 860px; margin: 0 auto; padding: 16px; display: flex; flex-direction: column; gap: 14px; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px; }
+  .card h3 { margin: 0 0 10px; font-size: 12px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); font-weight: 600; display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+  button, select, input { background: var(--panel2); color: var(--text); border: 1px solid var(--line); border-radius: 8px; padding: 8px 11px; font: inherit; }
+  button { cursor: pointer; font-weight: 600; }
+  button:hover { border-color: #33405a; }
+  button:disabled { opacity: .5; cursor: default; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #06101f; }
+  button.danger { background: rgba(234,57,67,.15); border-color: var(--down); color: #ffb3b8; }
+  button.good { background: rgba(22,199,132,.15); border-color: var(--up); color: #9ff0cf; }
+  input[type=number] { width: 90px; }
+  label { display: inline-flex; align-items: center; gap: 8px; }
+  .row { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+  .grid2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px 18px; }
+  .field { display: flex; flex-direction: column; align-items: flex-start; gap: 5px; }
+  #login .field { align-items: stretch; }
+  .field > span { font-size: 12px; color: var(--muted); }
+  .hint { font-size: 12px; color: var(--muted); }
+
+  /* login */
+  #login { max-width: 440px; margin: 40px auto; }
+  #login .field input { width: 100%; }
+  #loginErr { color: var(--down); min-height: 1.4em; font-size: 13px; }
+
+  /* state banner */
+  .banner { border-radius: 14px; padding: 16px 18px; display: flex; flex-wrap: wrap; gap: 10px 18px; align-items: center; border: 1px solid var(--line); background: var(--panel); }
+  .banner .word { font-size: 30px; font-weight: 800; letter-spacing: .02em; }
+  .banner .sub { flex: 1 1 220px; min-width: 0; }
+  .banner .sub b { display: block; font-size: 15px; }
+  .banner.live { border-color: var(--up); background: linear-gradient(90deg, rgba(22,199,132,.16), var(--panel) 70%); } .banner.live .word { color: var(--up); }
+  .banner.practice { border-color: var(--accent); background: linear-gradient(90deg, rgba(90,169,255,.14), var(--panel) 70%); } .banner.practice .word { color: var(--accent); }
+  .banner.off { } .banner.off .word { color: var(--muted); }
+  .banner.halted { border-color: var(--down); background: linear-gradient(90deg, rgba(234,57,67,.18), var(--panel) 70%); } .banner.halted .word { color: var(--down); }
+  .seen { font-size: 12px; color: var(--muted); }
+  .seen.stale { color: var(--amber); }
+
+  .seg { display: inline-flex; border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
+  .seg button { border: 0; border-radius: 0; padding: 9px 16px; background: var(--panel2); color: var(--muted); }
+  .seg button.on { background: var(--accent); color: #06101f; }
+  .seg button.on.liveon { background: var(--up); }
+
+  .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 10px; }
+  .tile { background: var(--panel2); border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; }
+  .tile .k { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; }
+  .tile .v { font-size: 22px; font-weight: 700; margin-top: 2px; }
+  .tile .s { font-size: 12px; color: var(--muted); }
+
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th { text-align: left; font-weight: 600; color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .05em; padding: 6px 6px; border-bottom: 1px solid var(--line); }
+  td { padding: 7px 6px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  td.r, th.r { text-align: right; }
+  td.nw, .nw { white-space: nowrap; }
+  .tag { display: inline-block; font-size: 10px; font-weight: 700; padding: 1px 6px; border-radius: 5px; letter-spacing: .04em; }
+  .tag.p { background: rgba(90,169,255,.18); color: var(--accent); } .tag.l { background: rgba(22,199,132,.18); color: var(--up); }
+  .scroll { overflow-x: auto; }
+  #toast { position: fixed; left: 50%; bottom: 18px; transform: translateX(-50%); background: var(--panel2); border: 1px solid var(--line); border-radius: 10px; padding: 10px 14px; font-size: 13px; display: none; z-index: 20; max-width: calc(100% - 32px); }
+  #toast.err { border-color: var(--down); } #toast.ok { border-color: var(--up); }
+  dialog { background: var(--panel); color: var(--text); border: 1px solid var(--line); border-radius: 14px; padding: 18px; max-width: 420px; }
+  dialog::backdrop { background: rgba(0,0,0,.6); }
+  footer { max-width: 860px; margin: 0 auto; padding: 4px 16px 30px; color: var(--muted); font-size: 12px; }
+  .hide { display: none !important; }
+  @media (max-width: 520px) { td, th { padding: 7px 4px; } .tag { font-size: 9px; padding: 1px 4px; } .banner .word { font-size: 24px; } .tile .v { font-size: 19px; } .hidem { display: none; } }
+</style>
+</head>
+<body>
+<header>
+  <div class="brand">BTC Pattern Watch <small>Autopilot</small></div>
+  <div class="spacer"></div>
+  <a href="./">Chart ›</a>
+  <button id="logout" class="hide" style="padding:5px 10px;font-size:12px">Log out</button>
+</header>
+
+<main>
+  <!-- Login -->
+  <section id="login" class="card">
+    <h3>Log in to your autopilot</h3>
+    <form id="loginForm" class="field" style="gap:12px">
+      <label class="field"><span>ntfy topic (the same one your phone alerts use)</span><input id="inTopic" autocomplete="username" required pattern="[A-Za-z0-9_\-]{8,64}" spellcheck="false" autocapitalize="off"></label>
+      <label class="field"><span>Autopilot password (set when you installed it)</span><input id="inPass" type="password" autocomplete="current-password" required></label>
+      <label><input id="inRemember" type="checkbox" checked> Stay logged in on this device</label>
+      <details><summary class="hint">Advanced</summary><label class="field" style="margin-top:8px"><span>ntfy server</span><input id="inServer" value="https://ntfy.sh" spellcheck="false"></label></details>
+      <button class="primary" id="loginBtn" type="submit">Log in</button>
+      <div id="loginErr"></div>
+    </form>
+    <p class="hint">Your Polymarket key never leaves your laptop. This page only sees encrypted status from the bot and sends it signed commands.</p>
+  </section>
+
+  <!-- Dashboard -->
+  <section id="dash" class="hide" style="display:flex;flex-direction:column;gap:14px">
+    <div id="banner" class="banner">
+      <div class="word" id="stateWord">—</div>
+      <div class="sub"><b id="stateLine">Connecting…</b><span class="muted" id="stateSub"></span></div>
+      <button id="resumeBtn" class="good hide">Resume</button>
+      <button id="powerBtn">—</button>
+    </div>
+    <div class="row" style="justify-content:space-between">
+      <div class="seg" id="modeSeg"><button data-mode="practice">Practice</button><button data-mode="live">Live</button></div>
+      <span class="seen" id="seen">—</span>
+    </div>
+
+    <div class="tiles">
+      <div class="tile"><div class="k" id="tBalK">Balance</div><div class="v num" id="tBal">—</div><div class="s" id="tBalS"></div></div>
+      <div class="tile"><div class="k">Today</div><div class="v num" id="tToday">—</div><div class="s" id="tTodayS"></div></div>
+      <div class="tile"><div class="k">All time</div><div class="v num" id="tAll">—</div><div class="s" id="tAllS"></div></div>
+      <div class="tile"><div class="k">Win rate</div><div class="v num" id="tWin">—</div><div class="s" id="tWinS"></div></div>
+    </div>
+
+    <div class="card">
+      <h3>Trades <span class="muted" style="text-transform:none;letter-spacing:0;font-weight:500" id="nowLine"></span></h3>
+      <div class="scroll"><table>
+        <thead><tr><th>Window</th><th>Side</th><th class="r">Bought</th><th class="r">Result</th></tr></thead>
+        <tbody id="trades"><tr><td colspan="4" class="muted">No trades yet. Autopilot trades the moment a BUY alert fires.</td></tr></tbody>
+      </table></div>
+    </div>
+
+    <div class="card">
+      <h3>Settings</h3>
+      <div class="grid2">
+        <label class="field"><span>Bet size, % of balance per BUY alert</span><span class="row"><input id="sBet" type="number" min="1" max="100" step="1"> %</span></label>
+        <label class="field"><span>Stop for the day after losing (% of the day's starting balance, 0 = never)</span><span class="row"><input id="sStop" type="number" min="0" max="100" step="5"> %</span></label>
+        <label class="field"><span>Trade only when the model's win chance is at least</span><select id="sMinModel"></select></label>
+        <label class="field"><span>…and Polymarket's odds for that side are at least</span><select id="sMinMarket"></select></label>
+        <div class="field"><span>Phone notifications</span>
+          <label><input id="sFills" type="checkbox"> Each trade placed</label>
+          <label><input id="sResults" type="checkbox"> Each win or loss</label>
+          <span class="hint">BUY alerts and halts always notify you.</span>
+        </div>
+      </div>
+      <div class="row" style="margin-top:12px"><button class="primary" id="saveBtn">Save settings</button><span class="hint" id="saveNote"></span></div>
+    </div>
+
+    <div class="card">
+      <h3>Daily results</h3>
+      <div class="scroll"><table>
+        <thead><tr><th>Day</th><th>Mode</th><th class="r">Trades</th><th class="r">Won</th><th class="r">Profit</th></tr></thead>
+        <tbody id="days"><tr><td colspan="5" class="muted">—</td></tr></tbody>
+      </table></div>
+    </div>
+
+    <div class="card">
+      <h3>Practice money</h3>
+      <div class="row"><span class="hint">Start practice over with</span><span class="row">$<input id="pBal" type="number" min="10" step="10" value="1000"></span><button id="pReset">Reset practice</button></div>
+      <p class="hint" style="margin-bottom:0">Practice uses the real Polymarket US order book and real results with pretend money. It clears practice trades and stats; live history is untouched.</p>
+    </div>
+  </section>
+</main>
+
+<footer id="foot" class="hide">
+  How it works: the signal bot on your laptop places the order the moment it sends a BUY alert, as an immediate-or-cancel limit order at most 1¢ above the best price, and only if the win chance still beats the price plus Polymarket's fee. One trade per 5-minute window. It halts and sends an urgent alert if the money runs out, the daily loss limit is hit, or Polymarket rejects the key. Status updates arrive about every 20 minutes and right after anything changes. Not financial advice.
+</footer>
+
+<dialog id="liveDlg">
+  <h3 style="margin-top:0">Turn on live trading?</h3>
+  <p id="liveDlgText">Real orders on your Polymarket US account.</p>
+  <div class="row" style="justify-content:flex-end"><button id="liveNo">Cancel</button><button class="good" id="liveYes">Go live</button></div>
+</dialog>
+<div id="toast"></div>
+
+<script>
+  (function () {
+    var s = document.createElement('script');
+    s.src = 'apcrypto.js?v=' + Math.floor(Date.now() / 60000).toString(36);
+    s.onload = function () { window.startAutopilotPage(); };
+    document.body.appendChild(s);
+  })();
+
+  window.startAutopilotPage = function () {
+    'use strict';
+    const $ = (id) => document.getElementById(id);
+    const LS = 'btcpw.autopilot';
+    const store = { get() { try { return JSON.parse(localStorage.getItem(LS) || 'null'); } catch (e) { return null; } }, set(v) { try { localStorage.setItem(LS, JSON.stringify(v)); } catch (e) {} }, clear() { try { localStorage.removeItem(LS); } catch (e) {} } };
+    const money = (x) => x == null || !isFinite(x) ? '—' : (x < 0 ? '−$' : '$') + Math.abs(x).toFixed(2);
+    const signed = (x) => x == null ? '—' : (x > 0 ? '+' : '') + money(x);
+    const cls = (x) => x > 0 ? 'up' : x < 0 ? 'down' : '';
+    const ago = (ms) => { const s = Math.max(0, (Date.now() - ms) / 1000); return s < 90 ? Math.round(s) + ' s ago' : s < 5400 ? Math.round(s / 60) + ' min ago' : Math.round(s / 3600) + ' h ago'; };
+    const clock = (ms) => new Date(ms).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+    const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+
+    let sess = null;   // { server, topic, K, T }
+    let st = null;     // latest decrypted status
+    let pollTimer = null, fastUntil = 0;
+    const pending = new Map();   // nonce -> { label, at }
+
+    function toast(msg, kind) {
+      const t = $('toast'); t.textContent = msg; t.className = kind || ''; t.style.display = 'block';
+      clearTimeout(toast.h); toast.h = setTimeout(() => { t.style.display = 'none'; }, 4000);
+    }
+
+    // ---------------- login
+    for (const id of ['sMinModel', 'sMinMarket']) for (let v = 50; v <= 95; v += 5) $(id).insertAdjacentHTML('beforeend', `<option value="${v}">${v}%</option>`);
+    async function openSession(server, topic, bits) {
+      const K = await APCrypto.keysFromBits(bits);
+      sess = { server: server.replace(/\/$/, ''), topic, K, T: APCrypto.topics(topic) };
+    }
+    async function fetchStatus(since) {
+      const r = await fetch(`${sess.server}/${sess.T.status}/json?poll=1&since=${since || '2h'}`, { cache: 'no-store' });
+      if (!r.ok) throw new Error('ntfy HTTP ' + r.status);
+      const lines = (await r.text()).trim().split('\n').filter(Boolean).map((l) => { try { return JSON.parse(l); } catch (e) { return null; } }).filter((m) => m && m.event === 'message');
+      let sawAny = lines.length > 0;
+      for (let i = lines.length - 1; i >= 0; i--) { const s = await APCrypto.open(sess.K, lines[i].message); if (s) return { s, sawAny }; }
+      return { s: null, sawAny };
+    }
+    $('loginForm').addEventListener('submit', async (ev) => {
+      ev.preventDefault();
+      const topic = $('inTopic').value.trim(), pass = $('inPass').value, server = $('inServer').value.trim() || 'https://ntfy.sh';
+      $('loginErr').textContent = ''; $('loginBtn').disabled = true; $('loginBtn').textContent = 'Unlocking…';
+      try {
+        const bits = await APCrypto.deriveBits(pass, topic);
+        await openSession(server, topic, bits);
+        let { s, sawAny } = await fetchStatus('12h');
+        if (!s) {
+          sess = null;
+          $('loginErr').textContent = sawAny ? 'Wrong password for this topic.' : 'No word from the bot on this topic in the last 12 hours. Check the topic, and that the laptop and bot are running with autopilot installed.';
+          return;
+        }
+        if ($('inRemember').checked) store.set({ server, topic, bits: APCrypto.b64u(bits) }); else store.clear();
+        $('inPass').value = '';
+        showDash(s);
+      } catch (e) { $('loginErr').textContent = 'Could not connect: ' + e.message; sess = null; }
+      finally { $('loginBtn').disabled = false; $('loginBtn').textContent = 'Log in'; }
+    });
+    $('logout').onclick = () => { store.clear(); sess = null; st = null; clearTimeout(pollTimer); $('dash').classList.add('hide'); $('foot').classList.add('hide'); $('logout').classList.add('hide'); $('login').classList.remove('hide'); };
+
+    function showDash(s) {
+      $('login').classList.add('hide'); $('dash').classList.remove('hide'); $('foot').classList.remove('hide'); $('logout').classList.remove('hide');
+      apply(s, true); schedule();
+    }
+    function schedule() {
+      clearTimeout(pollTimer);
+      pollTimer = setTimeout(poll, Date.now() < fastUntil ? 2000 : 15000);
+    }
+    async function poll() {
+      if (!sess) return;
+      try { const { s } = await fetchStatus(st ? Math.floor(st.ts / 1000) - 1 : '12h'); if (s && (!st || s.ts >= st.ts)) apply(s); }
+      catch (e) { /* offline for a moment; keep trying */ }
+      renderSeen();
+      for (const [n, p] of pending) if (Date.now() - p.at > 25000) { pending.delete(n); toast('No reply from the bot yet. Is the laptop awake?', 'err'); }
+      schedule();
+    }
+    document.addEventListener('visibilitychange', () => { if (!document.hidden && sess) poll(); });
+
+    // ---------------- commands
+    async function send(cmd, args, label) {
+      if (!sess) return;
+      try {
+        const c = await APCrypto.signCommand(sess.K, cmd, args);
+        const r = await fetch(`${sess.server}/${sess.T.command}`, { method: 'POST', body: c.text });
+        if (!r.ok) throw new Error('ntfy HTTP ' + r.status);
+        pending.set(c.nonce, { label, at: Date.now() });
+        toast((label || 'Sending') + '…');
+        fastUntil = Date.now() + 25000; schedule();
+      } catch (e) { toast('Could not send: ' + e.message, 'err'); }
+    }
+
+    // ---------------- render
+    function apply(s, first) {
+      st = s;
+      for (const [n, ok, msg] of s.acks || []) if (pending.has(n)) { pending.delete(n); toast((ok ? '✓ ' : '✗ ') + (msg || (ok ? 'Done' : 'Refused')), ok ? 'ok' : 'err'); }
+      if (!pending.size) fastUntil = 0;
+      const ap = s.ap, mode = ap.mode, live = mode === 'live';
+      const state = ap.halted ? 'halted' : !ap.enabled ? 'off' : mode;
+      $('banner').className = 'banner ' + state;
+      $('stateWord').textContent = { halted: 'HALTED', off: 'OFF', live: 'LIVE', practice: 'PRACTICE' }[state];
+      $('stateLine').textContent = ap.halted ? ap.halted.reason : !ap.enabled ? 'Not trading. BUY alerts still reach your phone.' : live ? `Trading real money: ${ap.betPct}% of buying power on every BUY alert` : `Pretend money: ${ap.betPct}% of the practice balance on every BUY alert`;
+      $('stateSub').textContent = ap.halted ? ap.halted.detail : `Trades when the model ≥ ${ap.minModel}% and Polymarket ≥ ${ap.minMarket}% for the same side.`;
+      $('resumeBtn').classList.toggle('hide', !ap.halted);
+      $('powerBtn').textContent = ap.enabled ? 'Turn off' : 'Turn on';
+      $('powerBtn').className = ap.enabled ? 'danger' : 'good';
+      for (const b of $('modeSeg').querySelectorAll('button')) { const on = b.dataset.mode === mode; b.classList.toggle('on', on); b.classList.toggle('liveon', on && live); }
+      $('nowLine').textContent = s.why ? 'Now: ' + s.why : '';
+
+      // balance + stats for the current mode
+      const bal = live ? (s.bal.live ? s.bal.live.buyingPower : null) : s.bal.practice.balance;
+      $('tBalK').textContent = live ? 'Buying power' : 'Practice balance';
+      $('tBal').textContent = money(bal);
+      $('tBalS').textContent = live ? (s.keys ? (s.bal.live ? 'Polymarket US · ' + ago(s.bal.live.at) : 'checking…') : 'No API key installed') : 'started at ' + money(s.bal.practice.start);
+      const today = new Date().toLocaleDateString('en-CA');
+      const drow = (s.days || []).find((d) => d[0] === today);
+      const td = drow ? drow[live ? 2 : 1] : null;
+      $('tToday').textContent = td ? signed(td.pnl) : '$0.00'; $('tToday').className = 'v num ' + cls(td ? td.pnl : 0);
+      $('tTodayS').textContent = td ? `${td.n} trade${td.n === 1 ? '' : 's'}, ${td.w} won` : 'no trades yet';
+      const sm = s.stats[mode] || { n: 0, w: 0, l: 0, pnl: 0, staked: 0 };
+      $('tAll').textContent = signed(sm.pnl); $('tAll').className = 'v num ' + cls(sm.pnl);
+      $('tAllS').textContent = sm.staked ? `${(sm.pnl / sm.staked * 100).toFixed(1)}% on ${money(sm.staked)} bet` : (live ? 'live' : 'practice');
+      const settled = sm.w + sm.l;
+      $('tWin').textContent = settled ? Math.round(sm.w / settled * 100) + '%' : '—';
+      $('tWinS').textContent = settled ? `${sm.w} of ${settled} won` + (sm.nofill ? ` · ${sm.nofill} unfilled` : '') : 'no results yet';
+
+      // trades (newest first)
+      const rows = (s.trades || []).slice().reverse().map(([ts, Ws, m, side, status, qty, px, cost, result, pnl, msg, q]) => {
+        const sideCell = `<span class="${side === 'UP' ? 'up' : 'down'}" style="font-weight:700">${side}</span> <span class="tag ${m === 'l' ? 'l' : 'p'}">${m === 'l' ? 'LIVE' : 'PRACTICE'}</span>`;
+        const wd = new Date(Ws * 1000), isToday = wd.toDateString() === new Date().toDateString();
+        const when = `<span class="nw">${isToday ? '' : wd.toLocaleDateString([], { month: 'short', day: 'numeric' }) + ' '}${wd.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}</span>${q ? `<div class="hint nw">${q}% chance</div>` : ''}`;
+        if (status === 'filled' || status === 'partial') {
+          const res = result == null ? '<span class="muted">waiting…</span>' : `<span class="${result ? 'up' : 'down'}" style="font-weight:700">${result ? 'WON' : 'LOST'}</span><div class="num nw ${cls(pnl)}">${signed(pnl)}</div>`;
+          return `<tr><td>${when}</td><td>${sideCell}</td><td class="r num"><span class="nw">${money(cost)}</span><div class="muted nw">${qty} @ ${Math.round(px * 100)}¢</div>${status === 'partial' ? '<div class="hint">partial fill</div>' : ''}</td><td class="r">${res}</td></tr>`;
+        }
+        const label = { skipped: 'Skipped', nofill: 'Not filled', error: 'Error' }[status] || status;
+        return `<tr><td>${when}</td><td>${sideCell}</td><td colspan="2" class="muted">${label}: ${esc(msg || '')}</td></tr>`;
+      });
+      $('trades').innerHTML = rows.length ? rows.join('') : '<tr><td colspan="4" class="muted">No trades yet. Autopilot trades the moment a BUY alert fires.</td></tr>';
+
+      // days
+      const drows = [];
+      for (const [d, p, l] of (s.days || []).slice().reverse()) for (const [m, r] of [['l', l], ['p', p]]) if (r && r.n) drows.push(`<tr><td class="nw">${new Date(d + 'T12:00').toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric' })}</td><td><span class="tag ${m}">${m === 'l' ? 'LIVE' : 'PRACTICE'}</span></td><td class="r num">${r.n}</td><td class="r num">${r.w}</td><td class="r num nw ${cls(r.pnl)}">${signed(r.pnl)}</td></tr>`);
+      $('days').innerHTML = drows.length ? drows.join('') : '<tr><td colspan="5" class="muted">No trades yet.</td></tr>';
+
+      // settings: don't overwrite what you're editing
+      if (first || !document.activeElement || !document.activeElement.closest('.grid2')) {
+        $('sBet').value = ap.betPct; $('sStop').value = ap.dailyStopPct;
+        $('sMinModel').value = ap.minModel; $('sMinMarket').value = ap.minMarket;
+        $('sFills').checked = ap.notifyFills; $('sResults').checked = ap.notifyResults;
+      }
+      renderSeen();
+    }
+    function renderSeen() {
+      if (!st) return;
+      const stale = Date.now() - st.ts > 25 * 60000;
+      $('seen').className = 'seen' + (stale ? ' stale' : '');
+      $('seen').textContent = (stale ? '⚠ Bot not heard from since ' : 'Bot updated ') + ago(st.ts) + (stale ? ' — is the laptop on and awake?' : '');
+    }
+
+    // ---------------- controls
+    $('powerBtn').onclick = () => st && send(st.ap.enabled ? 'disable' : 'enable', {}, st.ap.enabled ? 'Turning off' : 'Turning on');
+    $('resumeBtn').onclick = () => send('resume', {}, 'Resuming');
+    for (const b of $('modeSeg').querySelectorAll('button')) b.onclick = () => {
+      if (!st || b.dataset.mode === st.ap.mode) return;
+      if (b.dataset.mode === 'practice') return send('mode', { mode: 'practice' }, 'Switching to practice');
+      if (!st.keys) return toast('No Polymarket US API key on the laptop yet. Re-run the installer with -Autopilot.', 'err');
+      const bp = st.bal.live ? st.bal.live.buyingPower : null;
+      $('liveDlgText').textContent = `Real orders on your Polymarket US account: ${st.ap.betPct}% of your buying power${bp != null ? ` (about ${money(bp * st.ap.betPct / 100)} now)` : ''} on every BUY alert, up to one trade per 5-minute window. You can turn it off here at any time.`;
+      $('liveDlg').showModal();
+    };
+    $('liveNo').onclick = () => $('liveDlg').close();
+    $('liveYes').onclick = () => { $('liveDlg').close(); send('mode', { mode: 'live' }, 'Going live'); };
+    $('saveBtn').onclick = () => {
+      const bet = +$('sBet').value, stop = +$('sStop').value;
+      if (!(bet >= 1 && bet <= 100)) return toast('Bet size must be 1–100%', 'err');
+      if (!(stop >= 0 && stop <= 100)) return toast('Daily stop must be 0–100%', 'err');
+      send('set', { betPct: bet, dailyStopPct: stop, minModel: +$('sMinModel').value, minMarket: +$('sMinMarket').value, notifyFills: $('sFills').checked, notifyResults: $('sResults').checked }, 'Saving settings');
+    };
+    $('pReset').onclick = () => { const b = +$('pBal').value; if (!(b >= 10)) return toast('At least $10', 'err'); send('resetPractice', { balance: b }, 'Resetting practice'); };
+
+    // ---------------- auto login
+    const saved = store.get();
+    if (saved && saved.topic && saved.bits) {
+      $('inTopic').value = saved.topic; $('inServer').value = saved.server || 'https://ntfy.sh';
+      openSession(saved.server || 'https://ntfy.sh', saved.topic, APCrypto.unb64u(saved.bits))
+        .then(() => fetchStatus('12h'))
+        .then(({ s }) => { if (s) showDash(s); else { $('loginErr').textContent = 'No recent status from the bot. Log in again once it is running.'; } })
+        .catch((e) => { $('loginErr').textContent = 'Could not connect: ' + e.message; });
+    }
+    const q = new URLSearchParams(location.search);
+    if (q.get('topic') && !saved) $('inTopic').value = q.get('topic');
+  };
+</script>
+</body>
+</html>

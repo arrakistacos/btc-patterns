@@ -24,20 +24,38 @@
  *   LOG_FILE     also append the log to this file
  *   MARKET_URL   fixed page a BUY alert opens when tapped (default: that window's market on polymarket.us)
  *
- * Requires Node 22+ (built-in fetch and WebSocket). No exchange or Polymarket keys needed.
+ * Autopilot (tools/autopilot.mjs) trades each BUY alert on Polymarket US: practice by default, live with an
+ * API key. Its settings live in polymarket.env next to the bot (PM_KEY_ID, PM_SECRET_KEY, AUTOPILOT_PASSWORD),
+ * and you control it from the autopilot page. Check the key with:  node tools/signal-bot.mjs --check-autopilot
+ *
+ * Requires Node 22+ (built-in fetch and WebSocket).
  */
+import { existsSync, readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { createAutopilot } from './autopilot.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
+const ROOT = resolve(HERE, '..');
 const req = createRequire(import.meta.url);
-const E = req(resolve(HERE, '../engine.js'));
-const Signal = req(resolve(HERE, '../signal.js'));
+const E = req(resolve(ROOT, 'engine.js'));
+const Signal = req(resolve(ROOT, 'signal.js'));
+const APC = req(resolve(ROOT, 'apcrypto.js'));
+
+// Secrets for autopilot live in polymarket.env next to the bot (KEY=value lines), never in the code
+const ENV_FILE = process.env.AUTOPILOT_ENV || resolve(ROOT, 'polymarket.env');
+if (existsSync(ENV_FILE)) {
+  for (const line of readFileSync(ENV_FILE, 'utf8').split(/\r?\n/)) {
+    const m = line.match(/^\s*([A-Z_][A-Z0-9_]*)\s*=\s*(.*?)\s*$/);
+    if (m && !process.env[m[1]]) process.env[m[1]] = m[2].replace(/^(['"])(.*)\1$/, '$2');
+  }
+}
 
 const ARGS = new Set(process.argv.slice(2));
 const DRY = ARGS.has('--dry');
 const TEST = ARGS.has('--test');
+const CHECK_AP = ARGS.has('--check-autopilot');
 const NTFY_SERVER = (process.env.NTFY_SERVER || 'https://ntfy.sh').replace(/\/$/, '');
 const NTFY_TOPIC = process.env.NTFY_TOPIC || '';
 const NTFY_TOKEN = process.env.NTFY_TOKEN || '';
@@ -75,7 +93,7 @@ if (process.env.LOG_FILE) {
 process.on('uncaughtException', (e) => { console.error(new Date().toISOString(), 'fatal:', (e && e.stack) || e); process.exit(1); });
 process.on('unhandledRejection', (e) => { console.error(new Date().toISOString(), 'unhandled:', (e && e.stack) || e); });
 
-if (!DRY && !NTFY_TOPIC) { console.error('Set NTFY_TOPIC (or use --dry). See the comments at the top of this file.'); process.exit(1); }
+if (!DRY && !CHECK_AP && !NTFY_TOPIC) { console.error('Set NTFY_TOPIC (or use --dry). See the comments at the top of this file.'); process.exit(1); }
 
 // ---------------------------------------------------------------- push
 async function push({ title, body, priority = 5, tags = 'rotating_light', click }) {
@@ -98,6 +116,15 @@ if (TEST) {
   const ok = await push({ title: 'BTC Pattern Watch test', body: `If you can hear this, alerts work. Target ${TARGET}%.`, click: SITE });
   console.log(ok ? 'Test push sent.' : 'Test push FAILED — check NTFY_TOPIC / network.');
   process.exit(ok ? 0 : 1);
+}
+
+// ---------------------------------------------------------------- autopilot
+const AP = createAutopilot({ dir: ROOT, log, push, Signal, APC, topic: NTFY_TOPIC, ntfyServer: NTFY_SERVER, ntfyToken: NTFY_TOKEN, site: SITE, tzName: TZ_NAME, defMinModel: MIN_MODEL, defMinMarket: MIN_MARKET });
+if (CHECK_AP) {
+  const r = await AP.check(Math.floor(Date.now() / 1000 / 300) * 300);
+  console.log(JSON.stringify(r, null, 2));
+  console.log(r.keyLoaded ? (r.balance && r.balance.error ? 'Key loaded but Polymarket refused it — see balance.error above.' : 'Key works.') : 'No Polymarket US key found (PM_KEY_ID / PM_SECRET_KEY in polymarket.env).');
+  process.exit(0);
 }
 
 async function getJSON(url) {
@@ -291,7 +318,8 @@ function evaluate() {
     const r = Signal.evalSignal({ w, favUp, ask, cost, oursFav, hist }, TARGET);
     // Alert filter: both the model's win chance and Polymarket's own odds for that side must reach the minimums
     const modelPct = r.buy ? r.q * 100 : 0, marketPct = favMid * 100;
-    const alertable = r.buy && modelPct >= MIN_MODEL - 1e-9 && marketPct >= MIN_MARKET - 1e-9;
+    const minM = AP.minModel(MIN_MODEL), minK = AP.minMarket(MIN_MARKET);   // the autopilot page can change these
+    const alertable = r.buy && modelPct >= minM - 1e-9 && marketPct >= minK - 1e-9;
     if (alertable) {
       if (!wasBuy && sent.n < MAX_PER_WINDOW) {
         sent.n++;
@@ -300,6 +328,7 @@ function evaluate() {
         const body = `MODEL ${Math.round(modelPct)}% · POLYMARKET ${Math.round(marketPct)}%`;
         log('ALERT →', side === 'UP' ? '[green]' : '[red]', title, '|', body, `| ask ${Math.round(ask * 100)}c, ${fmtLeft(left)} left`);
         push({ title, body, priority: 5, tags: side === 'UP' ? 'green_circle' : 'red_circle', click: marketUrl(Ws) });
+        AP.onSignal({ Ws, favUp, q: r.q, modelPct, marketPct, left });
       }
       wasBuy = true;
       why = 'BUY';
@@ -313,6 +342,7 @@ function evaluate() {
     log(`[${fmtLeft(left)} left] ${why} · price ${C.length ? C[C.length - 1].c.toFixed(2) : '—'} · Up odds ${mk != null ? (mk * 100).toFixed(1) + '%' : '—'} · alerts this window ${sent.n}`);
   }
   lastWhy = why;
+  AP.tick(why);
 }
 
 // ---------------------------------------------------------------- start
@@ -322,6 +352,8 @@ log('tuning:', JSON.stringify(params), tunedAt ? `(from ${tunedAt})` : '(default
 await loadCandles(1200);
 log('candles loaded:', C.length);
 connectCoinbase();
+AP.start();
+{ const s = AP.state(); log(`autopilot: ${s.enabled ? 'ON' : 'off'} · ${s.mode} · ${s.betPct}% per BUY · ${AP.hasKey() ? 'Polymarket US key loaded' : 'no Polymarket US key (practice only)'}${s.halted ? ' · HALTED: ' + s.halted.reason : ''}`); }
 setInterval(evaluate, 1000);
 setInterval(async () => { try { const rows = []; const end = bucket(nowS()) + W; const r = await getJSON(`https://api.exchange.coinbase.com/products/BTC-USD/candles?granularity=300&start=${iso(end - 36 * W)}&end=${iso(end)}`); for (const x of r) rows.push({ t: x[0], l: +x[1], h: +x[2], o: +x[3], c: +x[4], v: +x[5] }); rows.sort((a, b) => a.t - b.t); for (const k of rows) { const cur = C.find((c) => c.t === k.t); if (!cur || k.t + W <= nowS()) upsert(k); } } catch (e) { log('resync:', e.message); } }, 60000);
 setInterval(loadTuning, 30 * 60 * 1000);
