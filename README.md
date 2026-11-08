@@ -41,7 +41,7 @@ node tools/tune.mjs         # grid search; test = last 30% of windows → params
 
 The calibration page has a **Calibrate now** button. It runs the same backfill and tuning in your browser using the shared `calib.js` (4 or 7 days of history, about 1–2 minutes) and applies the result to the chart in that browser. A link there starts the GitHub Action, which updates the site for every device.
 
-Results are at **[calibration.html](https://arrakistacos.github.io/btc-patterns/calibration.html)**. A GitHub Action (`.github/workflows/recalibrate.yml`) re-runs both every night and commits the new parameters.
+Results are at **[calibration.html](https://arrakistacos.github.io/btc-patterns/calibration.html)**. A GitHub Action (`.github/workflows/recalibrate.yml`) re-runs both **twice a day** (about 3:17 AM and 3:17 PM Central) and commits the new parameters. The site and the signal bot pick them up automatically; the bot re-reads them every 30 minutes.
 
 ### Model settings
 
@@ -143,7 +143,7 @@ The **🔔 Alerts** button in the signal banner beeps, vibrates (Android) and sh
 - `app.js` — data feed, chart rendering, UI
 - `engine.js` — pattern detection, scoring, walk-forward hit rates, prediction (pure JS, also runs in Node)
 - `calibration.html` — model vs Polymarket report
-- `params.json` — tuned window-model parameters (rewritten nightly)
+- `params.json` — tuned window-model parameters (rewritten twice a day)
 - `signal.js` — the BUY / WAIT decision, shared by the app and the signal bot
 - `sw.js` — tiny service worker so the page can show system notifications
 - `tools/signal-bot.mjs` — 24/7 phone-alert bot (ntfy); `tools/install-windows.ps1` (Windows) and `tools/signal-bot.service` (Linux/Pi) keep it running

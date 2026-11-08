@@ -2,11 +2,16 @@ name: Recalibrate vs Polymarket
 
 on:
   schedule:
-    - cron: "17 9 * * *"   # daily, ~3:17 AM Central
+    # Twice a day: ~3:17 AM and ~3:17 PM Central (cron is UTC; Central is UTC-6 in winter, UTC-5 in summer)
+    - cron: "17 9,21 * * *"
   workflow_dispatch: {}
 
 permissions:
   contents: write
+
+concurrency:
+  group: recalibrate
+  cancel-in-progress: false
 
 jobs:
   tune:
@@ -26,5 +31,7 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898283+github-actions[bot]@users.noreply.github.com"
           git add params.json data/calibration.json data/edge.json
-          git diff --cached --quiet || git commit -m "Nightly recalibration vs Polymarket"
-          git push
+          git diff --cached --quiet && { echo "No changes"; exit 0; }
+          git commit -m "Recalibration vs Polymarket ($(date -u +'%Y-%m-%d %H:%M') UTC)"
+          git pull --rebase origin main
+          git push origin HEAD:main
