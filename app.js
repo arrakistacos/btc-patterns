@@ -20,7 +20,7 @@
   const state = {
     candles: [],
     enabled: store.get('enabled', {}),
-    view: Object.assign({ marks: true, lines: true, pred: true, minConf: 55, levels: true, minTouches: 3, target: 80, ghost: false }, store.get('view', {})),
+    view: Object.assign({ marks: true, lines: true, pred: true, minConf: 55, levels: true, minTouches: 3, target: 80, ghost: false, alertMinModel: 80, alertMinMarket: 80 }, store.get('view', {})),
     source: store.get('source', 'auto'),
     result: null,
     lastAnalyzed: null,
@@ -974,15 +974,16 @@
   }
   // Browsers only allow sound after a tap: any tap on the page arms saved alerts
   document.addEventListener('pointerdown', () => { if (state.alerts.on) { audioCtx(); setTimeout(renderAlertBtn, 50); } }, { capture: true });
+  // Alerts fire only when the model's win chance AND Polymarket's odds for that side both reach the minimums
+  const alertPasses = (info) => info.q * 100 >= (state.view.alertMinModel || 80) - 1e-9 && (info.mkt || 0) * 100 >= (state.view.alertMinMarket || 80) - 1e-9;
   function alertBuy(info, Ws, e) {
     const A = state.alerts;
     if (!A.on || Date.now() - A.lastAt < 20000) return;   // at most one alert per 20s, so a flickering signal doesn't spam
     A.lastAt = Date.now();
     beep(BUY_TUNE);
     if (navigator.vibrate) navigator.vibrate([400, 120, 400, 120, 800]);
-    const title = `BUY ${info.side} · ${Math.round(info.ask * 100)}¢ · ${Math.round(info.q * 100)}% chance`;
-    const body = (info.spend != null ? `Bet $${info.spend.toFixed(2)} → ${info.shares} shares. ` : `Bet ${(info.f * 100).toFixed(1)}% of bankroll. `) +
-      `${fmtLeft(INTERVAL - e)} left in the ${tLocal(Ws)} window.`;
+    const title = `${info.side === 'UP' ? '🟢' : '🔴'} BUY ${info.side}`;
+    const body = `MODEL ${Math.round(info.q * 100)}% · POLYMARKET ${Math.round((info.mkt || 0) * 100)}%`;
     const opts = { body, tag: 'btc-buy', renotify: true, requireInteraction: true, vibrate: [400, 120, 400, 120, 800], data: { url: location.href } };
     try {
       if ('Notification' in window && Notification.permission === 'granted') {
@@ -994,6 +995,10 @@
 
   $('alertBtn').onclick = toggleAlerts;
   renderAlertBtn();
+  for (const [id, key] of [['alertMinModel', 'alertMinModel'], ['alertMinMarket', 'alertMinMarket']]) {
+    $(id).value = String(state.view[key]);
+    $(id).onchange = () => { state.view[key] = +$(id).value; store.set('view', state.view); };
+  }
 
   // ---------- this window's signal log (clears when a new window starts) ----------
   state.sigLog = { Ws: null, items: [] };
@@ -1011,8 +1016,9 @@
       } else {
         if (live) Object.assign(last, { active: false, end: e, endWhy: 'Switched to the other side' });
         items.push({ start: e, end: e, side: info.side, firstAsk: info.ask, lastAsk: info.ask, minAsk: info.ask, q: info.q, spend: info.spend, shares: info.shares, f: info.f, active: true });
-        alertBuy(info, Ws, e);
       }
+      const cur = items[items.length - 1];
+      if (!cur.alerted && alertPasses(info)) { cur.alerted = true; alertBuy(info, Ws, e); }
     } else if (live) {
       Object.assign(last, { active: false, end: e, endWhy: plain(info.why) });
     }
@@ -1078,7 +1084,7 @@
     }
     const B2 = +state.sizing.bankroll, shares2 = B2 > 0 ? Math.floor((B2 * f) / cost) : null;
     setSignal(true, line1, line2 + ' · confirm price on Polymarket',
-      { side, ask, q, f, shares: shares2, spend: shares2 != null ? shares2 * cost : null });
+      { side, ask, q, f, mkt: x.favMid, shares: shares2, spend: shares2 != null ? shares2 * cost : null });
   }
 
   const row = (k, v, cls, tip) => `<div class="erow"${tip ? ` title="${esc(tip)}"` : ''}><span>${k}</span><b class="num ${cls || ''}">${v}</b></div>`;
@@ -1133,7 +1139,7 @@
       row('Has won', cell.n >= 20 ? `${(cell.winRate * 100).toFixed(0)}% <span class="muted">of ${cell.n}</span>` : '—', '', details) +
       (cell.n >= 20 ? row('Per $100', `${per100 >= 0 ? '+' : '−'}$${Math.abs(per100).toFixed(2)}`, per100 >= 0 ? 'up' : 'down') : '') +
       (ask >= 0.95 ? `<div class="warn">⚠ One loss wipes out ~${Math.round(ask / Math.max(0.001, 1 - ask - fee(ask)))} wins</div>` : '');
-    renderSignal(state.healthBad ? { reason: 'Data is stale · don\'t trade', sub: 'Waiting for the feeds to come back' } : { w, favUp, ask, cost: breakeven, oursFav, hist: cell });
+    renderSignal(state.healthBad ? { reason: 'Data is stale · don\'t trade', sub: 'Waiting for the feeds to come back' } : { w, favUp, ask, cost: breakeven, oursFav, hist: cell, favMid });
     renderPaper();
   }
 

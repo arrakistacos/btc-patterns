@@ -16,6 +16,8 @@
  *   TARGET       confidence target, 60–95 (default 80)
  *   BANKROLL     optional; adds the exact $ amount and share count to each alert
  *   MAX_PER_WINDOW  alerts per 5-minute window (default 1)
+ *   MIN_MODEL    only alert when the model's win chance for the side is at least this % (default 80)
+ *   MIN_MARKET   ...and Polymarket's own odds for that side are at least this % (default 80)
  *   SITE         where to fetch tuned params.json / data/edge.json (default the GitHub Pages site)
  *   TZ_NAME      time zone for times in alerts (default America/Chicago)
  *   LOG_EVERY    seconds between status lines in the log (default 60)
@@ -42,6 +44,8 @@ const NTFY_TOKEN = process.env.NTFY_TOKEN || '';
 const TARGET = Signal.Z_FOR[+process.env.TARGET] ? +process.env.TARGET : 80;
 const BANKROLL = +process.env.BANKROLL || 0;
 const MAX_PER_WINDOW = Math.max(1, +process.env.MAX_PER_WINDOW || 1);
+const MIN_MODEL = process.env.MIN_MODEL != null && process.env.MIN_MODEL !== '' ? +process.env.MIN_MODEL : 80;   // % win chance from the model
+const MIN_MARKET = process.env.MIN_MARKET != null && process.env.MIN_MARKET !== '' ? +process.env.MIN_MARKET : 80; // % Polymarket odds for that side
 const SITE = (process.env.SITE || 'https://arrakistacos.github.io/btc-patterns/').replace(/\/?$/, '/');
 const TZ_NAME = process.env.TZ_NAME || 'America/Chicago';
 const MARKET_URL = process.env.MARKET_URL || 'https://polymarket.us/';   // where tapping a BUY alert takes you
@@ -268,22 +272,24 @@ function evaluate() {
     const hist = Signal.histCell(edge, e, favMid, agree);
     const w = { S, K, sigma: sig0 * params.volScale, left, e, Ws };
     const r = Signal.evalSignal({ w, favUp, ask, cost, oursFav, hist }, TARGET);
-    if (r.buy) {
+    // Alert filter: both the model's win chance and Polymarket's own odds for that side must reach the minimums
+    const modelPct = r.buy ? r.q * 100 : 0, marketPct = favMid * 100;
+    const alertable = r.buy && modelPct >= MIN_MODEL - 1e-9 && marketPct >= MIN_MARKET - 1e-9;
+    if (alertable) {
       if (!wasBuy && sent.n < MAX_PER_WINDOW) {
         sent.n++;
         const side = favUp ? 'UP' : 'DOWN';
-        const size = Signal.sizeBet(BANKROLL, r.f, cost);
-        const title = `BUY ${side} · ${Math.round(ask * 100)}¢ · ${Math.round(r.q * 100)}% chance`;
-        const body = (size && size.shares >= 1
-          ? `Bet $${size.spend.toFixed(2)} → ${size.shares} shares (win +$${size.profitIfWin.toFixed(2)}, lose −$${size.spend.toFixed(2)}). `
-          : `Bet ${(r.f * 100).toFixed(1)}% of bankroll. `) +
-          `${fmtLeft(left)} left in the ${clock(Ws)} window. Check the price before buying.`;
-        log('BUY →', title, '|', body);
-        push({ title, body, priority: 5, tags: 'rotating_light,moneybag', click: MARKET_URL });
+        const title = `BUY ${side}`;
+        const body = `MODEL ${Math.round(modelPct)}% · POLYMARKET ${Math.round(marketPct)}%`;
+        log('ALERT →', side === 'UP' ? '[green]' : '[red]', title, '|', body, `| ask ${Math.round(ask * 100)}c, ${fmtLeft(left)} left`);
+        push({ title, body, priority: 5, tags: side === 'UP' ? 'green_circle' : 'red_circle', click: MARKET_URL });
       }
       wasBuy = true;
       why = 'BUY';
-    } else { wasBuy = false; why = r.why; }
+    } else {
+      wasBuy = false;
+      why = r.buy ? `BUY, below alert minimums (model ${Math.round(modelPct)}%, polymarket ${Math.round(marketPct)}%)` : r.why;
+    }
   }
   if (t - lastStatus >= LOG_EVERY - 0.05 || (why === 'BUY') !== (lastWhy === 'BUY')) {
     lastStatus = t;
@@ -293,7 +299,7 @@ function evaluate() {
 }
 
 // ---------------------------------------------------------------- start
-log(`Signal bot starting · target ${TARGET}% · ${BANKROLL ? 'bankroll $' + BANKROLL : 'no bankroll set'} · ${DRY ? 'DRY RUN (no pushes)' : 'pushing to ' + NTFY_SERVER + '/' + NTFY_TOPIC.slice(0, 4) + '…'}`);
+log(`Signal bot starting · target ${TARGET}% · alerts when model ≥ ${MIN_MODEL}% and polymarket ≥ ${MIN_MARKET}% · ${BANKROLL ? 'bankroll $' + BANKROLL : 'no bankroll set'} · ${DRY ? 'DRY RUN (no pushes)' : 'pushing to ' + NTFY_SERVER + '/' + NTFY_TOPIC.slice(0, 4) + '…'}`);
 await loadTuning();
 log('tuning:', JSON.stringify(params), tunedAt ? `(from ${tunedAt})` : '(defaults)', edge ? '· history loaded' : '· NO history (alerts need it)');
 await loadCandles(1200);
@@ -303,4 +309,4 @@ setInterval(evaluate, 1000);
 setInterval(async () => { try { const rows = []; const end = bucket(nowS()) + W; const r = await getJSON(`https://api.exchange.coinbase.com/products/BTC-USD/candles?granularity=300&start=${iso(end - 36 * W)}&end=${iso(end)}`); for (const x of r) rows.push({ t: x[0], l: +x[1], h: +x[2], o: +x[3], c: +x[4], v: +x[5] }); rows.sort((a, b) => a.t - b.t); for (const k of rows) { const cur = C.find((c) => c.t === k.t); if (!cur || k.t + W <= nowS()) upsert(k); } } catch (e) { log('resync:', e.message); } }, 60000);
 setInterval(loadTuning, 30 * 60 * 1000);
 setInterval(() => { if (nowS() - lastCbMsg > 20 && cbWs) { log('coinbase silent — reconnecting'); try { cbWs.close(); } catch { /* ignore */ } } }, 5000);
-if (!DRY && !ARGS.has('--quiet-start')) push({ title: 'Signal bot running', body: `Watching BTC 5-min windows · target ${TARGET}% · alerts when BUY NOW fires.`, priority: 2, tags: 'robot', click: SITE });
+if (!DRY && !ARGS.has('--quiet-start')) push({ title: 'Signal bot running', body: `Alerts when BUY fires with MODEL >= ${MIN_MODEL}% and POLYMARKET >= ${MIN_MARKET}%.`, priority: 2, tags: 'robot', click: SITE });

@@ -9,7 +9,9 @@
   Options:
     -Topic     your ntfy topic (required)
     -Target    confidence target 60-95 (default 80)
-    -Bankroll  dollars, adds exact bet amounts to alerts (default 0 = percentages only)
+    -Bankroll  dollars, used for bet sizing (default 0)
+    -MinModel  only alert when the model's win chance is at least this % (default 80)
+    -MinMarket ...and Polymarket's odds for that side are at least this % (default 80)
     -KeepAwake set "plugged in: never sleep, closing the lid does nothing" (default on; use -KeepAwake:$false to skip)
     -Uninstall stop and remove the bot
 #>
@@ -17,6 +19,8 @@ param(
   [string]$Topic = '',
   [int]$Target = 80,
   [double]$Bankroll = 0,
+  [int]$MinModel = 80,
+  [int]$MinMarket = 80,
   [bool]$KeepAwake = $true,
   [switch]$Uninstall
 )
@@ -35,6 +39,7 @@ if ($Uninstall) {
 if (-not $Topic) { Say 'Please pass your ntfy topic:  -Topic btcpw-xxxxxxxx' 'Red'; exit 1 }
 if ($Topic -notmatch '^[A-Za-z0-9_-]{8,64}$') { Say 'Topic must be 8-64 letters, digits, - or _' 'Red'; exit 1 }
 if (@(60, 65, 70, 75, 80, 85, 90, 95) -notcontains $Target) { Say 'Target must be one of 60, 65, 70, 75, 80, 85, 90, 95' 'Red'; exit 1 }
+if ($MinModel -lt 50 -or $MinModel -gt 99 -or $MinMarket -lt 50 -or $MinMarket -gt 99) { Say 'MinModel and MinMarket must be between 50 and 99' 'Red'; exit 1 }
 
 # 1) Node.js 22+ (built-in fetch + WebSocket)
 function NodeMajor { try { $v = (& node --version) 2>$null; if ($v -match '^v(\d+)') { return [int]$Matches[1] } } catch {} ; return 0 }
@@ -67,6 +72,8 @@ $ErrorActionPreference = 'Continue'
 $env:NTFY_TOPIC = '__TOPIC__'
 $env:TARGET = '__TARGET__'
 $env:BANKROLL = '__BANKROLL__'
+$env:MIN_MODEL = '__MINMODEL__'
+$env:MIN_MARKET = '__MINMARKET__'
 $Node = '__NODE__'
 $Dir = '__DIR__'
 Set-Location $Dir
@@ -80,7 +87,7 @@ while ($true) {
 }
 '@
 $q = { param($v) "$v".Replace("'", "''") }
-$runner = $runner.Replace('__TOPIC__', $Topic).Replace('__TARGET__', "$Target").Replace('__BANKROLL__', "$Bankroll").Replace('__NODE__', (& $q $Node)).Replace('__DIR__', (& $q $Dir))
+$runner = $runner.Replace('__TOPIC__', $Topic).Replace('__TARGET__', "$Target").Replace('__BANKROLL__', "$Bankroll").Replace('__MINMODEL__', "$MinModel").Replace('__MINMARKET__', "$MinMarket").Replace('__NODE__', (& $q $Node)).Replace('__DIR__', (& $q $Dir))
 Set-Content -Path (Join-Path $Dir 'run-bot.ps1') -Value $runner -Encoding UTF8
 
 # 4) Scheduled task: start at logon, hidden, restart if it stops, keep running on battery
