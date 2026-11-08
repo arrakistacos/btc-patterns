@@ -96,6 +96,14 @@
   .sigline1 { font-size: 16px; font-weight: 700; }
   .sigline2 { font-size: 13px; color: var(--muted); margin-top: 2px; }
   .sigline2 b { color: var(--text); } .sigline2 b.up { color: var(--up); } .sigline2 b.down { color: var(--down); }
+  .siglog { padding: 8px 14px 10px; border-bottom: 1px solid var(--line); background: #0e1219; font-size: 13px; }
+  .slhead { display: flex; justify-content: space-between; font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin-bottom: 6px; }
+  .slrow { display: grid; grid-template-columns: 54px 1fr; gap: 2px 10px; align-items: center; padding: 6px 8px; border-radius: 8px; margin-top: 4px; background: #131822; border: 1px solid var(--line); }
+  .slrow.on { border-color: var(--up); background: rgba(22,199,132,.10); }
+  .slbadge { grid-row: span 2; text-align: center; font-size: 11px; font-weight: 800; padding: 3px 0; border-radius: 6px; background: #222a37; color: var(--muted); }
+  .slbadge.now { background: var(--up); color: #03140c; }
+  .slmain b { font-weight: 700; } .slmain b.up { color: var(--up); } .slmain b.down { color: var(--down); }
+  .slsub { font-size: 12px; color: var(--muted); }
   .sigbank { display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--muted); }
   .sigbank span { color: var(--text); }
   .sigbank input { width: 110px; background: var(--panel); color: var(--text); border: 1px solid var(--line); border-radius: 8px; padding: 6px 8px; font: inherit; font-family: var(--mono); }
@@ -182,6 +190,7 @@
       </div>
       <label class="sigbank">Bankroll <span>$</span><input id="bankroll" type="number" inputmode="decimal" min="0" step="1" placeholder="e.g. 1000" aria-label="Bankroll in dollars"></label>
     </div>
+    <div class="siglog" id="sigLog" hidden></div>
     <div class="toolbar">
       <label class="chip"><input type="checkbox" id="showMarks" checked> Candle patterns</label>
       <label class="chip"><input type="checkbox" id="showLines" checked> Chart patterns</label>
