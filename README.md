@@ -95,6 +95,35 @@ node tools/record.mjs                      # Node 22+; appends to data/recording
 
 It logs the Coinbase price and Polymarket's bid/ask for the current window every second. This is finer data than the minute-level backfill, for tuning the last minute of each window.
 
+## Phone alerts
+
+A web page can't reliably ring a locked phone: phones pause a page's code soon after the screen turns off. So there are two kinds of alerts:
+
+### 1. Signal bot → ntfy push (works with the phone locked)
+
+`tools/signal-bot.mjs` runs 24/7 on an always-on machine, such as a Raspberry Pi. It watches the same feeds and makes **exactly the same BUY / WAIT decision** as the app, through the shared `signal.js` and `engine.js`. When BUY NOW fires, it sends an urgent push through [ntfy](https://ntfy.sh), a free iPhone/Android app with a loud alert. That's one alert per 5-minute window, so a flickering signal doesn't spam you. Tapping the alert opens that window's Polymarket market.
+
+**Phone:** install **ntfy** (App Store / Google Play) → **+** → subscribe to your topic. Pick a long random name: anyone who knows it can read the alerts. On Android, long-press the topic → *Notification settings* → **Max priority** so it sounds even on Do Not Disturb.
+
+**Raspberry Pi (Node 22+):**
+```bash
+curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash - && sudo apt install -y nodejs git
+git clone https://github.com/arrakistacos/btc-patterns && cd btc-patterns
+NTFY_TOPIC=your-topic node tools/signal-bot.mjs --test     # phone should ring
+NTFY_TOPIC=your-topic TARGET=80 BANKROLL=1000 node tools/signal-bot.mjs   # try it in the foreground
+```
+To keep it running across reboots, edit `tools/signal-bot.service` (user, folder, topic, target, bankroll), then:
+```bash
+sudo cp tools/signal-bot.service /etc/systemd/system/ && sudo systemctl daemon-reload && sudo systemctl enable --now signal-bot
+journalctl -u signal-bot -f      # watch its log
+git pull && sudo systemctl restart signal-bot   # update later
+```
+It re-reads the tuned settings from the site every 30 minutes. If price data stops for over a minute, it sends a warning push, then an "all clear" when data returns.
+
+### 2. In-browser alerts (page open)
+
+The **🔔 Alerts** button in the signal banner beeps, vibrates (Android) and shows a system notification on each new BUY NOW, at most once per 20 seconds. It keeps working in a background tab on a computer. On phones it works only while the page is on screen, and on iPhone only from a Home Screen web app. Browsers need one tap after each page load before they allow sound, so the button shows "Tap to arm".
+
 ## Files
 
 - `index.html` — layout and styles
@@ -102,6 +131,9 @@ It logs the Coinbase price and Polymarket's bid/ask for the current window every
 - `engine.js` — pattern detection, scoring, walk-forward hit rates, prediction (pure JS, also runs in Node)
 - `calibration.html` — model vs Polymarket report
 - `params.json` — tuned window-model parameters (rewritten nightly)
+- `signal.js` — the BUY / WAIT decision, shared by the app and the signal bot
+- `sw.js` — tiny service worker so the page can show system notifications
+- `tools/signal-bot.mjs`, `tools/signal-bot.service` — 24/7 phone-alert bot (ntfy) and its systemd unit
 - `tools/backfill.mjs`, `tools/tune.mjs`, `tools/record.mjs` — data collection and tuning (Node 22+)
 - `vendor/` — TradingView Lightweight Charts v4.2.3 (Apache-2.0)
 

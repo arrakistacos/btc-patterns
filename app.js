@@ -243,6 +243,7 @@
   function onTrade(price, size, ts) {
     noteClock(ts);
     feed.lastTrade = Date.now() / 1000;
+    if (document.hidden && Date.now() - lastTickAt > 1000) setTimeout(tick, 0);
     pushTick(ts || now(), price);
     const t = bucket(ts || now());
     const C = state.candles;
@@ -260,6 +261,7 @@
   function onCandle(k, ts) {
     noteClock(ts);
     feed.lastTrade = Date.now() / 1000;
+    if (document.hidden && Date.now() - lastTickAt > 1000) setTimeout(tick, 0);
     pushTick(ts || now(), k.c);
     const C = state.candles;
     const last = C[C.length - 1];
@@ -653,7 +655,9 @@
   }
   setInterval(renderHealth, 250);
 
+  let lastTickAt = 0;
   function tick() {
+    lastTickAt = Date.now();
     if (state.result && state.result.prediction) {
       const left = Math.max(0, state.result.prediction.forTime + INTERVAL - now());
       $('countdown').textContent = Math.floor(left / 60) + ':' + String(Math.floor(left % 60)).padStart(2, '0');
@@ -825,7 +829,7 @@
 
   // Start price (target) labelled with live P(Up), plus 95% safe-zone lines that tighten as time runs out
   const winLines = {};
-  const Z_FOR = { 60: 0.2533, 65: 0.3853, 70: 0.5244, 75: 0.6745, 80: 0.8416, 85: 1.0364, 90: 1.2816, 95: 1.6449 };
+  const Z_FOR = window.Signal.Z_FOR;
   function drawWindowLines(w) {
     const want = state.view.pred && w;
     if (!want) { for (const k of Object.keys(winLines)) { candleSeries.removePriceLine(winLines[k]); delete winLines[k]; } return; }
@@ -903,7 +907,7 @@
     const le = localCal && localCal.edge;
     state.edge = le && (!j || le.generated > j.generated) ? le : j;
   });
-  const fee = (p) => 0.07 * p * (1 - p);
+  const fee = window.Signal.fee;
   function priceAgo(sec) {
     const target = now() - sec;
     let best = null;
@@ -915,8 +919,7 @@
   // BUY only when ALL hold: feeds healthy · 0:40–4:30 into the window · gap has reached the target confidence
   // on the same side as the market favorite · price under 95¢ · both our live model AND history beat the price
   // (ask + fee) by 2+ points. Size: ¼ Kelly on the lower of the two win chances, kept between 1% and 2%.
-  const MARGIN = 0.02, MIN_F = 0.01, MAX_F = 0.02;
-  const TARGETS = [60, 65, 70, 75, 80, 85, 90, 95];
+  const TARGETS = window.Signal.TARGETS;
   // Shadow paper trades: for every target, the first BUY in each window is logged and later scored.
   state.shadow = store.get('shadow', []);
   state.shadowSince = store.get('shadowSince', null);
@@ -928,6 +931,69 @@
     $('sigLine2').innerHTML = line2 || '';
     logSignal(buy, buy ? info : { why: line1 });
   }
+
+  // ---------- browser alerts: beep + vibrate + system notification on each new BUY ----------
+  state.alerts = { on: !!store.get('alertsOn', false), ctx: null, reg: null, lastAt: 0 };
+  if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').then((r) => { state.alerts.reg = r; }).catch(() => {});
+  function audioCtx() {
+    if (!state.alerts.ctx) { const AC = window.AudioContext || window.webkitAudioContext; if (AC) state.alerts.ctx = new AC(); }
+    const c = state.alerts.ctx;
+    if (c && c.state === 'suspended') c.resume().catch(() => {});
+    return c;
+  }
+  function beep(pattern) {
+    const c = audioCtx();
+    if (!c || c.state !== 'running') return false;
+    let t = c.currentTime + 0.02;
+    for (const [freq, dur] of pattern) {
+      const o = c.createOscillator(), g = c.createGain();
+      o.type = 'square'; o.frequency.value = freq;
+      g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(0.35, t + 0.01); g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+      o.connect(g).connect(c.destination); o.start(t); o.stop(t + dur + 0.02);
+      t += dur + 0.06;
+    }
+    return true;
+  }
+  const BUY_TUNE = [[880, 0.14], [1175, 0.14], [1568, 0.28], [880, 0.14], [1175, 0.14], [1568, 0.28]];
+  function renderAlertBtn() {
+    const b = $('alertBtn');
+    if (!b) return;
+    const c = state.alerts.ctx, armed = state.alerts.on && c && c.state === 'running';
+    b.className = 'alertbtn ' + (armed ? 'on' : state.alerts.on ? 'arm' : '');
+    b.textContent = armed ? '🔔 Alerts on' : state.alerts.on ? '🔔 Tap to arm' : '🔕 Alerts off';
+    b.title = armed ? 'Beeps, vibrates and shows a notification when BUY NOW starts. Keep this page open.' :
+      state.alerts.on ? 'Browsers need one tap after loading before they allow sound' : 'Turn on sound + notification alerts for BUY NOW';
+  }
+  async function toggleAlerts() {
+    const A = state.alerts;
+    if (A.on && A.ctx && A.ctx.state === 'running') { A.on = false; store.set('alertsOn', false); renderAlertBtn(); return; }
+    A.on = true; store.set('alertsOn', true);
+    audioCtx();
+    if ('Notification' in window && Notification.permission === 'default') { try { await Notification.requestPermission(); } catch (e) { /* ignore */ } }
+    setTimeout(() => { beep([[1175, 0.12]]); renderAlertBtn(); }, 50);
+  }
+  // Browsers only allow sound after a tap: any tap on the page arms saved alerts
+  document.addEventListener('pointerdown', () => { if (state.alerts.on) { audioCtx(); setTimeout(renderAlertBtn, 50); } }, { capture: true });
+  function alertBuy(info, Ws, e) {
+    const A = state.alerts;
+    if (!A.on || Date.now() - A.lastAt < 20000) return;   // at most one alert per 20s, so a flickering signal doesn't spam
+    A.lastAt = Date.now();
+    beep(BUY_TUNE);
+    if (navigator.vibrate) navigator.vibrate([400, 120, 400, 120, 800]);
+    const title = `BUY ${info.side} · ${Math.round(info.ask * 100)}¢ · ${Math.round(info.q * 100)}% chance`;
+    const body = (info.spend != null ? `Bet $${info.spend.toFixed(2)} → ${info.shares} shares. ` : `Bet ${(info.f * 100).toFixed(1)}% of bankroll. `) +
+      `${fmtLeft(INTERVAL - e)} left in the ${tLocal(Ws)} window.`;
+    const opts = { body, tag: 'btc-buy', renotify: true, requireInteraction: true, vibrate: [400, 120, 400, 120, 800], data: { url: location.href } };
+    try {
+      if ('Notification' in window && Notification.permission === 'granted') {
+        if (A.reg && A.reg.showNotification) A.reg.showNotification(title, opts);
+        else new Notification(title, opts);
+      }
+    } catch (err) { /* sound and vibration already fired */ }
+  }
+
+  $('alertBtn').onclick = toggleAlerts;
+  renderAlertBtn();
 
   // ---------- this window's signal log (clears when a new window starts) ----------
   state.sigLog = { Ws: null, items: [] };
@@ -945,6 +1011,7 @@
       } else {
         if (live) Object.assign(last, { active: false, end: e, endWhy: 'Switched to the other side' });
         items.push({ start: e, end: e, side: info.side, firstAsk: info.ask, lastAsk: info.ask, minAsk: info.ask, q: info.q, spend: info.spend, shares: info.shares, f: info.f, active: true });
+        alertBuy(info, Ws, e);
       }
     } else if (live) {
       Object.assign(last, { active: false, end: e, endWhy: plain(info.why) });
@@ -970,20 +1037,8 @@
       </div>`;
     }).join('');
   }
-  // Pure decision for one target. Returns { buy:false, why, sub } or { buy:true, q, f }
-  function evalSignal(x, tgt) {
-    const { w, favUp, ask, cost, oursFav, hist } = x;
-    const side = favUp ? 'UP' : 'DOWN';
-    const d = w.S - w.K, sigLeft = w.sigma * Math.sqrt(Math.max(1, w.left));
-    const need = (Z_FOR[tgt] || 0.8416) * sigLeft;
-    if (Math.abs(d) < need) return { buy: false, why: `Gap not safe yet · needs $${(need - Math.abs(d)).toFixed(0)} more`, sub: `${tgt}% target` };
-    if ((d >= 0) !== favUp) return { buy: false, why: 'Market disagrees with the gap', sub: `Gap says ${d >= 0 ? 'UP' : 'DOWN'}, Polymarket favors ${side} · likely a start-price difference` };
-    if (ask >= 0.95) return { buy: false, why: `Price too high · ${side} costs ${Math.round(ask * 100)}¢`, sub: 'Payoff too small for the risk' };
-    if (!hist || hist.n < 20) return { buy: false, why: 'Not enough history at this price', sub: '' };
-    const q = Math.min(oursFav, hist.winRate);
-    if (q < cost + MARGIN) return { buy: false, why: `Price too high · ${Math.round(ask * 100)}¢ for a ${Math.round(q * 100)}% chance`, sub: `Needs ${Math.round((cost + MARGIN) * 100)}%+ to be worth it` };
-    return { buy: true, q, f: Math.min(MAX_F, Math.max(MIN_F, 0.25 * (q - cost) / (1 - cost))) };
-  }
+  // Decision lives in signal.js, shared with the phone-alert bot
+  const evalSignal = (x, tgt) => window.Signal.evalSignal(x, tgt);
   function recordShadow(x) {
     const { w, favUp, ask } = x;
     let changed = false;
