@@ -32,15 +32,23 @@ $ProgressPreference = 'SilentlyContinue'   # Windows PowerShell downloads are ve
 $TaskName = 'BTC Pattern Watch signal bot'
 $Dir = Join-Path $env:USERPROFILE 'dev\btc-patterns-bot'
 function Say($m, $c = 'Cyan') { Write-Host $m -ForegroundColor $c }
+# Stop every running copy: the scheduled task, its hidden restart loop (run-bot.ps1) and the bot itself.
+# Killing only node.exe is not enough: the old loop restarts it 10 s later with its old settings.
+function StopBot {
+  Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue | Stop-ScheduledTask -ErrorAction SilentlyContinue
+  Get-CimInstance Win32_Process -Filter "Name='powershell.exe' OR Name='pwsh.exe'" | Where-Object { $_.CommandLine -like '*run-bot.ps1*' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+  Get-CimInstance Win32_Process -Filter "Name='node.exe'" | Where-Object { $_.CommandLine -like '*signal-bot.mjs*' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+}
 
 if ($Uninstall) {
+  StopBot
   Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue | Unregister-ScheduledTask -Confirm:$false
-  Get-CimInstance Win32_Process -Filter "Name='node.exe'" | Where-Object { $_.CommandLine -like '*signal-bot.mjs*' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }
   Say "Removed the scheduled task and stopped the bot. Files are still in $Dir (delete the folder if you like)." 'Green'
   exit 0
 }
 if (-not $Topic) { Say 'Please pass your ntfy topic:  -Topic btcpw-xxxxxxxx' 'Red'; exit 1 }
 if ($Topic -notmatch '^[A-Za-z0-9_-]{8,64}$') { Say 'Topic must be 8-64 letters, digits, - or _' 'Red'; exit 1 }
+if ($Topic -match '^(your|my)[-_]?(real[-_]?)?topic' -or $Topic -match 'topic[-_]?here') { Say "'$Topic' is the example from the instructions. Use the topic you subscribed to in the ntfy app on your phone." 'Red'; exit 1 }
 if (@(60, 65, 70, 75, 80, 85, 90, 95) -notcontains $Target) { Say 'Target must be one of 60, 65, 70, 75, 80, 85, 90, 95' 'Red'; exit 1 }
 if ($MinModel -lt 50 -or $MinModel -gt 99 -or $MinMarket -lt 50 -or $MinMarket -gt 99) { Say 'MinModel and MinMarket must be between 50 and 99' 'Red'; exit 1 }
 
@@ -125,8 +133,10 @@ $runner = $runner.Replace('__TOPIC__', $Topic).Replace('__TARGET__', "$Target").
 Set-Content -Path (Join-Path $Dir 'run-bot.ps1') -Value $runner -Encoding UTF8
 
 # 4) Scheduled task: start at logon, hidden, restart if it stops, keep running on battery
+StopBot
 Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue | Unregister-ScheduledTask -Confirm:$false
-Get-CimInstance Win32_Process -Filter "Name='node.exe'" | Where-Object { $_.CommandLine -like '*signal-bot.mjs*' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }
+Start-Sleep -Seconds 1
+StopBot   # in case a loop restarted node in the meantime
 $action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$Dir\run-bot.ps1`""
 $trigger = New-ScheduledTaskTrigger -AtLogOn -User "$env:USERDOMAIN\$env:USERNAME"
 $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable `
@@ -135,6 +145,9 @@ try {
   Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $trigger -Settings $settings -Description 'Sends ntfy phone alerts when BTC Pattern Watch says BUY NOW' -ErrorAction Stop | Out-Null
 } catch { Say "Could not create the background task ($($_.Exception.Message)). Open PowerShell with 'Run as administrator' and run this again." 'Red'; exit 1 }
 Start-ScheduledTask -TaskName $TaskName
+Start-Sleep -Seconds 3
+$n = @(Get-CimInstance Win32_Process -Filter "Name='powershell.exe' OR Name='pwsh.exe'" | Where-Object { $_.CommandLine -like '*run-bot.ps1*' }).Count
+if ($n -gt 1) { Say "Warning: $n copies of the bot are running. Restart the laptop to clear the old one." 'Yellow' }
 Say "Bot installed in $Dir and running in the background." 'Green'
 
 # 5) Keep the laptop awake while plugged in
@@ -154,6 +167,7 @@ if ($KeepAwake) {
 # 5b) Check the Polymarket US key
 if ($Autopilot -and (Test-Path $EnvFile)) {
   Say "`nChecking your Polymarket US key..."
+  $env:NTFY_TOPIC = $Topic
   $out = & $Node (Join-Path $Dir 'tools\signal-bot.mjs') --check-autopilot 2>&1 | Out-String
   if ($out -match 'Key works') {
     if ($out -match '"buyingPower":\s*([\d.]+)') { Say "Key works. Buying power: `$$($Matches[1])" 'Green' } else { Say 'Key works.' 'Green' }

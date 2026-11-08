@@ -118,6 +118,29 @@ if (TEST) {
   process.exit(ok ? 0 : 1);
 }
 
+// ---------------------------------------------------------------- one copy only
+// Two copies would send double alerts and place double trades. Each running bot refreshes bot.lock every
+// 20 s; a new copy that finds a fresh lock from another process waits and exits instead of trading.
+if (!DRY && !CHECK_AP) {
+  const { writeFileSync } = await import('node:fs');
+  const LOCK = resolve(ROOT, 'bot.lock');
+  const readLock = () => { try { return JSON.parse(readFileSync(LOCK, 'utf8')); } catch { return null; } };
+  const other = readLock();
+  if (other && other.pid !== process.pid && Date.now() - other.at < 60000) {
+    log(`another copy of the bot is already running (pid ${other.pid}, topic ${String(other.topic || '').slice(0, 4)}…); this copy will exit. If you just reinstalled, restart the laptop to clear the old one.`);
+    await sleep(60000);   // keeps a restart loop from spinning
+    process.exit(0);
+  }
+  const started = Date.now();
+  const touch = () => { try { writeFileSync(LOCK, JSON.stringify({ pid: process.pid, at: Date.now(), started, topic: NTFY_TOPIC })); } catch { /* ignore */ } };
+  touch(); setInterval(() => {
+    // if two started at once, the older one keeps running
+    const l = readLock();
+    if (l && l.pid !== process.pid && Date.now() - l.at < 60000 && (l.started || 0) <= started) { log(`another copy is running (pid ${l.pid}); exiting`); process.exit(0); }
+    touch();
+  }, 20000);
+}
+
 // ---------------------------------------------------------------- autopilot
 const AP = createAutopilot({ dir: ROOT, log, push, Signal, APC, topic: NTFY_TOPIC, ntfyServer: NTFY_SERVER, ntfyToken: NTFY_TOKEN, site: SITE, tzName: TZ_NAME, defMinModel: MIN_MODEL, defMinMarket: MIN_MARKET });
 if (CHECK_AP) {

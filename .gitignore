@@ -1,3 +1,8 @@
+autopilot-check.txt
+autopilot-state.json
+autopilot-state.json.tmp
+bot.lock
 data/backfill.json
 data/recordings/
 node_modules/
+polymarket.env
