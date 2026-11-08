@@ -921,11 +921,54 @@
   state.shadow = store.get('shadow', []);
   state.shadowSince = store.get('shadowSince', null);
   function saveSizing() { store.set('sizing', state.sizing); renderWindow(); }
-  function setSignal(buy, line1, line2) {
+  function setSignal(buy, line1, line2, info) {
     $('signal').className = 'signal ' + (buy ? 'buy' : 'wait');
     $('sigWord').textContent = buy ? 'BUY NOW' : 'WAIT';
     $('sigLine1').innerHTML = line1;
     $('sigLine2').innerHTML = line2 || '';
+    logSignal(buy, buy ? info : { why: line1 });
+  }
+
+  // ---------- this window's signal log (clears when a new window starts) ----------
+  state.sigLog = { Ws: null, items: [] };
+  const plain = (h) => String(h).replace(/<[^>]*>/g, '');
+  const fmtLeft = (sec) => `${Math.floor(sec / 60)}:${String(Math.floor(sec % 60)).padStart(2, '0')}`;
+  function logSignal(buy, info) {
+    const t = now(), Ws = bucket(t), e = t - Ws;
+    if (state.sigLog.Ws !== Ws) state.sigLog = { Ws, items: [] };
+    const items = state.sigLog.items, last = items[items.length - 1];
+    const live = last && last.active;
+    if (buy) {
+      if (live && last.side === info.side) {
+        Object.assign(last, { end: e, lastAsk: info.ask, q: info.q, spend: info.spend, shares: info.shares, f: info.f });
+        last.minAsk = Math.min(last.minAsk, info.ask);
+      } else {
+        if (live) Object.assign(last, { active: false, end: e, endWhy: 'Switched to the other side' });
+        items.push({ start: e, end: e, side: info.side, firstAsk: info.ask, lastAsk: info.ask, minAsk: info.ask, q: info.q, spend: info.spend, shares: info.shares, f: info.f, active: true });
+      }
+    } else if (live) {
+      Object.assign(last, { active: false, end: e, endWhy: plain(info.why) });
+    }
+    renderSigLog();
+  }
+  function renderSigLog() {
+    const box = $('sigLog');
+    if (!box) return;
+    const { Ws, items } = state.sigLog;
+    if (!items.length) { box.hidden = true; box.innerHTML = ''; return; }
+    box.hidden = false;
+    const head = `<div class="slhead"><span>This window's BUY signals (${items.length})</span><span class="muted">clears at ${tLocal(Ws + INTERVAL)}</span></div>`;
+    box.innerHTML = head + items.slice().reverse().map((it) => {
+      const cls = it.side === 'UP' ? 'up' : 'down';
+      const price = Math.round(it.firstAsk * 100) === Math.round(it.lastAsk * 100) ? `${Math.round(it.firstAsk * 100)}¢` : `${Math.round(it.firstAsk * 100)}→${Math.round(it.lastAsk * 100)}¢`;
+      const amt = it.spend != null ? ` · $${it.spend.toFixed(2)} (${it.shares} sh)` : ` · ${(it.f * 100).toFixed(1)}% of bankroll`;
+      const dur = Math.max(1, Math.round(it.end - it.start + 1));
+      return `<div class="slrow ${it.active ? 'on' : ''}">
+        <span class="slbadge ${it.active ? 'now' : ''}">${it.active ? 'NOW' : 'ended'}</span>
+        <div class="slmain"><b class="${cls}">BUY ${it.side}</b> at ${price} · <b>${Math.round(it.q * 100)}%</b> chance${amt}</div>
+        <div class="slsub">${fmtLeft(INTERVAL - it.start)} left · ${it.active ? 'active' : 'lasted'} ${dur}s${it.endWhy ? ' · ended: ' + esc(it.endWhy) : ''}${!it.active && it.minAsk < it.lastAsk - 0.005 ? ` · best price was ${Math.round(it.minAsk * 100)}¢` : ''}</div>
+      </div>`;
+    }).join('');
   }
   // Pure decision for one target. Returns { buy:false, why, sub } or { buy:true, q, f }
   function evalSignal(x, tgt) {
@@ -978,7 +1021,9 @@
       line1 = `<span class="${cls}">${side}</span> at ${Math.round(ask * 100)}¢ · bet ${(f * 100).toFixed(1)}% of bankroll`;
       line2 = `<b>${Math.round(q * 100)}%</b> chance to win · enter your bankroll for the exact amount · ${left}`;
     }
-    setSignal(true, line1, line2 + ' · confirm price on Polymarket');
+    const B2 = +state.sizing.bankroll, shares2 = B2 > 0 ? Math.floor((B2 * f) / cost) : null;
+    setSignal(true, line1, line2 + ' · confirm price on Polymarket',
+      { side, ask, q, f, shares: shares2, spend: shares2 != null ? shares2 * cost : null });
   }
 
   const row = (k, v, cls, tip) => `<div class="erow"${tip ? ` title="${esc(tip)}"` : ''}><span>${k}</span><b class="num ${cls || ''}">${v}</b></div>`;
