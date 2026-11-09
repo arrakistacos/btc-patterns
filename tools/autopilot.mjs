@@ -305,6 +305,62 @@ export function createAutopilot(o) {
     }
   }
 
+  // ------------------------------------------------------------ late coin-flip test (practice only, never real money)
+  // Backtest idea: with 75–30 s left in a close window (favorite 50–70¢), buy the side our model prefers when it
+  // gives that side ≥ 60%. Here it is paper-traded at the live Polymarket US price, $10 a trade, to see whether the
+  // edge survives real prices. Kept apart from the main trades and stats.
+  const LATE = { minLeft: 30, maxLeft: 75, favLo: 0.50, favHi: 0.70, minModel: 0.60, stake: 10, maxPx: 0.80 };
+  S.late = S.late || { since: Date.now(), stats: zeroStats(), trades: [] };
+  const lateTried = new Set();
+  async function observeLate(x) {           // x: { Ws, e, pUp, mkUp } with mkUp = Polymarket's Up odds the bot sees
+    const left = W - x.e;
+    if (left > LATE.maxLeft || left < LATE.minLeft || lateTried.has(x.Ws)) return;
+    const favMid = Math.max(x.mkUp, 1 - x.mkUp);
+    if (favMid < LATE.favLo || favMid >= LATE.favHi) return;
+    const up = x.pUp >= 0.5, q = up ? x.pUp : 1 - x.pUp;
+    if (q < LATE.minModel) return;
+    lateTried.add(x.Ws);
+    for (const k of lateTried) if (k < x.Ws - 3600) lateTried.delete(k);
+    if (S.late.trades.some((t) => t.Ws === x.Ws)) return;
+    const rec = { Ws: x.Ws, ts: Date.now(), side: up ? 'UP' : 'DOWN', q: r4(q), quoted: r4(up ? x.mkUp : 1 - x.mkUp), left: Math.round(left), result: null, pnl: null };
+    try {
+      const mkt = await marketFor(x.Ws); rec.slug = mkt.slug;
+      const bk = await book(mkt.slug);
+      const levels = up ? bk.asks : bk.bids.map(([p, n]) => [r4(1 - p), n]);
+      const feeAt = (p) => mkt.feeK * p * (1 - p);
+      if (!levels.length) { rec.status = 'nofill'; rec.msg = 'No sellers on Polymarket US'; }
+      else if (levels[0][0] >= LATE.maxPx) { rec.status = 'skipped'; rec.px = levels[0][0]; rec.msg = `Polymarket US price ${cents(levels[0][0])}`; }
+      else {
+        const limit = r2(levels[0][0] + mkt.tick);
+        let need = r2(LATE.stake / (limit + feeAt(limit))), filled = 0, notional = 0;
+        for (const [p, n] of levels) { if (p > limit + 1e-9 || need <= 0) break; const take = Math.min(n, need); filled += take; notional += take * p; need -= take; }
+        filled = r2(filled);
+        if (filled > 0) { const px = notional / filled; rec.status = 'filled'; rec.qty = filled; rec.px = r4(px); rec.cost = r2(notional + feeAt(px) * filled); }
+        else { rec.status = 'nofill'; rec.msg = 'Nothing for sale at the price'; }
+      }
+    } catch (e) { rec.status = 'error'; rec.msg = e.message.slice(0, 80); }
+    S.late.trades.push(rec);
+    if (S.late.trades.length > 300) S.late.trades.splice(0, S.late.trades.length - 300);
+    if (rec.status === 'filled') { S.late.stats.n++; S.late.stats.staked = r2(S.late.stats.staked + rec.cost); }
+    if (rec.status === 'nofill') S.late.stats.nofill++;
+    log(`late coin-flip test: ${rec.status} ${rec.side}${rec.px ? ' @ ' + cents(rec.px) : ''} (Polymarket showed ${cents(rec.quoted)}, model ${Math.round(q * 100)}%, ${rec.left}s left)${rec.msg ? ' - ' + rec.msg : ''}`);
+    save(); publishSoon();
+  }
+  async function settleLate() {
+    const now = Date.now() / 1000;
+    for (const t of S.late.trades) {
+      if (t.result != null || t.status !== 'filled' || now < t.Ws + W + 15) continue;
+      let s = null;
+      try { const j = await gw(`/v1/markets/${t.slug}/settlement`); if (j.settlement != null) s = +j.settlement; } catch { /* not yet */ }
+      if (s == null && now > t.Ws + W + 600) { try { const u = await Signal.fetchUsTerms(t.Ws); if (u.settlementPrice && u.priceToBeat) s = u.settlementPrice >= u.priceToBeat ? 1 : 0; } catch { /* later */ } }
+      if (s == null) continue;
+      const won = (s >= 0.5) === (t.side === 'UP');
+      t.result = won ? 1 : 0; t.pnl = r2((won ? t.qty : 0) - t.cost);
+      const st = S.late.stats; st.pnl = r2(st.pnl + t.pnl); if (won) st.w++; else st.l++;
+      save(); publishSoon();
+    }
+  }
+
   // ------------------------------------------------------------ settings scoreboard
   // Every second of every tradable window, check every combination of gap target × model minimum ×
   // Polymarket minimum. Record the first BUY each combination would make, then score it on the Polymarket US
@@ -379,8 +435,10 @@ export function createAutopilot(o) {
       ap: { enabled: S.enabled, mode: S.mode, betPct: S.betPct, dailyStopPct: S.dailyStopPct, lossStreak: S.lossStreak, cooldownMin: S.cooldownMin, goal: S.goal, streak: S.streak[S.mode] || 0, notifyFills: S.notifyFills, notifyResults: S.notifyResults, minModel: minModel(o.defMinModel), minMarket: minMarket(o.defMinMarket), target: target(o.defTarget), halted: S.halted },
       bal: { live: S.liveBal, practice: S.practice }, stats: S.stats, days, acks: acks.slice(-5),
       trades: S.trades.slice(-12).map(tr),
+      late: { since: S.late.since, stats: S.late.stats, trades: S.late.trades.slice(-6).map((t) => [t.ts, t.Ws, t.side, t.status, t.px || 0, t.quoted, Math.round(t.q * 100), t.result, t.pnl, t.left, t.msg || '']) },
     };
     while (JSON.stringify(snap).length > 2900 && snap.trades.length > 3) snap.trades.shift();   // ntfy messages are capped at 4 KB
+    while (JSON.stringify(snap).length > 2900 && snap.late.trades.length > 2) snap.late.trades.shift();
     return snap;
   }
   async function publish(payload) {
@@ -489,7 +547,7 @@ export function createAutopilot(o) {
   function tick(why) {
     botWhy = why || botWhy;
     const now = Date.now();
-    if (now - lastSettleCheck > 10000) { lastSettleCheck = now; settle().catch((e) => log('autopilot settle:', e.message)); sbSettle().catch((e) => log('scoreboard settle:', e.message)); }
+    if (now - lastSettleCheck > 10000) { lastSettleCheck = now; settle().catch((e) => log('autopilot settle:', e.message)); settleLate().catch((e) => log('late test settle:', e.message)); sbSettle().catch((e) => log('scoreboard settle:', e.message)); }
     if (now - STARTED > 30000) publishScore();
     if (S.halted && S.halted.untilTs && now >= S.halted.untilTs) {
       S.halted = null; save(); publishSoon();
@@ -531,5 +589,5 @@ export function createAutopilot(o) {
 
   function start() { listen(); publishSoon(3000); }
   process.on('exit', () => sbSave(true));
-  return { onSignal, observe, tick, start, check, settle, sbSettle, scoreboard, publishScore, minModel, minMarket, target, state: () => S, hasKey: () => !!KEY, flush: publish };
+  return { onSignal, observe, observeLate, settleLate, tick, start, check, settle, sbSettle, scoreboard, publishScore, minModel, minMarket, target, state: () => S, hasKey: () => !!KEY, flush: publish };
 }

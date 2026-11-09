@@ -163,6 +163,8 @@ Tap **Resume** on the page once it's fixed. **Turn off** on the page stops all n
 
 **Which settings work best:** in every window, the bot checks all 80 combinations of gap target (60/70/80/90%), model minimum (off/80/85/90%) and Polymarket minimum (off/70/80/85/90%). It records the first BUY each would make, scores it on the Polymarket US result at Polymarket's price plus the US fee, and the autopilot page ranks them by profit per $100. **Use** switches the bot to that combination. It runs 24/7 with no page open and keeps 30 days in `scoreboard.json`; rankings mean little until rows have about 100 trades.
 
+**Late coin-flip test (practice only):** with 75–30 seconds left in a close window (favorite priced 50–70¢), the bot paper-buys the side our model gives at least 60%, at the live Polymarket US price, $10 a trade, and scores it on the US result. It never places a real order and is kept separate from your balance and stats. In a backtest this won 65% at about 54¢, but those minute-by-minute prices may have lagged; this checks the idea against real prices. Results are on the autopilot page.
+
 **Phone notifications:** each trade placed and each win or loss (both can be turned off), plus halts and switching to live.
 
 **Setup (Windows):** create an API key at [polymarket.us/developer](https://polymarket.us/developer). It needs your verified Polymarket US account; the secret is shown only once. Then re-run the installer with `-Autopilot`:

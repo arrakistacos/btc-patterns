@@ -340,6 +340,7 @@ function evaluate() {
     const w = { S, K, sigma: sig0 * params.volScale, left, e, Ws };
     const r = Signal.evalSignal({ w, favUp, ask, cost, oursFav, hist }, AP.target(TARGET));   // the autopilot page can change the target
     AP.observe({ Ws, e, w, favUp, ask, cost, oursFav, hist, favMid });   // settings scoreboard: every combination, every window
+    AP.observeLate({ Ws, e, pUp, mkUp: mk });                          // late coin-flip test (practice only)
     // Alert filter: both the model's win chance and Polymarket's own odds for that side must reach the minimums
     const modelPct = r.buy ? r.q * 100 : 0, marketPct = favMid * 100;
     const minM = AP.minModel(MIN_MODEL), minK = AP.minMarket(MIN_MARKET);   // the autopilot page can change these
