@@ -377,8 +377,16 @@ function evaluate() {
         const title = `BUY ${side}`;
         const body = `MODEL ${Math.round(modelPct)}% · POLYMARKET ${Math.round(marketPct)}%`;
         log('ALERT →', side === 'UP' ? '[green]' : '[red]', title, '|', body, `| ask ${Math.round(ask * 100)}c, ${fmtLeft(left)} left`);
-        push({ title, body, priority: 5, tags: side === 'UP' ? 'green_circle' : 'red_circle', click: marketUrl(Ws) });
-        AP.onSignal({ Ws, favUp, q: r.q, modelPct, marketPct, left });
+        // One notification per signal: if autopilot bought it for real, its "BOUGHT" message is the alert.
+        // Otherwise send the BUY alert, noting what autopilot did (practice fill, or why it didn't trade).
+        const buyAlert = (extra) => push({ title, body: body + (extra || ''), priority: 5, tags: side === 'UP' ? 'green_circle' : 'red_circle', click: marketUrl(Ws) });
+        AP.onSignal({ Ws, favUp, q: r.q, modelPct, marketPct, left }).then((t) => {
+          const filled = t && (t.status === 'filled' || t.status === 'partial');
+          if (filled && t.mode === 'live') return;                                   // autopilot already sent BOUGHT
+          if (filled) return buyAlert(` · practice bought @ ${Math.round(t.px * 100)}¢`);
+          if (t && t.mode === 'live') return buyAlert(` · autopilot did not buy: ${t.msg || t.status}`);
+          return buyAlert();
+        }).catch(() => buyAlert());
       }
       wasBuy = true;
       why = 'BUY';

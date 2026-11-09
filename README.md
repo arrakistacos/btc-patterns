@@ -165,7 +165,7 @@ Tap **Resume** on the page once it's fixed. **Turn off** on the page stops all n
 
 **Late coin-flip test (practice only):** with 75–30 seconds left in a close window (favorite priced 50–70¢), the bot paper-buys the side our model gives at least 60%, at the live Polymarket US price, $10 a trade, and scores it on the US result. In a backtest this won 65% at about 54¢, but those minute-by-minute prices may have lagged; this checks the idea against real prices. Results are on the autopilot page. **Trade this for real** (off by default, asks to confirm) places real orders of a fixed dollar amount ($5 to start) while autopilot is Live and on. These count toward your balance, stops, 2-loss pause and goal, and are skipped if a normal trade already happened in that window.
 
-**Phone notifications:** each trade placed and each win or loss (both can be turned off), plus halts and switching to live.
+**Phone notifications:** one message per BUY signal. If autopilot bought it for real, you get **BOUGHT UP/DOWN** (price, amount, model and Polymarket %) instead of the BUY alert. Otherwise you get the usual **BUY** alert, which notes any practice purchase ("practice bought @ 88¢") or why autopilot didn't trade. Optional extras: each real late coin-flip trade, and each win or loss. Halts and switching to live always notify you.
 
 **Setup (Windows):** create an API key at [polymarket.us/developer](https://polymarket.us/developer). It needs your verified Polymarket US account; the secret is shown only once. Then re-run the installer with `-Autopilot`:
 ```powershell

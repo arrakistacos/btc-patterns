@@ -175,12 +175,12 @@ export function createAutopilot(o) {
     if (S.halted) return note(`Signal ignored: halted (${S.halted.reason})`);
     if (busy || tried.has(Ws) || S.trades.some((t) => t.Ws === Ws)) return;
     tried.add(Ws); busy = true;
-    try { await trade(sig); }
+    try { return await trade(sig); }
     catch (e) {
       log('autopilot trade error:', e.message);
       if (isAuthError(e)) halt('Polymarket rejected the API key', e.message.slice(0, 160));
       else if (isMoneyError(e)) outOfMoney(0, 'Polymarket US refused the order: not enough funds.');
-      record({ Ws, mode: S.mode, side: sig.favUp ? 'UP' : 'DOWN', status: 'error', msg: e.message.slice(0, 120), q: sig.q });
+      return record({ Ws, mode: S.mode, side: sig.favUp ? 'UP' : 'DOWN', status: 'error', msg: e.message.slice(0, 120), q: sig.q });
     } finally { busy = false; save(); publishSoon(); }
   }
 
@@ -236,7 +236,9 @@ export function createAutopilot(o) {
     S.stats[mode].n++; S.stats[mode].staked = r2(S.stats[mode].staked + cost);
     day.n++;
     log(`AUTOPILOT ${mode.toUpperCase()} bought ${side} ${filled} @ ${cents(px)} = ${money(cost)} (${S.betPct}% of ${money(bal)})`);
-    if (S.notifyFills) push({ title: `${live ? '' : 'PRACTICE '}BOUGHT ${side}`, body: `${filled} @ ${cents(px)} = ${money(cost)} (${S.betPct}% of ${money(bal)})`, priority: live ? 4 : 2, tags: side === 'UP' ? 'green_circle' : 'red_circle', click: o.site + 'autopilot.html' });
+    // A real purchase replaces the BUY alert, so it always notifies (loudly), with the signal's numbers.
+    // Practice fills are mentioned inside the bot's BUY alert instead of a second message.
+    if (live) push({ title: `BOUGHT ${side}`, body: `${filled} @ ${cents(px)} = ${money(cost)} (${S.betPct}% of ${money(bal)}) · MODEL ${Math.round(sig.modelPct || q * 100)}% · POLYMARKET ${Math.round(sig.marketPct || 0)}%`, priority: 5, tags: side === 'UP' ? 'green_circle' : 'red_circle', click: o.site + 'autopilot.html' });
     return t;
   }
 
