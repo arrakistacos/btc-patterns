@@ -153,7 +153,7 @@
       </div>
       <div class="row" style="margin-bottom:6px">
         <label><input type="checkbox" id="lateLive"> Trade this for real</label>
-        <span class="row">$<input id="lateBet" type="number" min="1" max="1000" step="1"> per trade</span>
+        <span class="row"><input id="lateBet" type="number" min="1" max="1000" step="1"><select id="lateUnit"><option value="usd">dollars</option><option value="pct">% of balance</option></select> per trade</span>
         <button id="lateSave">Save</button>
       </div>
       <p class="hint" id="lateNote" style="margin-top:0">Real orders only while autopilot is <b>Live</b> and on. They count toward your balance, stops, 2-loss pause and goal, and are skipped if a normal trade already happened in that window.</p>
@@ -454,15 +454,21 @@
       $('lR').className = 'v num ' + (ap && ap.lateLive && ap.mode === 'live' ? 'up' : '');
       const realOn = ap && ap.lateLive && ap.mode === 'live';
       $('lateTag').textContent = realOn ? 'REAL MONEY ON' : 'PRACTICE'; $('lateTag').className = 'tag ' + (realOn ? 'l' : 'p');
-      $('lRs').textContent = (ap && ap.lateLive && ap.mode !== 'live' ? 'starts when autopilot is Live · ' : '') + (R && R.n ? `${R.n} trades, ${rs ? Math.round(R.w / rs * 100) + '% won, ' : ''}${signed(R.pnl)}` : (ap ? `$${ap.lateBet} per trade` : ''));
-      if (ap && !lateDirty) { $('lateLive').checked = !!ap.lateLive; $('lateBet').value = ap.lateBet || 5; }   // don't undo unsaved edits
+      $('lRs').textContent = (ap && ap.lateLive && ap.mode !== 'live' ? 'starts when autopilot is Live · ' : '') + (R && R.n ? `${R.n} trades, ${rs ? Math.round(R.w / rs * 100) + '% won, ' : ''}${signed(R.pnl)}` : (ap ? (ap.lateBetPct > 0 ? `${ap.lateBetPct}% of balance per trade` : `$${ap.lateBet} per trade`) : ''));
+      if (ap && !lateDirty) {   // don't undo unsaved edits
+        $('lateLive').checked = !!ap.lateLive;
+        const pct = ap.lateBetPct > 0; $('lateUnit').value = pct ? 'pct' : 'usd'; $('lateBet').value = pct ? ap.lateBetPct : (ap.lateBet || 5);
+      }
       $('lateBody').innerHTML = rows.length ? rows.join('') : '<tr><td colspan="4" class="muted">No late coin-flip trades yet.</td></tr>';
     }
     function renderSeen() {
       if (!st) return;
       const stale = Date.now() - st.ts > 75 * 60000;   // the bot checks in at least hourly
       $('seen').className = 'seen' + (stale ? ' stale' : '');
-      $('seen').textContent = (stale ? '⚠ Bot not heard from since ' : 'Bot updated ') + ago(st.ts) + (stale ? ' — is the laptop on and awake?' : '');
+      const low = st.msgs != null && st.msgs < 60;
+      $('seen').textContent = stale
+        ? `⚠ No status from the bot for ${ago(st.ts).replace(' ago', '')}. ` + (low ? `It was saving ntfy messages for alerts (${st.msgs} left then), which pauses status for a few hours. Alerts and trading still work. If it's been much longer, check the laptop is on and awake.` : 'Is the laptop on and awake?')
+        : 'Bot updated ' + ago(st.ts) + (low ? ` · saving ntfy messages for alerts (${st.msgs} left)` : '');
     }
 
     // ---------------- controls
@@ -483,13 +489,16 @@
     $('liveYes').onclick = () => { $('liveDlg').close(); const f = dlgYes; dlgYes = null; if (f) f(); else send('mode', { mode: 'live' }, 'Going live'); };
     $('lateLive').addEventListener('change', () => { lateDirty = true; });
     $('lateBet').addEventListener('input', () => { lateDirty = true; });
+    $('lateUnit').addEventListener('change', () => { lateDirty = true; });
     $('lateSave').onclick = () => {
-      const bet = +$('lateBet').value, on = $('lateLive').checked;
-      if (!(bet >= 1 && bet <= 1000)) return toast('Bet must be $1–$1000', 'err');
-      const go = () => { lateDirty = false; send('set', { lateLive: on, lateBet: bet }, on ? 'Turning on real late coin-flip trades' : 'Saving'); };
+      const bet = +$('lateBet').value, on = $('lateLive').checked, pct = $('lateUnit').value === 'pct';
+      if (pct ? !(bet >= 1 && bet <= 100) : !(bet >= 1 && bet <= 1000)) return toast(pct ? 'Percent must be 1–100' : 'Bet must be $1–$1000', 'err');
+      const args = pct ? { lateLive: on, lateBetPct: bet } : { lateLive: on, lateBet: bet, lateBetPct: 0 };
+      const amount = pct ? `${bet}% of your buying power` : `$${bet}`;
+      const go = () => { lateDirty = false; send('set', args, on ? 'Turning on real late coin-flip trades' : 'Saving'); };
       if (on && !(st && st.ap.lateLive)) {
         if (!st.keys) { $('lateLive').checked = false; lateDirty = false; return toast('No Polymarket US API key on the laptop yet.', 'err'); }
-        return confirmDlg('Real late coin-flip trades?', `Real orders of $${bet} on your Polymarket US account in the last 75–30 seconds of close windows, whenever autopilot is Live. This strategy is not proven yet: the practice results so far are the only evidence. You can turn it off here at any time.`, 'Turn on', go);
+        return confirmDlg('Real late coin-flip trades?', `Real orders of ${amount} on your Polymarket US account in the last 75–30 seconds of close windows, whenever autopilot is Live. This strategy is not proven yet: the practice results so far are the only evidence. You can turn it off here at any time.`, 'Turn on', go);
       }
       go();
     };
