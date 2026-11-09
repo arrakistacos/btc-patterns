@@ -143,13 +143,20 @@
     </div>
 
     <div class="card">
-      <h3>Late coin-flip test <span class="tag p" style="text-transform:none;letter-spacing:0">PRACTICE ONLY</span></h3>
-      <p class="hint" style="margin-top:0">With 75–30 seconds left in a close window (favorite priced 50–70¢), buys the side our model gives at least 60%, at the live Polymarket US price, $10 a trade. Pretend money only: it never places a real order and doesn't touch your balance or settings. In the backtest this won 65% at about 54¢ (+$15.67 per $100), but those prices may have been a few seconds stale. This checks it against real prices.</p>
+      <h3>Late coin-flip test <span class="tag p" id="lateTag" style="text-transform:none;letter-spacing:0">PRACTICE</span></h3>
+      <p class="hint" style="margin-top:0">With 75–30 seconds left in a close window (favorite priced 50–70¢), buys the side our model gives at least 60%, at the live Polymarket US price. It's tracked with pretend money ($10 a trade) unless you turn on real trades below. In the backtest this won 65% at about 54¢ (+$15.67 per $100), but those prices may have been a few seconds stale. This checks it against real prices.</p>
       <div class="tiles" style="margin-bottom:10px">
         <div class="tile"><div class="k">Trades</div><div class="v num" id="lN">0</div><div class="s" id="lNs"></div></div>
         <div class="tile"><div class="k">Won</div><div class="v num" id="lW">—</div><div class="s" id="lWs"></div></div>
         <div class="tile"><div class="k">Profit on $10 bets</div><div class="v num" id="lP">$0.00</div><div class="s" id="lPs"></div></div>
+        <div class="tile"><div class="k">Real money</div><div class="v num" id="lR">off</div><div class="s" id="lRs"></div></div>
       </div>
+      <div class="row" style="margin-bottom:6px">
+        <label><input type="checkbox" id="lateLive"> Trade this for real</label>
+        <span class="row">$<input id="lateBet" type="number" min="1" max="1000" step="1"> per trade</span>
+        <button id="lateSave">Save</button>
+      </div>
+      <p class="hint" id="lateNote" style="margin-top:0">Real orders only while autopilot is <b>Live</b> and on. They count toward your balance, stops, 2-loss pause and goal, and are skipped if a normal trade already happened in that window.</p>
       <div class="scroll"><table>
         <thead><tr><th>Window</th><th>Side</th><th class="r">Paid</th><th class="r">Result</th></tr></thead>
         <tbody id="lateBody"><tr><td colspan="4" class="muted">No late coin-flip trades yet.</td></tr></tbody>
@@ -235,6 +242,7 @@
 
     let sess = null;   // { server, topic, K, T }
     let sc = null, scoreAll = false, scoreAsked = 0;   // latest settings scoreboard
+    let lateDirty = false;                              // unsaved edits in the late coin-flip controls
     let st = null;     // latest decrypted status
     let pollTimer = null, fastUntil = 0;
     const pending = new Map();   // nonce -> { label, at }
@@ -390,8 +398,8 @@
       $('tWinS').textContent = settled ? `${sm.w} of ${settled} won` + (sm.nofill ? ` · ${sm.nofill} unfilled` : '') : 'no results yet';
 
       // trades (newest first)
-      const rows = (s.trades || []).slice().reverse().map(([ts, Ws, m, side, status, qty, px, cost, result, pnl, msg, q]) => {
-        const sideCell = `<span class="${side === 'UP' ? 'up' : 'down'}" style="font-weight:700">${side}</span> <span class="tag ${m === 'l' ? 'l' : 'p'}">${m === 'l' ? 'LIVE' : 'PRACTICE'}</span>`;
+      const rows = (s.trades || []).slice().reverse().map(([ts, Ws, m, side, status, qty, px, cost, result, pnl, msg, q, late]) => {
+        const sideCell = `<span class="${side === 'UP' ? 'up' : 'down'}" style="font-weight:700">${side}</span> <span class="tag ${m === 'l' ? 'l' : 'p'}">${m === 'l' ? 'LIVE' : 'PRACTICE'}</span>${late ? ' <span class="tag p">LATE</span>' : ''}`;
         const wd = new Date(Ws * 1000), isToday = wd.toDateString() === new Date().toDateString();
         const when = `<span class="nw">${isToday ? '' : wd.toLocaleDateString([], { month: 'short', day: 'numeric' }) + ' '}${wd.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}</span>${q ? `<div class="hint nw">${q}% chance</div>` : ''}`;
         if (status === 'filled' || status === 'partial') {
@@ -423,19 +431,27 @@
     }
     function renderLate(L) {
       if (!L) return;
-      const st = L.stats, settled = st.w + st.l;
-      $('lN').textContent = st.n; $('lNs').textContent = 'since ' + new Date(L.since).toLocaleDateString([], { month: 'short', day: 'numeric' }) + (st.nofill ? ` · ${st.nofill} unfilled` : '');
-      $('lW').textContent = settled ? Math.round(st.w / settled * 100) + '%' : '—'; $('lWs').textContent = settled ? `${st.w} of ${settled}` : 'no results yet';
-      $('lP').textContent = signed(st.pnl); $('lP').className = 'v num ' + cls(st.pnl);
-      $('lPs').textContent = st.staked ? `${(st.pnl / st.staked * 100 >= 0 ? '+' : '−')}$${Math.abs(st.pnl / st.staked * 100).toFixed(2)} per $100` : '';
-      const rows = (L.trades || []).slice().reverse().map(([ts, Ws, side, status, px, quoted, q, result, pnl, left, msg]) => {
+      const ls = L.stats, settled = ls.w + ls.l;
+      $('lN').textContent = ls.n; $('lNs').textContent = 'since ' + new Date(L.since).toLocaleDateString([], { month: 'short', day: 'numeric' }) + (ls.nofill ? ` · ${ls.nofill} unfilled` : '');
+      $('lW').textContent = settled ? Math.round(ls.w / settled * 100) + '%' : '—'; $('lWs').textContent = settled ? `${ls.w} of ${settled}` : 'no results yet';
+      $('lP').textContent = signed(ls.pnl); $('lP').className = 'v num ' + cls(ls.pnl);
+      $('lPs').textContent = ls.staked ? `${(ls.pnl / ls.staked * 100 >= 0 ? '+' : '−')}$${Math.abs(ls.pnl / ls.staked * 100).toFixed(2)} per $100` : '';
+      const rows = (L.trades || []).slice().reverse().map(([ts, Ws, side, status, px, quoted, q, result, pnl, left, msg, real]) => {
         const wd = new Date(Ws * 1000);
         const when = `<span class="nw">${wd.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}</span><div class="hint nw">${left}s left · model ${q}%</div>`;
-        const sideCell = `<span class="${side === 'UP' ? 'up' : 'down'}" style="font-weight:700">${side}</span>`;
+        const sideCell = `<span class="${side === 'UP' ? 'up' : 'down'}" style="font-weight:700">${side}</span>${real ? ' <span class="tag l">REAL</span>' : ''}`;
         if (status !== 'filled') return `<tr><td>${when}</td><td>${sideCell}</td><td colspan="2" class="muted">${esc(msg || status)}</td></tr>`;
         const res = result == null ? '<span class="muted">waiting…</span>' : `<span class="${result ? 'up' : 'down'}" style="font-weight:700">${result ? 'WON' : 'LOST'}</span><div class="num nw ${cls(pnl)}">${signed(pnl)}</div>`;
         return `<tr><td>${when}</td><td>${sideCell}</td><td class="r num"><span class="nw">${Math.round(px * 100)}¢</span><div class="hint nw">showed ${Math.round(quoted * 100)}¢</div></td><td class="r">${res}</td></tr>`;
       });
+      const R = L.real, rs = R ? R.w + R.l : 0;
+      const ap = st && st.ap;
+      $('lR').textContent = ap && ap.lateLive ? (ap.mode === 'live' ? 'ON' : 'armed') : 'off';
+      $('lR').className = 'v num ' + (ap && ap.lateLive && ap.mode === 'live' ? 'up' : '');
+      const realOn = ap && ap.lateLive && ap.mode === 'live';
+      $('lateTag').textContent = realOn ? 'REAL MONEY ON' : 'PRACTICE'; $('lateTag').className = 'tag ' + (realOn ? 'l' : 'p');
+      $('lRs').textContent = (ap && ap.lateLive && ap.mode !== 'live' ? 'starts when autopilot is Live · ' : '') + (R && R.n ? `${R.n} trades, ${rs ? Math.round(R.w / rs * 100) + '% won, ' : ''}${signed(R.pnl)}` : (ap ? `$${ap.lateBet} per trade` : ''));
+      if (ap && !lateDirty) { $('lateLive').checked = !!ap.lateLive; $('lateBet').value = ap.lateBet || 5; }   // don't undo unsaved edits
       $('lateBody').innerHTML = rows.length ? rows.join('') : '<tr><td colspan="4" class="muted">No late coin-flip trades yet.</td></tr>';
     }
     function renderSeen() {
@@ -453,11 +469,26 @@
       if (b.dataset.mode === 'practice') return send('mode', { mode: 'practice' }, 'Switching to practice');
       if (!st.keys) return toast('No Polymarket US API key on the laptop yet. Re-run the installer with -Autopilot.', 'err');
       const bp = st.bal.live ? st.bal.live.buyingPower : null;
+      $('liveDlg').querySelector('h3').textContent = 'Turn on live trading?'; $('liveYes').textContent = 'Go live'; dlgYes = null;
       $('liveDlgText').textContent = `Real orders on your Polymarket US account: ${st.ap.betPct}% of your buying power${bp != null ? ` (about ${money(bp * st.ap.betPct / 100)} now)` : ''} on every BUY alert, up to one trade per 5-minute window. You can turn it off here at any time.`;
       $('liveDlg').showModal();
     };
-    $('liveNo').onclick = () => $('liveDlg').close();
-    $('liveYes').onclick = () => { $('liveDlg').close(); send('mode', { mode: 'live' }, 'Going live'); };
+    let dlgYes = null;
+    function confirmDlg(title, text, yesLabel, fn) { $('liveDlg').querySelector('h3').textContent = title; $('liveDlgText').textContent = text; $('liveYes').textContent = yesLabel; dlgYes = fn; $('liveDlg').showModal(); }
+    $('liveNo').onclick = () => { $('liveDlg').close(); if (dlgYes) { lateDirty = false; $('lateLive').checked = !!(st && st.ap.lateLive); } dlgYes = null; };
+    $('liveYes').onclick = () => { $('liveDlg').close(); const f = dlgYes; dlgYes = null; if (f) f(); else send('mode', { mode: 'live' }, 'Going live'); };
+    $('lateLive').addEventListener('change', () => { lateDirty = true; });
+    $('lateBet').addEventListener('input', () => { lateDirty = true; });
+    $('lateSave').onclick = () => {
+      const bet = +$('lateBet').value, on = $('lateLive').checked;
+      if (!(bet >= 1 && bet <= 1000)) return toast('Bet must be $1–$1000', 'err');
+      const go = () => { lateDirty = false; send('set', { lateLive: on, lateBet: bet }, on ? 'Turning on real late coin-flip trades' : 'Saving'); };
+      if (on && !(st && st.ap.lateLive)) {
+        if (!st.keys) { $('lateLive').checked = false; lateDirty = false; return toast('No Polymarket US API key on the laptop yet.', 'err'); }
+        return confirmDlg('Real late coin-flip trades?', `Real orders of $${bet} on your Polymarket US account in the last 75–30 seconds of close windows, whenever autopilot is Live. This strategy is not proven yet: the practice results so far are the only evidence. You can turn it off here at any time.`, 'Turn on', go);
+      }
+      go();
+    };
     $('saveBtn').onclick = () => {
       const bet = +$('sBet').value, stop = +$('sStop').value;
       if (!(bet >= 1 && bet <= 100)) return toast('Bet size must be 1–100%', 'err');

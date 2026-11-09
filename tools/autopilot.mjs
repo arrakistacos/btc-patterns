@@ -27,6 +27,7 @@ const W = 300;
 const DEFAULTS = {
   enabled: true, mode: 'practice', betPct: 20, dailyStopPct: 50, notifyFills: true, notifyResults: true,
   lossStreak: 2, cooldownMin: 60,        // pause this long after this many losses in a row (0 = never)
+  lateLive: false, lateBet: 5,           // late coin-flip: real orders (Live mode only), dollars per trade
   goal: 0,                               // dollars: pause + notify when the current mode's balance reaches this (0 = off)
   goalHitFor: null,                      // "mode:goal" already reached, so the same goal fires only once
   streak: { practice: 0, live: 0 },      // current run of losses
@@ -220,34 +221,7 @@ export function createAutopilot(o) {
 
     let filled = 0, notional = 0, orderId = null, msg = '';
     if (live) {
-      const body = {
-        marketSlug: mkt.slug,
-        intent: favUp ? 'ORDER_INTENT_BUY_LONG' : 'ORDER_INTENT_BUY_SHORT',
-        type: 'ORDER_TYPE_LIMIT',
-        price: { value: (favUp ? limit : r2(1 - limit)).toFixed(2), currency: 'USD' },   // always the YES price
-        quantity: qty,
-        tif: 'TIME_IN_FORCE_IMMEDIATE_OR_CANCEL',
-        manualOrderIndicator: 'MANUAL_ORDER_INDICATOR_AUTOMATIC',
-        synchronousExecution: true, maxBlockTime: '3',
-      };
-      const r = await api('POST', '/v1/orders', body);
-      orderId = r.id || null;
-      // Execution prices are YES prices; convert to the price of the side we bought
-      const ours = (px) => (Math.abs(px - limit) <= Math.abs(1 - px - limit) ? px : 1 - px);
-      for (const ex of r.executions || []) {
-        if (/FILL/.test(ex.type || '') && ex.lastShares) { const sh = +ex.lastShares, px = ours(+ex.lastPx.value); filled += sh; notional += sh * px; }
-        if (/REJECT/.test(ex.type || '')) msg = ex.orderRejectReason || ex.text || 'rejected';
-      }
-      if (!filled && orderId) {
-        try {
-          const od = (await api('GET', '/v1/order/' + orderId)).order || {};
-          filled = +od.cumQuantity || 0;
-          if (filled && od.avgPx) notional = filled * ours(+od.avgPx.value);
-          if (!msg && /REJECT/.test(od.state || '')) msg = 'rejected';
-        } catch (e) { log('autopilot: order lookup failed:', e.message); }
-      }
-      if (!filled && isMoneyError({ text: msg })) outOfMoney(0, 'Polymarket US refused the order: not enough funds.');
-      refreshLive().catch(() => {});
+      ({ filled, notional, orderId, msg } = await liveOrder(mkt, favUp, limit, qty));
     } else {
       // Practice: fill against the real book up to the limit price, like an immediate-or-cancel order
       let need = qty;
@@ -264,6 +238,40 @@ export function createAutopilot(o) {
     log(`AUTOPILOT ${mode.toUpperCase()} bought ${side} ${filled} @ ${cents(px)} = ${money(cost)} (${S.betPct}% of ${money(bal)})`);
     if (S.notifyFills) push({ title: `${live ? '' : 'PRACTICE '}BOUGHT ${side}`, body: `${filled} @ ${cents(px)} = ${money(cost)} (${S.betPct}% of ${money(bal)})`, priority: live ? 4 : 2, tags: side === 'UP' ? 'green_circle' : 'red_circle', click: o.site + 'autopilot.html' });
     return t;
+  }
+
+  // Real order: immediate-or-cancel limit at `limit` (price of the side we buy). Returns what filled.
+  async function liveOrder(mkt, up, limit, qty) {
+    let filled = 0, notional = 0, msg = '';
+    const body = {
+      marketSlug: mkt.slug,
+      intent: up ? 'ORDER_INTENT_BUY_LONG' : 'ORDER_INTENT_BUY_SHORT',
+      type: 'ORDER_TYPE_LIMIT',
+      price: { value: (up ? limit : r2(1 - limit)).toFixed(2), currency: 'USD' },   // always the YES price
+      quantity: qty,
+      tif: 'TIME_IN_FORCE_IMMEDIATE_OR_CANCEL',
+      manualOrderIndicator: 'MANUAL_ORDER_INDICATOR_AUTOMATIC',
+      synchronousExecution: true, maxBlockTime: '3',
+    };
+    const r = await api('POST', '/v1/orders', body);
+    const orderId = r.id || null;
+    // Execution prices are YES prices; convert to the price of the side we bought
+    const ours = (px) => (Math.abs(px - limit) <= Math.abs(1 - px - limit) ? px : 1 - px);
+    for (const ex of r.executions || []) {
+      if (/FILL/.test(ex.type || '') && ex.lastShares) { const sh = +ex.lastShares, px = ours(+ex.lastPx.value); filled += sh; notional += sh * px; }
+      if (/REJECT/.test(ex.type || '')) msg = ex.orderRejectReason || ex.text || 'rejected';
+    }
+    if (!filled && orderId) {
+      try {
+        const od = (await api('GET', '/v1/order/' + orderId)).order || {};
+        filled = +od.cumQuantity || 0;
+        if (filled && od.avgPx) notional = filled * ours(+od.avgPx.value);
+        if (!msg && /REJECT/.test(od.state || '')) msg = 'rejected';
+      } catch (e) { log('autopilot: order lookup failed:', e.message); }
+    }
+    if (!filled && isMoneyError({ text: msg })) outOfMoney(0, 'Polymarket US refused the order: not enough funds.');
+    refreshLive().catch(() => {});
+    return { filled, notional, orderId, msg };
   }
 
   // ------------------------------------------------------------ settlement
@@ -332,18 +340,49 @@ export function createAutopilot(o) {
       else if (levels[0][0] >= LATE.maxPx) { rec.status = 'skipped'; rec.px = levels[0][0]; rec.msg = `Polymarket US price ${cents(levels[0][0])}`; }
       else {
         const limit = r2(levels[0][0] + mkt.tick);
-        let need = r2(LATE.stake / (limit + feeAt(limit))), filled = 0, notional = 0;
-        for (const [p, n] of levels) { if (p > limit + 1e-9 || need <= 0) break; const take = Math.min(n, need); filled += take; notional += take * p; need -= take; }
-        filled = r2(filled);
-        if (filled > 0) { const px = notional / filled; rec.status = 'filled'; rec.qty = filled; rec.px = r4(px); rec.cost = r2(notional + feeAt(px) * filled); }
-        else { rec.status = 'nofill'; rec.msg = 'Nothing for sale at the price'; }
+        // Real money only when switched on, autopilot is Live and on, not halted/paused, and no normal trade this window
+        const real = S.lateLive && S.mode === 'live' && S.enabled && !S.halted && KEY && !busy && !S.trades.some((t) => t.Ws === x.Ws);
+        if (real) {
+          busy = true;
+          try {
+            const bal = (await refreshLive()).buyingPower;
+            const step = mkt.minQty > 0 ? mkt.minQty : 0.01;
+            const qty = r2(Math.floor(Math.min(S.lateBet, bal) / (limit + feeAt(limit)) / step + 1e-9) * step);
+            if (bal < MIN_BALANCE || qty < step) { outOfMoney(bal); rec.status = 'skipped'; rec.msg = 'Out of money'; }
+            else {
+              const day = dayRec('live', Date.now(), bal);
+              const ord = await liveOrder(mkt, up, limit, qty);
+              rec.real = 1;
+              if (ord.filled > 0) {
+                const px = ord.notional / ord.filled, fee = r4(feeAt(px) * ord.filled), cost = r2(ord.notional + fee);
+                Object.assign(rec, { status: 'filled', qty: r2(ord.filled), px: r4(px), cost });
+                record({ Ws: x.Ws, mode: 'live', strategy: 'late', side: rec.side, status: ord.filled < qty - 1e-9 ? 'partial' : 'filled', q: rec.q, qty: r2(ord.filled), want: qty, px: r4(px), fee, cost, limit, orderId: ord.orderId, slug: mkt.slug, result: null, pnl: null, balBefore: r2(bal) });
+                S.stats.live.n++; S.stats.live.staked = r2(S.stats.live.staked + cost); day.n++;
+                if (S.notifyFills) push({ title: `BOUGHT ${rec.side} (LATE)`, body: `${r2(ord.filled)} @ ${cents(px)} = ${money(cost)} · late coin-flip, ${rec.left}s left`, priority: 4, tags: up ? 'green_circle' : 'red_circle', click: o.site + 'autopilot.html' });
+              } else {
+                rec.status = 'nofill'; rec.msg = ord.msg || `No fill at ${cents(limit)} or better`;
+                record({ Ws: x.Ws, mode: 'live', strategy: 'late', side: rec.side, status: 'nofill', msg: rec.msg, q: rec.q, qty, limit, orderId: ord.orderId });
+              }
+            }
+          } catch (e) {
+            if (isAuthError(e)) halt('Polymarket rejected the API key', e.message.slice(0, 160));
+            else if (isMoneyError(e)) outOfMoney(0, 'Polymarket US refused the order: not enough funds.');
+            rec.real = 1; rec.status = 'error'; rec.msg = e.message.slice(0, 80);
+          } finally { busy = false; }
+        } else {
+          let need = r2(LATE.stake / (limit + feeAt(limit))), filled = 0, notional = 0;
+          for (const [p, n] of levels) { if (p > limit + 1e-9 || need <= 0) break; const take = Math.min(n, need); filled += take; notional += take * p; need -= take; }
+          filled = r2(filled);
+          if (filled > 0) { const px = notional / filled; rec.status = 'filled'; rec.qty = filled; rec.px = r4(px); rec.cost = r2(notional + feeAt(px) * filled); }
+          else { rec.status = 'nofill'; rec.msg = 'Nothing for sale at the price'; }
+        }
       }
     } catch (e) { rec.status = 'error'; rec.msg = e.message.slice(0, 80); }
     S.late.trades.push(rec);
     if (S.late.trades.length > 300) S.late.trades.splice(0, S.late.trades.length - 300);
     if (rec.status === 'filled') { S.late.stats.n++; S.late.stats.staked = r2(S.late.stats.staked + rec.cost); }
     if (rec.status === 'nofill') S.late.stats.nofill++;
-    log(`late coin-flip test: ${rec.status} ${rec.side}${rec.px ? ' @ ' + cents(rec.px) : ''} (Polymarket showed ${cents(rec.quoted)}, model ${Math.round(q * 100)}%, ${rec.left}s left)${rec.msg ? ' - ' + rec.msg : ''}`);
+    log(`late coin-flip ${rec.real ? 'REAL' : 'test'}: ${rec.status} ${rec.side}${rec.px ? ' @ ' + cents(rec.px) : ''} (Polymarket showed ${cents(rec.quoted)}, model ${Math.round(q * 100)}%, ${rec.left}s left)${rec.msg ? ' - ' + rec.msg : ''}`);
     save(); publishSoon();
   }
   async function settleLate() {
@@ -357,6 +396,7 @@ export function createAutopilot(o) {
       const won = (s >= 0.5) === (t.side === 'UP');
       t.result = won ? 1 : 0; t.pnl = r2((won ? t.qty : 0) - t.cost);
       const st = S.late.stats; st.pnl = r2(st.pnl + t.pnl); if (won) st.w++; else st.l++;
+      if (t.real) { const rs = S.late.real || (S.late.real = zeroStats()); rs.n++; rs.staked = r2(rs.staked + t.cost); rs.pnl = r2(rs.pnl + t.pnl); if (won) rs.w++; else rs.l++; }
       save(); publishSoon();
     }
   }
@@ -429,13 +469,13 @@ export function createAutopilot(o) {
   const ready = (async () => { if (PASSWORD && o.topic) K = await APC.keys(PASSWORD, o.topic); })();
   function snapshot() {
     const days = Object.keys(S.days).sort().slice(-14).map((d) => [d, S.days[d].practice || null, S.days[d].live || null]);
-    const tr = (t) => [t.ts, t.Ws, t.mode[0], t.side, t.status, t.qty || 0, t.px || 0, t.cost || 0, t.result, t.pnl, t.msg || '', t.q ? Math.round(t.q * 100) : null];
+    const tr = (t) => [t.ts, t.Ws, t.mode[0], t.side, t.status, t.qty || 0, t.px || 0, t.cost || 0, t.result, t.pnl, t.msg || '', t.q ? Math.round(t.q * 100) : null, t.strategy === 'late' ? 1 : 0];
     const snap = {
       v: 1, ts: Date.now(), ver: AUTOPILOT_VERSION, since: STARTED, why: botWhy, note: lastNote, keys: !!KEY,
-      ap: { enabled: S.enabled, mode: S.mode, betPct: S.betPct, dailyStopPct: S.dailyStopPct, lossStreak: S.lossStreak, cooldownMin: S.cooldownMin, goal: S.goal, streak: S.streak[S.mode] || 0, notifyFills: S.notifyFills, notifyResults: S.notifyResults, minModel: minModel(o.defMinModel), minMarket: minMarket(o.defMinMarket), target: target(o.defTarget), halted: S.halted },
+      ap: { enabled: S.enabled, mode: S.mode, betPct: S.betPct, dailyStopPct: S.dailyStopPct, lossStreak: S.lossStreak, cooldownMin: S.cooldownMin, goal: S.goal, lateLive: S.lateLive, lateBet: S.lateBet, streak: S.streak[S.mode] || 0, notifyFills: S.notifyFills, notifyResults: S.notifyResults, minModel: minModel(o.defMinModel), minMarket: minMarket(o.defMinMarket), target: target(o.defTarget), halted: S.halted },
       bal: { live: S.liveBal, practice: S.practice }, stats: S.stats, days, acks: acks.slice(-5),
       trades: S.trades.slice(-12).map(tr),
-      late: { since: S.late.since, stats: S.late.stats, trades: S.late.trades.slice(-6).map((t) => [t.ts, t.Ws, t.side, t.status, t.px || 0, t.quoted, Math.round(t.q * 100), t.result, t.pnl, t.left, t.msg || '']) },
+      late: { since: S.late.since, stats: S.late.stats, real: S.late.real || null, trades: S.late.trades.slice(-6).map((t) => [t.ts, t.Ws, t.side, t.status, t.px || 0, t.quoted, Math.round(t.q * 100), t.result, t.pnl, t.left, t.msg || '', t.real ? 1 : 0]) },
     };
     while (JSON.stringify(snap).length > 2900 && snap.trades.length > 3) snap.trades.shift();   // ntfy messages are capped at 4 KB
     while (JSON.stringify(snap).length > 2900 && snap.late.trades.length > 2) snap.late.trades.shift();
@@ -482,9 +522,13 @@ export function createAutopilot(o) {
         break;
       case 'set': {
         const num = (v, lo, hi) => (typeof v === 'number' && isFinite(v) && v >= lo && v <= hi ? v : undefined);
-        const upd = { betPct: num(a.betPct, 1, 100), dailyStopPct: num(a.dailyStopPct, 0, 100), lossStreak: num(a.lossStreak, 0, 10), cooldownMin: num(a.cooldownMin, 5, 1440), goal: num(a.goal, 0, 1e7), minModel: a.minModel === null ? null : num(a.minModel, 50, 99), minMarket: a.minMarket === null ? null : num(a.minMarket, 50, 99) };
+        const upd = { betPct: num(a.betPct, 1, 100), dailyStopPct: num(a.dailyStopPct, 0, 100), lossStreak: num(a.lossStreak, 0, 10), cooldownMin: num(a.cooldownMin, 5, 1440), goal: num(a.goal, 0, 1e7), lateBet: num(a.lateBet, 1, 1000), minModel: a.minModel === null ? null : num(a.minModel, 50, 99), minMarket: a.minMarket === null ? null : num(a.minMarket, 50, 99) };
         for (const [k, v] of Object.entries(upd)) if (v !== undefined && k in a) S[k] = v;
         for (const k of ['notifyFills', 'notifyResults']) if (typeof a[k] === 'boolean') S[k] = a[k];
+        if (typeof a.lateLive === 'boolean' && a.lateLive !== S.lateLive) {
+          S.lateLive = a.lateLive;
+          push({ title: a.lateLive ? 'LATE COIN-FLIP: REAL TRADES ON' : 'Late coin-flip: practice only', body: a.lateLive ? `Real orders of $${S.lateBet} in the last 75-30 s of close windows, while autopilot is Live.${S.mode === 'live' ? '' : ' Autopilot is in Practice now, so nothing real until you switch to Live.'}` : 'No more real late coin-flip orders.', priority: a.lateLive ? 4 : 2, tags: a.lateLive ? 'money_with_wings' : 'test_tube', click: o.site + 'autopilot.html' });
+        }
         if ('target' in a && (a.target === null || Signal.Z_FOR[a.target])) S.target = a.target;
         msg = 'Settings saved';
         setTimeout(checkGoal, 500);   // a goal at or below the balance fires right away
