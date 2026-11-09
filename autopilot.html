@@ -313,6 +313,8 @@
       try { const since = Math.max(st ? st.ts : 0, sc ? sc.ts : 0); const { s } = await fetchStatus(since ? Math.floor(since / 1000) - 5 : '12h'); if (s && (!st || s.ts >= st.ts)) apply(s); }
       catch (e) { /* offline for a moment; keep trying */ }
       renderSeen();
+      // while the bot is quiet, keep asking (every 10 minutes) instead of only when the page is opened
+      if (st && Date.now() - st.ts > 15 * 60000 && Date.now() - refreshAsked > 10 * 60000) askRefresh();
       for (const [n, p] of pending) if (Date.now() - p.at > 25000) { pending.delete(n); toast('No reply from the bot yet. Is the laptop awake?', 'err'); }
       schedule();
     }
