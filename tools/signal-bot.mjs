@@ -96,16 +96,41 @@ process.on('unhandledRejection', (e) => { console.error(new Date().toISOString()
 if (!DRY && !CHECK_AP && !NTFY_TOPIC) { console.error('Set NTFY_TOPIC (or use --dry). See the comments at the top of this file.'); process.exit(1); }
 
 // ---------------------------------------------------------------- push
-async function push({ title, body, priority = 5, tags = 'rotating_light', click }) {
+// ---------------------------------------------------------------- ntfy message budget
+// Free ntfy.sh allows 250 messages a day per internet connection, refilled slowly (one every ~6 minutes once
+// used up). Alerts and the autopilot page's status updates share it, so the bot tracks it and status updates
+// only use it while plenty is left: BUY alerts must never be the ones that get refused. Saved across restarts.
+// With your own ntfy server or an ntfy access token (NTFY_TOKEN) there is no such limit.
+const BUDGET_FILE = resolve(ROOT, 'ntfy-budget.json');
+const LIMITED = /(^|\/\/)ntfy\.sh(\/|$)/.test(NTFY_SERVER) && !NTFY_TOKEN;
+const B_CAP = 250, B_RATE = 250 / 86400;
+let bud = { tokens: B_CAP, at: Date.now() };
+try { const b = JSON.parse(readFileSync(BUDGET_FILE, 'utf8')); if (isFinite(b.tokens) && isFinite(b.at)) bud = b; } catch { /* first run */ }
+let budSaveTimer = null;
+const budSave = () => { clearTimeout(budSaveTimer); budSaveTimer = setTimeout(async () => { try { (await import('node:fs')).writeFileSync(BUDGET_FILE, JSON.stringify(bud)); } catch { /* ignore */ } }, 2000); };
+const budget = {
+  left() { if (!LIMITED) return Infinity; const now = Date.now(); bud.tokens = Math.min(B_CAP, bud.tokens + (now - bud.at) / 1000 * B_RATE); bud.at = now; return bud.tokens; },
+  take() { if (!LIMITED) return; this.left(); bud.tokens -= 1; budSave(); },
+  exhausted() { if (!LIMITED) return; bud.tokens = 0; bud.at = Date.now(); budSave(); },
+};
+
+async function push({ title, body, priority = 5, tags = 'rotating_light', click }, attempt = 0) {
   if (DRY) { log(`[dry] PUSH p${priority}: ${title} — ${body}`); return true; }
   const headers = { Title: title, Priority: String(priority), Tags: tags };
   if (click) headers.Click = click;
   if (NTFY_TOKEN) headers.Authorization = 'Bearer ' + NTFY_TOKEN;
   for (let a = 0; a < 3; a++) {
     try {
+      budget.take();
       const r = await fetch(`${NTFY_SERVER}/${encodeURIComponent(NTFY_TOPIC)}`, { method: 'POST', headers, body });
       if (r.ok) return true;
       log('push failed: HTTP', r.status);
+      if (r.status === 429) {
+        // daily limit reached: a new message is allowed every ~6 minutes, so try important ones again then
+        budget.exhausted();
+        if (priority >= 4 && attempt < 2) { log(`ntfy daily limit reached; will retry "${title}" in ${attempt ? 6 : 3} min`); setTimeout(() => push({ title, body, priority, tags, click }, attempt + 1), (attempt ? 6 : 3) * 60000); }
+        return false;
+      }
     } catch (e) { log('push failed:', e.message); }
     await sleep(1000 * (a + 1));
   }
@@ -142,7 +167,7 @@ if (!DRY && !CHECK_AP) {
 }
 
 // ---------------------------------------------------------------- autopilot
-const AP = createAutopilot({ dir: ROOT, log, push, Signal, APC, topic: NTFY_TOPIC, ntfyServer: NTFY_SERVER, ntfyToken: NTFY_TOKEN, site: SITE, tzName: TZ_NAME, defMinModel: MIN_MODEL, defMinMarket: MIN_MARKET, defTarget: TARGET });
+const AP = createAutopilot({ dir: ROOT, log, push, budget, Signal, APC, topic: NTFY_TOPIC, ntfyServer: NTFY_SERVER, ntfyToken: NTFY_TOKEN, site: SITE, tzName: TZ_NAME, defMinModel: MIN_MODEL, defMinMarket: MIN_MARKET, defTarget: TARGET });
 if (CHECK_AP) {
   const r = await AP.check(Math.floor(Date.now() / 1000 / 300) * 300);
   console.log(JSON.stringify(r, null, 2));

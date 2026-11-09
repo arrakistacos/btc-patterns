@@ -138,7 +138,7 @@ export function createAutopilot(o) {
   function halt(reason, detail, extra) {
     if (S.halted && S.halted.reason === reason) return;
     S.halted = Object.assign({ reason, detail, at: Date.now() }, extra || {});
-    save(); publishSoon();
+    save(); publishSoon(1500, true);
     const kind = S.halted.kind;
     const title = kind === 'goal' ? 'GOAL REACHED' : kind === 'pause' ? 'AUTOPILOT PAUSED' : 'AUTOPILOT HALTED';
     log(title + ':', reason, '-', detail);
@@ -464,7 +464,7 @@ export function createAutopilot(o) {
   }
 
   // ------------------------------------------------------------ remote link (ntfy)
-  let K = null, publishedToday = { day: null, n: 0 }, lastPublish = 0, pubTimer = null, botWhy = '', acks = [];
+  let K = null, lastPublish = 0, pubTimer = null, botWhy = '', acks = [];
   const PASSWORD = env.AUTOPILOT_PASSWORD || '';
   const ready = (async () => { if (PASSWORD && o.topic) K = await APC.keys(PASSWORD, o.topic); })();
   function snapshot() {
@@ -481,23 +481,37 @@ export function createAutopilot(o) {
     while (JSON.stringify(snap).length > 2900 && snap.late.trades.length > 2) snap.late.trades.shift();
     return snap;
   }
-  async function publish(payload) {
+  // Status updates share ntfy's daily message allowance with BUY alerts, so they are sparing: at most one every
+  // 20 minutes on their own, right away only when you act on the page, and none while the allowance is low.
+  const STATUS_GAP = 20 * 60000, RESERVE = 60, URGENT_RESERVE = 20;
+  let lowLogged = 0;
+  async function publish(payload, urgent) {
     await ready;
     if (!K) return;
-    const d = dayOf(Date.now());
-    if (publishedToday.day !== d) publishedToday = { day: d, n: 0 };
-    if (publishedToday.n >= 150) return;    // stay well inside ntfy.sh's 250 messages/day
-    publishedToday.n++; lastPublish = Date.now();
+    const left = o.budget ? o.budget.left() : Infinity;
+    if (left < (urgent ? URGENT_RESERVE : RESERVE)) {
+      if (Date.now() - lowLogged > 3600000) { lowLogged = Date.now(); log(`autopilot: holding status updates to save ntfy messages for alerts (${Math.floor(left)} left today)`); }
+      return;
+    }
+    lastPublish = Date.now();
     try {
+      if (o.budget) o.budget.take();
       const r = await fetch(`${NTFY}/${T.status}`, { method: 'POST', headers: Object.assign({ Priority: '1' }, NTFY_AUTH), body: await APC.seal(K, payload || snapshot()) });
+      if (r.status === 429 && o.budget) o.budget.exhausted();
       if (!r.ok) log('autopilot: status publish HTTP', r.status);
     } catch (e) { log('autopilot: status publish failed:', e.message); }
   }
-  function publishSoon(ms) { clearTimeout(pubTimer); pubTimer = setTimeout(() => publish(), ms == null ? 1500 : ms); }
+  let pubDue = 0, pubUrgent = false;
+  function publishSoon(ms, urgent) {
+    const want = urgent ? Date.now() + (ms == null ? 1500 : ms) : Math.max(Date.now() + 1500, lastPublish + STATUS_GAP);
+    if (pubTimer && pubDue <= want && (pubUrgent || !urgent)) return;    // something sooner is already scheduled
+    clearTimeout(pubTimer); pubDue = want; pubUrgent = !!urgent;
+    pubTimer = setTimeout(() => { pubTimer = null; publish(null, pubUrgent); }, want - Date.now());
+  }
   // Scoreboard goes out as its own message: when results changed (at most hourly), or every 6 hours anyway
   function publishScore(force) {
     const age = Date.now() - sbPubAt;
-    if (!force && !(sbChanged && age > 60 * 60000) && age < 6 * 3600000) return;
+    if (!force && age < 6 * 3600000) return;
     sbPubAt = Date.now(); sbChanged = false;
     publish(scoreboard());
   }
@@ -547,13 +561,14 @@ export function createAutopilot(o) {
         msg = `Practice reset to ${money(b)}`; break;
       }
       case 'refresh': if (S.mode === 'live' && KEY) await refreshLive().catch(() => {}); break;
-      case 'score': if (Date.now() - sbPubAt > 60000) { sbPubAt = Date.now(); sbChanged = false; setTimeout(() => publish(scoreboard()), 2500); } break;
+      case 'score': if (Date.now() - sbPubAt > 5 * 60000) { sbPubAt = Date.now(); sbChanged = false; setTimeout(() => publish(scoreboard(), true), 2500); } break;
       default: ok = false; msg = 'Unknown command';
     }
     acks.push([c.n, ok ? 1 : 0, msg]); if (acks.length > 10) acks.shift();
     log(`autopilot command: ${c.c} → ${ok ? 'ok' : 'refused'}${msg ? ' (' + msg + ')' : ''}`);
     save();
-    publishSoon(c.c === 'refresh' && Date.now() - lastPublish < 10000 ? 10000 - (Date.now() - lastPublish) : 300);
+    if (c.c === 'refresh' || c.c === 'score') { if (c.c === 'refresh' && Date.now() - lastPublish > 30000) publishSoon(300, true); }
+    else publishSoon(300, true);
   }
   async function listen() {
     await ready;
@@ -594,11 +609,11 @@ export function createAutopilot(o) {
     if (now - lastSettleCheck > 10000) { lastSettleCheck = now; settle().catch((e) => log('autopilot settle:', e.message)); settleLate().catch((e) => log('late test settle:', e.message)); sbSettle().catch((e) => log('scoreboard settle:', e.message)); }
     if (now - STARTED > 30000) publishScore();
     if (S.halted && S.halted.untilTs && now >= S.halted.untilTs) {
-      S.halted = null; save(); publishSoon();
+      S.halted = null; save(); publishSoon(1500, true);
       push({ title: 'Autopilot resumed', body: `Pause over: trading again at ${S.betPct}% per BUY alert.`, priority: 3, tags: 'arrow_forward', click: o.site + 'autopilot.html' });
     }
     if (S.halted && S.halted.untilDay && dayOf(now) >= S.halted.untilDay) {
-      S.halted = null; save(); publishSoon();
+      S.halted = null; save(); publishSoon(1500, true);
       push({ title: 'Autopilot resumed', body: 'New day: the daily loss limit has reset.', priority: 3, tags: 'arrow_forward', click: o.site + 'autopilot.html' });
     }
     if (KEY && now - lastBal > (S.mode === 'live' ? 60000 : 300000)) {   // practice: just keep the page's buying power fresh
@@ -609,7 +624,7 @@ export function createAutopilot(o) {
         if (S.mode === 'live') checkGoal();
       }).catch((e) => { if (isAuthError(e) && S.mode === 'live') halt('Polymarket rejected the API key', e.message.slice(0, 160)); else log('autopilot balance:', e.message); });
     }
-    if (now - lastBeat > 20 * 60000) { lastBeat = now; publishSoon(0); }
+    if (now - lastBeat > 60 * 60000) { lastBeat = now; publishSoon(); }   // heartbeat
   }
 
   const minModel = (def) => (S.minModel != null ? S.minModel : def);
@@ -631,7 +646,7 @@ export function createAutopilot(o) {
     return out;
   }
 
-  function start() { listen(); publishSoon(3000); }
+  function start() { listen(); publishSoon(5000, true); }
   process.on('exit', () => sbSave(true));
   return { onSignal, observe, observeLate, settleLate, tick, start, check, settle, sbSettle, scoreboard, publishScore, minModel, minMarket, target, state: () => S, hasKey: () => !!KEY, flush: publish };
 }

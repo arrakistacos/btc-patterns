@@ -210,7 +210,7 @@
 </main>
 
 <footer id="foot" class="hide">
-  How it works: the signal bot on your laptop places the order the moment it sends a BUY alert, as an immediate-or-cancel limit order at most 1¢ above the best price, and only if the win chance still beats the price plus Polymarket's fee. One trade per 5-minute window. It pauses for an hour after 2 losses in a row (adjustable), and halts with an urgent alert if the money runs out, the daily loss limit is hit, or Polymarket rejects the key. Status updates arrive about every 20 minutes and right after anything changes. Not financial advice.
+  How it works: the signal bot on your laptop places the order the moment it sends a BUY alert, as an immediate-or-cancel limit order at most 1¢ above the best price, and only if the win chance still beats the price plus Polymarket's fee. One trade per 5-minute window. It pauses for an hour after 2 losses in a row (adjustable), and halts with an urgent alert if the money runs out, the daily loss limit is hit, or Polymarket rejects the key. To save phone-alert messages, the bot sends status when you open this page or change something, and otherwise at most every 20 minutes. Not financial advice.
 </footer>
 
 <dialog id="liveDlg">
@@ -298,7 +298,11 @@
       $('login').classList.add('hide'); $('dash').classList.remove('hide'); $('foot').classList.remove('hide'); $('logout').classList.remove('hide');
       apply(s, true); schedule();
       if (!sc) askScore();
+      askRefresh();
     }
+    // The bot only sends status when something needs it, so ask for a fresh one when you look at the page
+    let refreshAsked = 0;
+    function askRefresh() { if (!st || Date.now() - st.ts < 90000 || Date.now() - refreshAsked < 60000) return; refreshAsked = Date.now(); send('refresh', {}, null, true); }
     function askScore() { if (Date.now() - scoreAsked < 60000) return; scoreAsked = Date.now(); send('score', {}, null, true); }
     function schedule() {
       clearTimeout(pollTimer);
@@ -312,7 +316,7 @@
       for (const [n, p] of pending) if (Date.now() - p.at > 25000) { pending.delete(n); toast('No reply from the bot yet. Is the laptop awake?', 'err'); }
       schedule();
     }
-    document.addEventListener('visibilitychange', () => { if (!document.hidden && sess) poll(); });
+    document.addEventListener('visibilitychange', () => { if (!document.hidden && sess) { askRefresh(); poll(); } });
 
     // ---------------- commands
     async function send(cmd, args, label, quiet) {
@@ -456,7 +460,7 @@
     }
     function renderSeen() {
       if (!st) return;
-      const stale = Date.now() - st.ts > 25 * 60000;
+      const stale = Date.now() - st.ts > 75 * 60000;   // the bot checks in at least hourly
       $('seen').className = 'seen' + (stale ? ' stale' : '');
       $('seen').textContent = (stale ? '⚠ Bot not heard from since ' : 'Bot updated ') + ago(st.ts) + (stale ? ' — is the laptop on and awake?' : '');
     }

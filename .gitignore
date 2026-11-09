@@ -8,3 +8,4 @@ node_modules/
 polymarket.env
 scoreboard.json
 scoreboard.json.tmp
+ntfy-budget.json
