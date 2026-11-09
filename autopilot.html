@@ -54,6 +54,7 @@
   .banner.practice { border-color: var(--accent); background: linear-gradient(90deg, rgba(90,169,255,.14), var(--panel) 70%); } .banner.practice .word { color: var(--accent); }
   .banner.off { } .banner.off .word { color: var(--muted); }
   .banner.paused { border-color: var(--amber); background: linear-gradient(90deg, rgba(245,176,65,.16), var(--panel) 70%); } .banner.paused .word { color: var(--amber); }
+  .banner.goal { border-color: #e6c35c; background: linear-gradient(90deg, rgba(230,195,92,.18), var(--panel) 70%); } .banner.goal .word { color: #e6c35c; }
   .banner.halted { border-color: var(--down); background: linear-gradient(90deg, rgba(234,57,67,.18), var(--panel) 70%); } .banner.halted .word { color: var(--down); }
   .seen { font-size: 12px; color: var(--muted); }
   .seen.stale { color: var(--amber); }
@@ -146,6 +147,7 @@
       <div class="grid2">
         <label class="field"><span>Bet size, % of balance per BUY alert</span><span class="row"><input id="sBet" type="number" min="1" max="100" step="1"> %</span></label>
         <label class="field"><span>Stop for the day after losing (% of the day's starting balance, 0 = never)</span><span class="row"><input id="sStop" type="number" min="0" max="100" step="5"> %</span></label>
+        <label class="field"><span>Goal: notify me and pause when the balance reaches (0 = off)</span><span class="row">$<input id="sGoal" type="number" min="0" step="10"></span><span class="hint">Uses the current mode's balance: practice or your Polymarket US cash.</span></label>
         <label class="field"><span>Pause after this many losses in a row (0 = never)</span><span class="row"><input id="sStreak" type="number" min="0" max="10" step="1"> losses</span></label>
         <label class="field"><span>…for this long</span><span class="row"><input id="sCool" type="number" min="5" max="1440" step="5"> minutes</span></label>
         <label class="field"><span>Gap target: how sure the gap from the price to beat must be (same as the chart's target)</span><select id="sTarget"></select></label>
@@ -343,9 +345,9 @@
       for (const [n, ok, msg] of s.acks || []) if (pending.has(n)) { pending.delete(n); toast((ok ? '✓ ' : '✗ ') + (msg || (ok ? 'Done' : 'Refused')), ok ? 'ok' : 'err'); }
       if (!pending.size) fastUntil = 0;
       const ap = s.ap, mode = ap.mode, live = mode === 'live';
-      const state = ap.halted ? (ap.halted.kind === 'pause' ? 'paused' : 'halted') : !ap.enabled ? 'off' : mode;
+      const state = ap.halted ? (ap.halted.kind === 'pause' ? 'paused' : ap.halted.kind === 'goal' ? 'goal' : 'halted') : !ap.enabled ? 'off' : mode;
       $('banner').className = 'banner ' + state;
-      $('stateWord').textContent = { halted: 'HALTED', paused: 'PAUSED', off: 'OFF', live: 'LIVE', practice: 'PRACTICE' }[state];
+      $('stateWord').textContent = { halted: 'HALTED', paused: 'PAUSED', goal: 'GOAL MET 🏆', off: 'OFF', live: 'LIVE', practice: 'PRACTICE' }[state];
       $('stateLine').textContent = ap.halted ? ap.halted.reason : !ap.enabled ? 'Not trading. BUY alerts still reach your phone.' : live ? `Trading real money: ${ap.betPct}% of buying power on every BUY alert` : `Pretend money: ${ap.betPct}% of the practice balance on every BUY alert`;
       $('stateSub').textContent = ap.halted ? ap.halted.detail : `Trades when the gap reaches the ${ap.target || 80}% target, the model ≥ ${ap.minModel}% and Polymarket ≥ ${ap.minMarket}% for the same side.` + (ap.lossStreak ? ` Pauses ${ap.cooldownMin} min after ${ap.lossStreak} losses in a row${ap.streak ? ` (${ap.streak} so far)` : ''}.` : '');
       $('resumeBtn').classList.toggle('hide', !ap.halted);
@@ -359,6 +361,8 @@
       $('tBalK').textContent = live ? 'Buying power' : 'Practice balance';
       $('tBal').textContent = money(bal);
       $('tBalS').textContent = live ? (s.keys ? (s.bal.live ? 'Polymarket US · ' + ago(s.bal.live.at) : 'checking…') : 'No API key installed') : 'started at ' + money(s.bal.practice.start);
+      const gBal = live ? (s.bal.live ? s.bal.live.cash : null) : s.bal.practice.balance;
+      if (ap.goal > 0) $('tBalS').textContent += ` · goal ${money(ap.goal)}` + (gBal != null ? ` (${Math.min(100, Math.round(gBal / ap.goal * 100))}%)` : '');
       const today = new Date().toLocaleDateString('en-CA');
       const drow = (s.days || []).find((d) => d[0] === today);
       const td = drow ? drow[live ? 2 : 1] : null;
@@ -393,6 +397,7 @@
       // settings: don't overwrite what you're editing
       if (first || !document.activeElement || !document.activeElement.closest('.grid2')) {
         $('sBet').value = ap.betPct; $('sStop').value = ap.dailyStopPct;
+        $('sGoal').value = ap.goal || 0;
         $('sStreak').value = ap.lossStreak != null ? ap.lossStreak : 2; $('sCool').value = ap.cooldownMin || 60;
         $('sMinModel').value = ap.minModel; $('sMinMarket').value = ap.minMarket;
         if (ap.target) $('sTarget').value = ap.target;
@@ -425,10 +430,11 @@
       const bet = +$('sBet').value, stop = +$('sStop').value;
       if (!(bet >= 1 && bet <= 100)) return toast('Bet size must be 1–100%', 'err');
       if (!(stop >= 0 && stop <= 100)) return toast('Daily stop must be 0–100%', 'err');
-      const streak = +$('sStreak').value, cool = +$('sCool').value;
+      const streak = +$('sStreak').value, cool = +$('sCool').value, goal = +$('sGoal').value || 0;
+      if (!(goal >= 0)) return toast('Goal must be $0 or more', 'err');
       if (!(streak >= 0 && streak <= 10 && Number.isInteger(streak))) return toast('Losses in a row must be 0–10', 'err');
       if (!(cool >= 5 && cool <= 1440)) return toast('Pause must be 5–1440 minutes', 'err');
-      send('set', { betPct: bet, dailyStopPct: stop, lossStreak: streak, cooldownMin: cool, minModel: +$('sMinModel').value, minMarket: +$('sMinMarket').value, target: +$('sTarget').value, notifyFills: $('sFills').checked, notifyResults: $('sResults').checked }, 'Saving settings');
+      send('set', { betPct: bet, dailyStopPct: stop, goal, lossStreak: streak, cooldownMin: cool, minModel: +$('sMinModel').value, minMarket: +$('sMinMarket').value, target: +$('sTarget').value, notifyFills: $('sFills').checked, notifyResults: $('sResults').checked }, 'Saving settings');
     };
     $('pReset').onclick = () => { const b = +$('pBal').value; if (!(b >= 10)) return toast('At least $10', 'err'); send('resetPractice', { balance: b }, 'Resetting practice'); };
 

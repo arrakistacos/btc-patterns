@@ -27,6 +27,8 @@ const W = 300;
 const DEFAULTS = {
   enabled: true, mode: 'practice', betPct: 20, dailyStopPct: 50, notifyFills: true, notifyResults: true,
   lossStreak: 2, cooldownMin: 60,        // pause this long after this many losses in a row (0 = never)
+  goal: 0,                               // dollars: pause + notify when the current mode's balance reaches this (0 = off)
+  goalHitFor: null,                      // "mode:goal" already reached, so the same goal fires only once
   streak: { practice: 0, live: 0 },      // current run of losses
   minModel: null, minMarket: null,      // null = use the bot's MIN_MODEL / MIN_MARKET
   target: null,                          // gap confidence target (60–95); null = the bot's TARGET
@@ -136,9 +138,25 @@ export function createAutopilot(o) {
     if (S.halted && S.halted.reason === reason) return;
     S.halted = Object.assign({ reason, detail, at: Date.now() }, extra || {});
     save(); publishSoon();
-    const pause = S.halted.kind === 'pause';
-    log(pause ? 'AUTOPILOT PAUSED:' : 'AUTOPILOT HALTED:', reason, '-', detail);
-    push({ title: pause ? 'AUTOPILOT PAUSED' : 'AUTOPILOT HALTED', body: `${reason}. ${detail}`, priority: pause ? 4 : 5, tags: pause ? 'pause_button' : 'octagonal_sign', click: o.site + 'autopilot.html' });
+    const kind = S.halted.kind;
+    const title = kind === 'goal' ? 'GOAL REACHED' : kind === 'pause' ? 'AUTOPILOT PAUSED' : 'AUTOPILOT HALTED';
+    log(title + ':', reason, '-', detail);
+    push({ title, body: `${reason}. ${detail}`, priority: kind === 'goal' || kind === 'pause' ? 4 : 5, tags: kind === 'goal' ? 'trophy' : kind === 'pause' ? 'pause_button' : 'octagonal_sign', click: o.site + 'autopilot.html' });
+  }
+  // Goal: once the current mode's balance reaches it (with no trades still open), pause until Resume
+  function goalBalance() {
+    if (S.mode === 'live') return S.liveBal ? S.liveBal.cash : null;
+    return S.practice.balance;
+  }
+  function checkGoal() {
+    if (!(S.goal > 0)) return;
+    const key = S.mode + ':' + S.goal;
+    if (S.goalHitFor === key || (S.halted && S.halted.kind === 'goal')) return;
+    if (S.trades.some((t) => t.mode === S.mode && t.result == null && (t.status === 'filled' || t.status === 'partial'))) return;
+    const bal = goalBalance();
+    if (bal == null || bal < S.goal) return;
+    S.goalHitFor = key;
+    halt('Goal reached', `${S.mode === 'live' ? 'Your Polymarket US balance' : 'Practice balance'} is ${money(bal)}, at or above your ${money(S.goal)} goal. Trading is paused until you tap Resume. Set a higher goal to be notified again.`, { kind: 'goal' });
   }
   const clockAt = (ms) => new Date(ms).toLocaleTimeString('en-US', { timeZone: tzName, hour: 'numeric', minute: '2-digit' });
   const outOfMoney = (bal, why) => halt('Out of money', `${why || `${S.mode === 'live' ? 'Polymarket US buying power' : 'Practice balance'} is ${money(bal)}.`} Add funds, then tap Resume on the autopilot page.`);
@@ -282,7 +300,7 @@ export function createAutopilot(o) {
         const tomorrow = dayOf(Date.now() + 86400000);
         halt('Daily loss limit reached', `Down ${money(-day.pnl)} today (${Math.round(-day.pnl / day.startBal * 100)}% of ${money(day.startBal)}). Trading resumes automatically tomorrow, or tap Resume.`, { untilDay: tomorrow });
       }
-      if (t.mode === 'live') refreshLive().catch(() => {});
+      if (t.mode === 'live') refreshLive().then(checkGoal).catch(() => {}); else checkGoal();
       save(); publishSoon();
     }
   }
@@ -358,7 +376,7 @@ export function createAutopilot(o) {
     const tr = (t) => [t.ts, t.Ws, t.mode[0], t.side, t.status, t.qty || 0, t.px || 0, t.cost || 0, t.result, t.pnl, t.msg || '', t.q ? Math.round(t.q * 100) : null];
     const snap = {
       v: 1, ts: Date.now(), ver: AUTOPILOT_VERSION, since: STARTED, why: botWhy, note: lastNote, keys: !!KEY,
-      ap: { enabled: S.enabled, mode: S.mode, betPct: S.betPct, dailyStopPct: S.dailyStopPct, lossStreak: S.lossStreak, cooldownMin: S.cooldownMin, streak: S.streak[S.mode] || 0, notifyFills: S.notifyFills, notifyResults: S.notifyResults, minModel: minModel(o.defMinModel), minMarket: minMarket(o.defMinMarket), target: target(o.defTarget), halted: S.halted },
+      ap: { enabled: S.enabled, mode: S.mode, betPct: S.betPct, dailyStopPct: S.dailyStopPct, lossStreak: S.lossStreak, cooldownMin: S.cooldownMin, goal: S.goal, streak: S.streak[S.mode] || 0, notifyFills: S.notifyFills, notifyResults: S.notifyResults, minModel: minModel(o.defMinModel), minMarket: minMarket(o.defMinMarket), target: target(o.defTarget), halted: S.halted },
       bal: { live: S.liveBal, practice: S.practice }, stats: S.stats, days, acks: acks.slice(-5),
       trades: S.trades.slice(-12).map(tr),
     };
@@ -406,11 +424,13 @@ export function createAutopilot(o) {
         break;
       case 'set': {
         const num = (v, lo, hi) => (typeof v === 'number' && isFinite(v) && v >= lo && v <= hi ? v : undefined);
-        const upd = { betPct: num(a.betPct, 1, 100), dailyStopPct: num(a.dailyStopPct, 0, 100), lossStreak: num(a.lossStreak, 0, 10), cooldownMin: num(a.cooldownMin, 5, 1440), minModel: a.minModel === null ? null : num(a.minModel, 50, 99), minMarket: a.minMarket === null ? null : num(a.minMarket, 50, 99) };
+        const upd = { betPct: num(a.betPct, 1, 100), dailyStopPct: num(a.dailyStopPct, 0, 100), lossStreak: num(a.lossStreak, 0, 10), cooldownMin: num(a.cooldownMin, 5, 1440), goal: num(a.goal, 0, 1e7), minModel: a.minModel === null ? null : num(a.minModel, 50, 99), minMarket: a.minMarket === null ? null : num(a.minMarket, 50, 99) };
         for (const [k, v] of Object.entries(upd)) if (v !== undefined && k in a) S[k] = v;
         for (const k of ['notifyFills', 'notifyResults']) if (typeof a[k] === 'boolean') S[k] = a[k];
         if ('target' in a && (a.target === null || Signal.Z_FOR[a.target])) S.target = a.target;
-        msg = 'Settings saved'; break;
+        msg = 'Settings saved';
+        setTimeout(checkGoal, 500);   // a goal at or below the balance fires right away
+        break;
       }
       case 'resume':
         if (S.mode === 'live' && KEY) { try { const b = await refreshLive(); if (b.buyingPower < MIN_BALANCE) { ok = false; msg = `Still out of money (${money(b.buyingPower)})`; break; } } catch (e) { ok = false; msg = e.message.slice(0, 100); break; } }
@@ -484,6 +504,7 @@ export function createAutopilot(o) {
       refreshLive().then((b) => {
         const open = S.trades.some((t) => t.mode === 'live' && t.result == null && (t.status === 'filled' || t.status === 'partial'));
         if (S.mode === 'live' && b.buyingPower < MIN_BALANCE && !open && S.enabled) outOfMoney(b.buyingPower);
+        if (S.mode === 'live') checkGoal();
       }).catch((e) => { if (isAuthError(e) && S.mode === 'live') halt('Polymarket rejected the API key', e.message.slice(0, 160)); else log('autopilot balance:', e.message); });
     }
     if (now - lastBeat > 20 * 60000) { lastBeat = now; publishSoon(0); }
