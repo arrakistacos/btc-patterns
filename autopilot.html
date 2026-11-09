@@ -144,6 +144,7 @@
         <label class="field"><span>Stop for the day after losing (% of the day's starting balance, 0 = never)</span><span class="row"><input id="sStop" type="number" min="0" max="100" step="5"> %</span></label>
         <label class="field"><span>Pause after this many losses in a row (0 = never)</span><span class="row"><input id="sStreak" type="number" min="0" max="10" step="1"> losses</span></label>
         <label class="field"><span>…for this long</span><span class="row"><input id="sCool" type="number" min="5" max="1440" step="5"> minutes</span></label>
+        <label class="field"><span>Gap target: how sure the gap from the price to beat must be (same as the chart's target)</span><select id="sTarget"></select></label>
         <label class="field"><span>Trade only when the model's win chance is at least</span><select id="sMinModel"></select></label>
         <label class="field"><span>…and Polymarket's odds for that side are at least</span><select id="sMinMarket"></select></label>
         <div class="field"><span>Phone notifications</span>
@@ -213,6 +214,7 @@
     }
 
     // ---------------- login
+    for (const v of [60, 65, 70, 75, 80, 85, 90, 95]) $('sTarget').insertAdjacentHTML('beforeend', `<option value="${v}">${v}%</option>`);
     for (const id of ['sMinModel', 'sMinMarket']) for (let v = 50; v <= 95; v += 5) $(id).insertAdjacentHTML('beforeend', `<option value="${v}">${v}%</option>`);
     async function openSession(server, topic, bits) {
       const K = await APCrypto.keysFromBits(bits);
@@ -288,7 +290,7 @@
       $('banner').className = 'banner ' + state;
       $('stateWord').textContent = { halted: 'HALTED', paused: 'PAUSED', off: 'OFF', live: 'LIVE', practice: 'PRACTICE' }[state];
       $('stateLine').textContent = ap.halted ? ap.halted.reason : !ap.enabled ? 'Not trading. BUY alerts still reach your phone.' : live ? `Trading real money: ${ap.betPct}% of buying power on every BUY alert` : `Pretend money: ${ap.betPct}% of the practice balance on every BUY alert`;
-      $('stateSub').textContent = ap.halted ? ap.halted.detail : `Trades when the model ≥ ${ap.minModel}% and Polymarket ≥ ${ap.minMarket}% for the same side.` + (ap.lossStreak ? ` Pauses ${ap.cooldownMin} min after ${ap.lossStreak} losses in a row${ap.streak ? ` (${ap.streak} so far)` : ''}.` : '');
+      $('stateSub').textContent = ap.halted ? ap.halted.detail : `Trades when the gap reaches the ${ap.target || 80}% target, the model ≥ ${ap.minModel}% and Polymarket ≥ ${ap.minMarket}% for the same side.` + (ap.lossStreak ? ` Pauses ${ap.cooldownMin} min after ${ap.lossStreak} losses in a row${ap.streak ? ` (${ap.streak} so far)` : ''}.` : '');
       $('resumeBtn').classList.toggle('hide', !ap.halted);
       $('powerBtn').textContent = ap.enabled ? 'Turn off' : 'Turn on';
       $('powerBtn').className = ap.enabled ? 'danger' : 'good';
@@ -336,6 +338,7 @@
         $('sBet').value = ap.betPct; $('sStop').value = ap.dailyStopPct;
         $('sStreak').value = ap.lossStreak != null ? ap.lossStreak : 2; $('sCool').value = ap.cooldownMin || 60;
         $('sMinModel').value = ap.minModel; $('sMinMarket').value = ap.minMarket;
+        if (ap.target) $('sTarget').value = ap.target;
         $('sFills').checked = ap.notifyFills; $('sResults').checked = ap.notifyResults;
       }
       renderSeen();
@@ -367,7 +370,7 @@
       const streak = +$('sStreak').value, cool = +$('sCool').value;
       if (!(streak >= 0 && streak <= 10 && Number.isInteger(streak))) return toast('Losses in a row must be 0–10', 'err');
       if (!(cool >= 5 && cool <= 1440)) return toast('Pause must be 5–1440 minutes', 'err');
-      send('set', { betPct: bet, dailyStopPct: stop, lossStreak: streak, cooldownMin: cool, minModel: +$('sMinModel').value, minMarket: +$('sMinMarket').value, notifyFills: $('sFills').checked, notifyResults: $('sResults').checked }, 'Saving settings');
+      send('set', { betPct: bet, dailyStopPct: stop, lossStreak: streak, cooldownMin: cool, minModel: +$('sMinModel').value, minMarket: +$('sMinMarket').value, target: +$('sTarget').value, notifyFills: $('sFills').checked, notifyResults: $('sResults').checked }, 'Saving settings');
     };
     $('pReset').onclick = () => { const b = +$('pBal').value; if (!(b >= 10)) return toast('At least $10', 'err'); send('resetPractice', { balance: b }, 'Resetting practice'); };
 

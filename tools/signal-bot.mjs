@@ -142,7 +142,7 @@ if (!DRY && !CHECK_AP) {
 }
 
 // ---------------------------------------------------------------- autopilot
-const AP = createAutopilot({ dir: ROOT, log, push, Signal, APC, topic: NTFY_TOPIC, ntfyServer: NTFY_SERVER, ntfyToken: NTFY_TOKEN, site: SITE, tzName: TZ_NAME, defMinModel: MIN_MODEL, defMinMarket: MIN_MARKET });
+const AP = createAutopilot({ dir: ROOT, log, push, Signal, APC, topic: NTFY_TOPIC, ntfyServer: NTFY_SERVER, ntfyToken: NTFY_TOKEN, site: SITE, tzName: TZ_NAME, defMinModel: MIN_MODEL, defMinMarket: MIN_MARKET, defTarget: TARGET });
 if (CHECK_AP) {
   const r = await AP.check(Math.floor(Date.now() / 1000 / 300) * 300);
   console.log(JSON.stringify(r, null, 2));
@@ -338,7 +338,7 @@ function evaluate() {
     const agree = oursFav >= favMid && mom === sign && Math.sign(vel) === sign;
     const hist = Signal.histCell(edge, e, favMid, agree);
     const w = { S, K, sigma: sig0 * params.volScale, left, e, Ws };
-    const r = Signal.evalSignal({ w, favUp, ask, cost, oursFav, hist }, TARGET);
+    const r = Signal.evalSignal({ w, favUp, ask, cost, oursFav, hist }, AP.target(TARGET));   // the autopilot page can change the target
     // Alert filter: both the model's win chance and Polymarket's own odds for that side must reach the minimums
     const modelPct = r.buy ? r.q * 100 : 0, marketPct = favMid * 100;
     const minM = AP.minModel(MIN_MODEL), minK = AP.minMarket(MIN_MARKET);   // the autopilot page can change these

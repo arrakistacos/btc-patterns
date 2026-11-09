@@ -29,6 +29,7 @@ const DEFAULTS = {
   lossStreak: 2, cooldownMin: 60,        // pause this long after this many losses in a row (0 = never)
   streak: { practice: 0, live: 0 },      // current run of losses
   minModel: null, minMarket: null,      // null = use the bot's MIN_MODEL / MIN_MARKET
+  target: null,                          // gap confidence target (60–95); null = the bot's TARGET
   practice: { balance: 1000, start: 1000 },
   halted: null,                          // { reason, detail, at, untilDay? | untilTs?, kind? }
   trades: [], days: {}, stats: { practice: null, live: null }, liveBal: null,
@@ -295,7 +296,7 @@ export function createAutopilot(o) {
     const tr = (t) => [t.ts, t.Ws, t.mode[0], t.side, t.status, t.qty || 0, t.px || 0, t.cost || 0, t.result, t.pnl, t.msg || '', t.q ? Math.round(t.q * 100) : null];
     const snap = {
       v: 1, ts: Date.now(), ver: AUTOPILOT_VERSION, since: STARTED, why: botWhy, note: lastNote, keys: !!KEY,
-      ap: { enabled: S.enabled, mode: S.mode, betPct: S.betPct, dailyStopPct: S.dailyStopPct, lossStreak: S.lossStreak, cooldownMin: S.cooldownMin, streak: S.streak[S.mode] || 0, notifyFills: S.notifyFills, notifyResults: S.notifyResults, minModel: minModel(o.defMinModel), minMarket: minMarket(o.defMinMarket), halted: S.halted },
+      ap: { enabled: S.enabled, mode: S.mode, betPct: S.betPct, dailyStopPct: S.dailyStopPct, lossStreak: S.lossStreak, cooldownMin: S.cooldownMin, streak: S.streak[S.mode] || 0, notifyFills: S.notifyFills, notifyResults: S.notifyResults, minModel: minModel(o.defMinModel), minMarket: minMarket(o.defMinMarket), target: target(o.defTarget), halted: S.halted },
       bal: { live: S.liveBal, practice: S.practice }, stats: S.stats, days, acks: acks.slice(-5),
       trades: S.trades.slice(-12).map(tr),
     };
@@ -339,6 +340,7 @@ export function createAutopilot(o) {
         const upd = { betPct: num(a.betPct, 1, 100), dailyStopPct: num(a.dailyStopPct, 0, 100), lossStreak: num(a.lossStreak, 0, 10), cooldownMin: num(a.cooldownMin, 5, 1440), minModel: a.minModel === null ? null : num(a.minModel, 50, 99), minMarket: a.minMarket === null ? null : num(a.minMarket, 50, 99) };
         for (const [k, v] of Object.entries(upd)) if (v !== undefined && k in a) S[k] = v;
         for (const k of ['notifyFills', 'notifyResults']) if (typeof a[k] === 'boolean') S[k] = a[k];
+        if ('target' in a && (a.target === null || Signal.Z_FOR[a.target])) S.target = a.target;
         msg = 'Settings saved'; break;
       }
       case 'resume':
@@ -417,6 +419,7 @@ export function createAutopilot(o) {
   }
 
   const minModel = (def) => (S.minModel != null ? S.minModel : def);
+  const target = (def) => (S.target != null && Signal.Z_FOR[S.target] ? S.target : def);
   const minMarket = (def) => (S.minMarket != null ? S.minMarket : def);
 
   // ------------------------------------------------------------ key check (node tools/signal-bot.mjs --check-autopilot)
@@ -435,5 +438,5 @@ export function createAutopilot(o) {
   }
 
   function start() { listen(); publishSoon(3000); }
-  return { onSignal, tick, start, check, settle, minModel, minMarket, state: () => S, hasKey: () => !!KEY, flush: publish };
+  return { onSignal, tick, start, check, settle, minModel, minMarket, target, state: () => S, hasKey: () => !!KEY, flush: publish };
 }
