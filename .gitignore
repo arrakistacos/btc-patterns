@@ -6,3 +6,5 @@ data/backfill.json
 data/recordings/
 node_modules/
 polymarket.env
+scoreboard.json
+scoreboard.json.tmp

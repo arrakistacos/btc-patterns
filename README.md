@@ -159,6 +159,8 @@ The signal bot can buy each BUY alert on **Polymarket US** for you, through Poly
 
 Tap **Resume** on the page once it's fixed. **Turn off** on the page stops all new trades immediately.
 
+**Which settings work best:** in every window, the bot checks all 80 combinations of gap target (60/70/80/90%), model minimum (off/80/85/90%) and Polymarket minimum (off/70/80/85/90%). It records the first BUY each would make, scores it on the Polymarket US result at Polymarket's price plus the US fee, and the autopilot page ranks them by profit per $100. **Use** switches the bot to that combination. It runs 24/7 with no page open and keeps 30 days in `scoreboard.json`; rankings mean little until rows have about 100 trades.
+
 **Phone notifications:** each trade placed and each win or loss (both can be turned off), plus halts and switching to live.
 
 **Setup (Windows):** create an API key at [polymarket.us/developer](https://polymarket.us/developer). It needs your verified Polymarket US account; the secret is shown only once. Then re-run the installer with `-Autopilot`:

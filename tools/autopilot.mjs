@@ -287,6 +287,68 @@ export function createAutopilot(o) {
     }
   }
 
+  // ------------------------------------------------------------ settings scoreboard
+  // Every second of every tradable window, check every combination of gap target × model minimum ×
+  // Polymarket minimum. Record the first BUY each combination would make, then score it on the Polymarket US
+  // result. Saved in scoreboard.json (last 30 days); the page shows the ranking.
+  const GRID = { T: [60, 70, 80, 90], M: [0, 80, 85, 90], K: [0, 70, 80, 85, 90] };   // 0 = no minimum
+  const COMBOS = [];
+  for (const T of GRID.T) for (const M of GRID.M) for (const Kk of GRID.K) COMBOS.push([T, M, Kk]);
+  const SB_FILE = join(dir, 'scoreboard.json');
+  let SB = { since: null, watched: 0, win: {} };        // win[Ws] = { r: null | 1 (Up won) | 0, h: [[combo, up, ask, e], ...] }
+  try { if (existsSync(SB_FILE)) SB = Object.assign(SB, JSON.parse(readFileSync(SB_FILE, 'utf8'))); } catch (e) { log('scoreboard: could not read, starting fresh:', e.message); }
+  let sbDirty = false, sbChanged = false, sbSavedAt = 0, sbPubAt = 0;
+  function sbSave(force) {
+    if (!sbDirty || (!force && Date.now() - sbSavedAt < 30000)) return;
+    try { writeFileSync(SB_FILE + '.tmp', JSON.stringify(SB)); renameSync(SB_FILE + '.tmp', SB_FILE); sbDirty = false; sbSavedAt = Date.now(); }
+    catch (e) { log('scoreboard: could not save:', e.message); }
+  }
+  // x: the same inputs the bot gives Signal.evalSignal, plus Ws, e and favMid
+  function observe(x) {
+    if (!SB.since) { SB.since = Date.now(); sbDirty = true; }
+    const rec = SB.win[x.Ws] || (SB.win[x.Ws] = { r: null, h: [] });
+    if (rec.h.length === COMBOS.length) return;
+    const have = new Set(rec.h.map((h) => h[0]));
+    const byT = {};
+    for (const T of GRID.T) byT[T] = Signal.evalSignal(x, T);
+    COMBOS.forEach(([T, M, Kk], ci) => {
+      if (have.has(ci)) return;
+      const r = byT[T];
+      if (!r.buy || r.q * 100 < M - 1e-9 || x.favMid * 100 < Kk - 1e-9) return;
+      rec.h.push([ci, x.favUp ? 1 : 0, r4(x.ask), Math.round(x.e)]); sbDirty = true;
+    });
+  }
+  async function sbSettle() {
+    const now = Date.now() / 1000;
+    let budget = 6;
+    for (const k of Object.keys(SB.win)) {
+      const Ws = +k, rec = SB.win[k];
+      if (now < Ws + W + 15) continue;
+      if (now > Ws + 30 * 86400) { delete SB.win[k]; sbDirty = true; continue; }
+      if (rec.watched !== 1) { rec.watched = 1; SB.watched++; sbDirty = true; }
+      if (!rec.h.length) { delete SB.win[k]; sbDirty = true; continue; }   // nothing would have traded: just count it
+      if (rec.r != null || budget-- <= 0) continue;
+      let r = null;
+      try { const j = await gw(`/v1/markets/cpc-${Signal.usSlug(Ws)}/settlement`); if (j.settlement != null) r = +j.settlement >= 0.5 ? 1 : 0; } catch { /* not yet */ }
+      if (r == null && now > Ws + W + 600) { try { const u = await Signal.fetchUsTerms(Ws); if (u.settlementPrice && u.priceToBeat) r = u.settlementPrice >= u.priceToBeat ? 1 : 0; } catch { /* later */ } }
+      if (r != null) { rec.r = r; sbDirty = true; sbChanged = true; }
+    }
+    sbSave();
+  }
+  function scoreboard() {
+    const st = COMBOS.map(() => [0, 0, 0, 0]);   // trades, wins, total cost, total profit
+    let pending = 0;
+    for (const rec of Object.values(SB.win)) {
+      if (!rec.h.length) continue;
+      if (rec.r == null) { pending++; continue; }
+      for (const [ci, up, ask] of rec.h) {
+        const cost = ask + 0.095 * ask * (1 - ask), won = up === rec.r;   // Polymarket US taker fee
+        st[ci][0]++; if (won) st[ci][1]++; st[ci][2] += cost; st[ci][3] += (won ? 1 : 0) - cost;
+      }
+    }
+    return { v: 1, kind: 'score', ts: Date.now(), since: SB.since, watched: SB.watched, pending, grid: GRID, s: st.map(([n, w, c, p]) => [n, w, c ? Math.round(p / c * 1000) / 10 : 0]) };
+  }
+
   // ------------------------------------------------------------ remote link (ntfy)
   let K = null, publishedToday = { day: null, n: 0 }, lastPublish = 0, pubTimer = null, botWhy = '', acks = [];
   const PASSWORD = env.AUTOPILOT_PASSWORD || '';
@@ -303,7 +365,7 @@ export function createAutopilot(o) {
     while (JSON.stringify(snap).length > 2900 && snap.trades.length > 3) snap.trades.shift();   // ntfy messages are capped at 4 KB
     return snap;
   }
-  async function publish() {
+  async function publish(payload) {
     await ready;
     if (!K) return;
     const d = dayOf(Date.now());
@@ -311,11 +373,18 @@ export function createAutopilot(o) {
     if (publishedToday.n >= 150) return;    // stay well inside ntfy.sh's 250 messages/day
     publishedToday.n++; lastPublish = Date.now();
     try {
-      const r = await fetch(`${NTFY}/${T.status}`, { method: 'POST', headers: Object.assign({ Priority: '1' }, NTFY_AUTH), body: await APC.seal(K, snapshot()) });
+      const r = await fetch(`${NTFY}/${T.status}`, { method: 'POST', headers: Object.assign({ Priority: '1' }, NTFY_AUTH), body: await APC.seal(K, payload || snapshot()) });
       if (!r.ok) log('autopilot: status publish HTTP', r.status);
     } catch (e) { log('autopilot: status publish failed:', e.message); }
   }
-  function publishSoon(ms) { clearTimeout(pubTimer); pubTimer = setTimeout(publish, ms == null ? 1500 : ms); }
+  function publishSoon(ms) { clearTimeout(pubTimer); pubTimer = setTimeout(() => publish(), ms == null ? 1500 : ms); }
+  // Scoreboard goes out as its own message: when results changed (at most hourly), or every 6 hours anyway
+  function publishScore(force) {
+    const age = Date.now() - sbPubAt;
+    if (!force && !(sbChanged && age > 60 * 60000) && age < 6 * 3600000) return;
+    sbPubAt = Date.now(); sbChanged = false;
+    publish(scoreboard());
+  }
 
   const seen = new Set();
   async function handleCommand(text) {
@@ -356,6 +425,7 @@ export function createAutopilot(o) {
         msg = `Practice reset to ${money(b)}`; break;
       }
       case 'refresh': if (S.mode === 'live' && KEY) await refreshLive().catch(() => {}); break;
+      case 'score': if (Date.now() - sbPubAt > 60000) { sbPubAt = Date.now(); sbChanged = false; setTimeout(() => publish(scoreboard()), 2500); } break;
       default: ok = false; msg = 'Unknown command';
     }
     acks.push([c.n, ok ? 1 : 0, msg]); if (acks.length > 10) acks.shift();
@@ -399,7 +469,8 @@ export function createAutopilot(o) {
   function tick(why) {
     botWhy = why || botWhy;
     const now = Date.now();
-    if (now - lastSettleCheck > 10000) { lastSettleCheck = now; settle().catch((e) => log('autopilot settle:', e.message)); }
+    if (now - lastSettleCheck > 10000) { lastSettleCheck = now; settle().catch((e) => log('autopilot settle:', e.message)); sbSettle().catch((e) => log('scoreboard settle:', e.message)); }
+    if (now - STARTED > 30000) publishScore();
     if (S.halted && S.halted.untilTs && now >= S.halted.untilTs) {
       S.halted = null; save(); publishSoon();
       push({ title: 'Autopilot resumed', body: `Pause over: trading again at ${S.betPct}% per BUY alert.`, priority: 3, tags: 'arrow_forward', click: o.site + 'autopilot.html' });
@@ -438,5 +509,6 @@ export function createAutopilot(o) {
   }
 
   function start() { listen(); publishSoon(3000); }
-  return { onSignal, tick, start, check, settle, minModel, minMarket, target, state: () => S, hasKey: () => !!KEY, flush: publish };
+  process.on('exit', () => sbSave(true));
+  return { onSignal, observe, tick, start, check, settle, sbSettle, scoreboard, publishScore, minModel, minMarket, target, state: () => S, hasKey: () => !!KEY, flush: publish };
 }

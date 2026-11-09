@@ -75,6 +75,10 @@
   td.r, th.r { text-align: right; }
   td.nw, .nw { white-space: nowrap; }
   .tag { display: inline-block; font-size: 10px; font-weight: 700; padding: 1px 6px; border-radius: 5px; letter-spacing: .04em; }
+  tr.mine td { background: rgba(90,169,255,.08); }
+  button.use { padding: 3px 8px; font-size: 12px; }
+  #scoreTbl td, #scoreTbl th { padding-left: 3px; padding-right: 3px; }
+  @media (max-width: 520px) { #scoreTbl { font-size: 12px; } }
   .tag.p { background: rgba(90,169,255,.18); color: var(--accent); } .tag.l { background: rgba(22,199,132,.18); color: var(--up); }
   .scroll { overflow-x: auto; }
   #toast { position: fixed; left: 50%; bottom: 18px; transform: translateX(-50%); background: var(--panel2); border: 1px solid var(--line); border-radius: 10px; padding: 10px 14px; font-size: 13px; display: none; z-index: 20; max-width: calc(100% - 32px); }
@@ -157,6 +161,16 @@
     </div>
 
     <div class="card">
+      <h3>Which settings work best <a href="#" id="scoreRefresh" class="hint" style="text-transform:none;letter-spacing:0;font-weight:500">refresh</a></h3>
+      <p class="hint" id="scoreNote" style="margin-top:0">—</p>
+      <div class="scroll"><table id="scoreTbl">
+        <thead><tr><th>Gap</th><th>Model</th><th>Poly</th><th class="r">Trades</th><th class="r">Won</th><th class="r nw">Per $100</th><th></th></tr></thead>
+        <tbody id="scoreBody"><tr><td colspan="7" class="muted">Waiting for the first scoreboard from the bot…</td></tr></tbody>
+      </table></div>
+      <div class="row" style="margin-top:8px"><a href="#" id="scoreAll" class="hint">Show all combinations</a></div>
+    </div>
+
+    <div class="card">
       <h3>Daily results</h3>
       <div class="scroll"><table>
         <thead><tr><th>Day</th><th>Mode</th><th class="r">Trades</th><th class="r">Won</th><th class="r">Profit</th></tr></thead>
@@ -204,6 +218,7 @@
     const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 
     let sess = null;   // { server, topic, K, T }
+    let sc = null, scoreAll = false, scoreAsked = 0;   // latest settings scoreboard
     let st = null;     // latest decrypted status
     let pollTimer = null, fastUntil = 0;
     const pending = new Map();   // nonce -> { label, at }
@@ -224,9 +239,15 @@
       const r = await fetch(`${sess.server}/${sess.T.status}/json?poll=1&since=${since || '2h'}`, { cache: 'no-store' });
       if (!r.ok) throw new Error('ntfy HTTP ' + r.status);
       const lines = (await r.text()).trim().split('\n').filter(Boolean).map((l) => { try { return JSON.parse(l); } catch (e) { return null; } }).filter((m) => m && m.event === 'message');
-      let sawAny = lines.length > 0;
-      for (let i = lines.length - 1; i >= 0; i--) { const s = await APCrypto.open(sess.K, lines[i].message); if (s) return { s, sawAny }; }
-      return { s: null, sawAny };
+      let sawAny = lines.length > 0, s = null, score = null;
+      // The bot sends two kinds of message: status (no kind) and the settings scoreboard (kind 'score')
+      for (let i = lines.length - 1; i >= 0 && !(s && score); i--) {
+        const m = await APCrypto.open(sess.K, lines[i].message);
+        if (!m) continue;
+        if (m.kind === 'score') { if (!score) score = m; } else if (!s) s = m;
+      }
+      if (score && (!sc || score.ts > sc.ts)) { sc = score; renderScore(); }
+      return { s, sawAny };
     }
     $('loginForm').addEventListener('submit', async (ev) => {
       ev.preventDefault();
@@ -247,19 +268,21 @@
       } catch (e) { $('loginErr').textContent = 'Could not connect: ' + e.message; sess = null; }
       finally { $('loginBtn').disabled = false; $('loginBtn').textContent = 'Log in'; }
     });
-    $('logout').onclick = () => { store.clear(); sess = null; st = null; clearTimeout(pollTimer); $('dash').classList.add('hide'); $('foot').classList.add('hide'); $('logout').classList.add('hide'); $('login').classList.remove('hide'); };
+    $('logout').onclick = () => { store.clear(); sess = null; st = null; sc = null; clearTimeout(pollTimer); $('dash').classList.add('hide'); $('foot').classList.add('hide'); $('logout').classList.add('hide'); $('login').classList.remove('hide'); };
 
     function showDash(s) {
       $('login').classList.add('hide'); $('dash').classList.remove('hide'); $('foot').classList.remove('hide'); $('logout').classList.remove('hide');
       apply(s, true); schedule();
+      if (!sc) askScore();
     }
+    function askScore() { if (Date.now() - scoreAsked < 60000) return; scoreAsked = Date.now(); send('score', {}, null, true); }
     function schedule() {
       clearTimeout(pollTimer);
       pollTimer = setTimeout(poll, Date.now() < fastUntil ? 2000 : 15000);
     }
     async function poll() {
       if (!sess) return;
-      try { const { s } = await fetchStatus(st ? Math.floor(st.ts / 1000) - 1 : '12h'); if (s && (!st || s.ts >= st.ts)) apply(s); }
+      try { const since = Math.max(st ? st.ts : 0, sc ? sc.ts : 0); const { s } = await fetchStatus(since ? Math.floor(since / 1000) - 5 : '12h'); if (s && (!st || s.ts >= st.ts)) apply(s); }
       catch (e) { /* offline for a moment; keep trying */ }
       renderSeen();
       for (const [n, p] of pending) if (Date.now() - p.at > 25000) { pending.delete(n); toast('No reply from the bot yet. Is the laptop awake?', 'err'); }
@@ -268,17 +291,51 @@
     document.addEventListener('visibilitychange', () => { if (!document.hidden && sess) poll(); });
 
     // ---------------- commands
-    async function send(cmd, args, label) {
+    async function send(cmd, args, label, quiet) {
       if (!sess) return;
       try {
         const c = await APCrypto.signCommand(sess.K, cmd, args);
         const r = await fetch(`${sess.server}/${sess.T.command}`, { method: 'POST', body: c.text });
         if (!r.ok) throw new Error('ntfy HTTP ' + r.status);
-        pending.set(c.nonce, { label, at: Date.now() });
-        toast((label || 'Sending') + '…');
+        if (!quiet) { pending.set(c.nonce, { label, at: Date.now() }); toast((label || 'Sending') + '…'); }
         fastUntil = Date.now() + 25000; schedule();
-      } catch (e) { toast('Could not send: ' + e.message, 'err'); }
+      } catch (e) { if (!quiet) toast('Could not send: ' + e.message, 'err'); }
     }
+
+    // ---------------- settings scoreboard
+    function renderScore() {
+      if (!sc) return;
+      const G = sc.grid, rows = []; let ci = 0;
+      for (const T of G.T) for (const M of G.M) for (const K of G.K) { const [n, w, p] = sc.s[ci] || [0, 0, 0]; rows.push({ ci, T, M, K, n, w, p }); ci++; }
+      const ap = st && st.ap;
+      const isMine = (r) => ap && r.T === ap.target && (r.M === ap.minModel || (r.M === 0 && ap.minModel <= 50)) && (r.K === ap.minMarket || (r.K === 0 && ap.minMarket <= 50));
+      const mine = rows.find(isMine);
+      const maxN = Math.max(0, ...rows.map((r) => r.n));
+      const minN = maxN >= 10 ? 10 : 1;
+      // Different minimums often make exactly the same trades; in the short list show each result once,
+      // keeping the combination with the loosest minimums
+      let list = rows.filter((r) => r.n >= minN).sort((a, b) => b.p - a.p || b.n - a.n || (a.M + a.K) - (b.M + b.K));
+      let dupes = 0;
+      if (!scoreAll) {
+        const seen = new Set();
+        list = list.filter((r) => { const k = [r.T, r.n, r.w, r.p].join('|'); if (seen.has(k)) { dupes++; return false; } seen.add(k); return true; }).slice(0, 8);
+      }
+      if (mine && !list.includes(mine)) list.unshift(mine);
+      const pct = (v) => (v ? v + '%' : 'off');
+      const row = (r) => `<tr class="${r === mine ? 'mine' : ''}"><td class="nw">${r.T}%${r === mine ? ' ◀' : ''}</td><td>${pct(r.M)}</td><td>${pct(r.K)}</td><td class="r num">${r.n}</td><td class="r num">${r.n ? Math.round(r.w / r.n * 100) + '%' : '—'}</td><td class="r num nw ${r.n ? cls(r.p) : ''}">${r.n ? (r.p >= 0 ? '+' : '−') + '$' + Math.abs(r.p).toFixed(2) : '—'}</td><td class="r">${r === mine ? '' : `<button class="use" data-ci="${r.ci}">Use</button>`}</td></tr>`;
+      $('scoreBody').innerHTML = list.length ? list.map(row).join('') : '<tr><td colspan="7" class="muted">No BUY signals yet for any combination.</td></tr>';
+      for (const b of $('scoreBody').querySelectorAll('button.use')) b.onclick = () => {
+        const r = rows[+b.dataset.ci];
+        send('set', { target: r.T, minModel: r.M || 50, minMarket: r.K || 50 }, `Switching to gap ${r.T}% · model ${pct(r.M)} · Polymarket ${pct(r.K)}`);
+      };
+      const since = sc.since ? new Date(sc.since).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : '—';
+      $('scoreNote').innerHTML = `Since ${since}, the bot has checked ${rows.length} combinations in every window (${sc.watched} windows so far${sc.pending ? `, ${sc.pending} waiting for results` : ''}). Each combination's first BUY in a window is scored on the Polymarket US result, at Polymarket's price plus the US fee. ` +
+        (maxN < 100 ? `<b>Too early to trust:</b> differences mean little until rows have about 100 trades (most so far: ${maxN}).` : 'Rows with 100+ trades are starting to mean something.') +
+        ` Sorted by profit per $100 bet${minN > 1 ? ', rows with at least 10 trades' : ''}. Updated ${ago(sc.ts)}.`;
+      $('scoreAll').textContent = scoreAll ? 'Show top 8' : `Show all ${rows.length} combinations` + (dupes ? ' (some make identical trades and are hidden here)' : '');
+    }
+    $('scoreAll').onclick = (ev) => { ev.preventDefault(); scoreAll = !scoreAll; renderScore(); };
+    $('scoreRefresh').onclick = (ev) => { ev.preventDefault(); scoreAsked = 0; askScore(); toast('Asked the bot for the latest scoreboard…'); };
 
     // ---------------- render
     function apply(s, first) {
@@ -342,6 +399,7 @@
         $('sFills').checked = ap.notifyFills; $('sResults').checked = ap.notifyResults;
       }
       renderSeen();
+      renderScore();
     }
     function renderSeen() {
       if (!st) return;
