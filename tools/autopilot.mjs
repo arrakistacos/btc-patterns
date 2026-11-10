@@ -517,8 +517,10 @@ export function createAutopilot(o) {
       let m; try { m = JSON.parse(typeof ev.data === 'string' ? ev.data : Buffer.from(ev.data).toString()); } catch { return; }
       const d = m.marketDataLite;
       if (d && d.marketSlug === US.slug) {
+        // each update is the whole top of book: a missing side means no orders there (not "unchanged")
         const b = amt(d.bestBid), a = amt(d.bestAsk);
-        if (b !== undefined) US.bid = b; if (a !== undefined) US.ask = a;
+        US.bid = b !== undefined ? b : null; US.ask = a !== undefined ? a : null;
+        if (US.bid != null && US.ask != null && US.bid > US.ask) US.bid = US.ask = null;   // never record a crossed book
         US.at = Date.now(); US.msgs++;
       } else if (m.error && Date.now() - US.errAt > 600000) { US.errAt = Date.now(); log('US price stream error:', JSON.stringify(m.error).slice(0, 160)); }
     };
@@ -549,7 +551,7 @@ export function createAutopilot(o) {
         lagPollAt = now; t0 = Date.now(); b = await bbo(mkt.slug); t1 = Date.now(); src = 'p';
       }
       lagLast = now;
-      const com = x.com(); if (!com || com.bid == null || com.ask == null || b.bid == null || b.ask == null) return;
+      const com = x.com(); if (!com || com.bid == null || com.ask == null || b.bid == null || b.ask == null || b.bid > b.ask) return;
       const ts = Math.round((t0 + t1) / 2), e = Math.round(x.e + (ts - now) / 1000);
       lagLines.push([dayOf(ts), JSON.stringify([ts, x.Ws, e, r2(x.btc), com.bid, com.ask, b.bid, b.ask, t1 - t0, src])]);
       lagFlush();
