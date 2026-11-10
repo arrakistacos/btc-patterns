@@ -32,6 +32,7 @@ const DEFAULTS = {
   mainOn: true,                          // regular BUY-signal bets use real money in Live (off = practice only, coin flips still real)
   lateAntic: false,                      // Anticipation mode: real coin-flip size steps down after each loss…
   anticStart: 20, anticStep: 5, anticFloor: 10,   // …anticStart % right after a loss, minus anticStep per coin flip since, never below anticFloor
+  lateHours: [true, true, true],         // real coin flips allowed in each 8-hour block, Central time: 12am-8am, 8am-4pm, 4pm-12am
   lateFavOnly: true,                     // real coin-flip money only when the model backs Polymarket's favorite
   lateMinReal: 65,                       // …and only when the model gives that side at least this % (60 = no extra filter)
   goal: 0,                               // dollars: pause + notify when the current mode's balance reaches this (0 = off)
@@ -195,6 +196,9 @@ export function createAutopilot(o) {
     S.goalHitFor = key;
     halt('Goal reached', `${S.mode === 'live' ? 'Your Polymarket US balance' : 'Practice balance'} is ${money(bal)}, at or above your ${money(S.goal)} goal. Trading is paused until you tap Resume. Set a higher goal to be notified again.`, { kind: 'goal' });
   }
+  // 8-hour block of the day in Central time (follows daylight saving): 0 = 12am-8am, 1 = 8am-4pm, 2 = 4pm-12am
+  const blockOf = (ms) => Math.floor((+new Date(ms).toLocaleString('en-US', { timeZone: tzName, hour: 'numeric', hourCycle: 'h23' }) % 24) / 8);
+  const BLOCKS = ['12am-8am', '8am-4pm', '4pm-12am'];
   const clockAt = (ms) => new Date(ms).toLocaleTimeString('en-US', { timeZone: tzName, hour: 'numeric', minute: '2-digit' });
   const outOfMoney = (bal, why) => halt('Out of money', `${why || `${S.mode === 'live' ? 'Polymarket US buying power' : 'Practice balance'} is ${money(bal)}.`} Add funds, then tap Resume on the autopilot page.`);
 
@@ -383,6 +387,17 @@ export function createAutopilot(o) {
     }
     return null;
   }
+  // results of every settled coin flip (real or practice) by 8-hour block, to keep checking which hours work
+  function lateByBlock() {
+    const z = [0, 1, 2].map(() => ({ n: 0, w: 0, staked: 0, pnl: 0, fn: 0, fw: 0, fstaked: 0, fpnl: 0 }));
+    for (const t of S.late.trades) {
+      if (t.status !== 'filled' || t.result == null) continue;
+      const b = z[t.blk != null ? t.blk : blockOf(t.ts || t.Ws * 1000)];
+      b.n++; b.w += t.result; b.staked += t.cost; b.pnl += t.pnl;
+      if (t.quoted >= 0.5 && t.q * 100 >= (S.lateMinReal || 60) - 1e-9) { b.fn++; b.fw += t.result; b.fstaked += t.cost; b.fpnl += t.pnl; }   // would pass your filters
+    }
+    return z.map((b) => [b.n, b.w, r2(b.staked), r2(b.pnl), b.fn, b.fw, r2(b.fstaked), r2(b.fpnl)]);
+  }
   function anticPct() {
     const k = anticSince(), lo = Math.min(S.anticFloor, S.anticStart);
     return k == null ? lo : Math.max(lo, S.anticStart - S.anticStep * k);
@@ -415,7 +430,9 @@ export function createAutopilot(o) {
         // Filters for real money; a skipped flip is still tracked as practice so the results keep coming in:
         //   a chart pattern line against the flip, the model backing the underdog, or model confidence below the minimum
         rec.fav = rec.quoted >= 0.5 ? 1 : 0;
-        const why = rec.pat === 'against' ? 'pattern' : S.lateFavOnly && !rec.fav ? 'underdog' : q * 100 < (S.lateMinReal || 60) - 1e-9 ? 'conf' : null;
+        rec.blk = blockOf(Date.now());
+        const hoursOk = !Array.isArray(S.lateHours) || S.lateHours[rec.blk] !== false;
+        const why = rec.pat === 'against' ? 'pattern' : S.lateFavOnly && !rec.fav ? 'underdog' : q * 100 < (S.lateMinReal || 60) - 1e-9 ? 'conf' : !hoursOk ? 'hours' : null;
         const real = eligible && !why;
         if (eligible && why) { rec.realSkip = why; if (why === 'pattern') rec.patSkip = 1; }
         if (real) {
@@ -460,7 +477,7 @@ export function createAutopilot(o) {
     if (S.late.trades.length > 300) S.late.trades.splice(0, S.late.trades.length - 300);
     if (rec.status === 'filled') { S.late.stats.n++; S.late.stats.staked = r2(S.late.stats.staked + rec.cost); }
     if (rec.status === 'nofill') S.late.stats.nofill++;
-    log(`late coin-flip ${rec.real ? 'REAL' : 'test'}${rec.realSkip ? ` (real skipped: ${{ pattern: 'chart pattern against', underdog: 'model backs the underdog', conf: 'model below ' + S.lateMinReal + '%' }[rec.realSkip]})` : ''}: ${rec.status} ${rec.side}${rec.px ? ' @ ' + cents(rec.px) : ''} (Polymarket showed ${cents(rec.quoted)}, model ${Math.round(q * 100)}%, ${rec.left}s left)${rec.msg ? ' - ' + rec.msg : ''}`);
+    log(`late coin-flip ${rec.real ? 'REAL' : 'test'}${rec.realSkip ? ` (real skipped: ${{ pattern: 'chart pattern against', underdog: 'model backs the underdog', conf: 'model below ' + S.lateMinReal + '%', hours: BLOCKS[rec.blk] + ' is switched off' }[rec.realSkip]})` : ''}: ${rec.status} ${rec.side}${rec.px ? ' @ ' + cents(rec.px) : ''} (Polymarket showed ${cents(rec.quoted)}, model ${Math.round(q * 100)}%, ${rec.left}s left)${rec.msg ? ' - ' + rec.msg : ''}`);
     save(); publishSoon();
   }
   async function settleLate() {
@@ -722,10 +739,10 @@ export function createAutopilot(o) {
     const snap = {
       v: 1, ts: Date.now(), ver: AUTOPILOT_VERSION, since: STARTED, why: botWhy, note: lastNote, keys: !!KEY,
       msgs: o.budget && isFinite(o.budget.left()) ? Math.floor(o.budget.left()) : null,   // ntfy messages left (free ntfy.sh)
-      ap: { enabled: S.enabled, mode: S.mode, mainOn: S.mainOn !== false, betPct: S.betPct, dailyStopPct: S.dailyStopPct, lossStreak: S.lossStreak, cooldownMin: S.cooldownMin, goal: S.goal, lateLive: S.lateLive, lateBet: S.lateBet, lateBetPct: S.lateBetPct, lateFavOnly: S.lateFavOnly, lateMinReal: S.lateMinReal, lateAntic: S.lateAntic, anticStart: S.anticStart, anticStep: S.anticStep, anticFloor: S.anticFloor, streak: S.streak[S.mode] || 0, notifyFills: S.notifyFills, notifyResults: S.notifyResults, minModel: minModel(o.defMinModel), minMarket: minMarket(o.defMinMarket), target: target(o.defTarget), halted: S.halted },
+      ap: { enabled: S.enabled, mode: S.mode, mainOn: S.mainOn !== false, betPct: S.betPct, dailyStopPct: S.dailyStopPct, lossStreak: S.lossStreak, cooldownMin: S.cooldownMin, goal: S.goal, lateLive: S.lateLive, lateBet: S.lateBet, lateBetPct: S.lateBetPct, lateFavOnly: S.lateFavOnly, lateMinReal: S.lateMinReal, lateHours: S.lateHours, lateAntic: S.lateAntic, anticStart: S.anticStart, anticStep: S.anticStep, anticFloor: S.anticFloor, streak: S.streak[S.mode] || 0, notifyFills: S.notifyFills, notifyResults: S.notifyResults, minModel: minModel(o.defMinModel), minMarket: minMarket(o.defMinMarket), target: target(o.defTarget), halted: S.halted },
       bal: { live: S.liveBal, practice: S.practice }, stats: S.stats, days, acks: acks.slice(-5),
       trades: S.trades.slice(-12).map(tr),
-      late: { since: S.late.since, antic: { since: anticSince(), next: anticPct() }, stats: S.late.stats, real: S.late.real || null, byPat: S.late.byPat || null, byFav: S.late.byFav || null, trades: S.late.trades.slice(-6).map((t) => [t.ts, t.Ws, t.side, t.status, t.px || 0, t.quoted, Math.round(t.q * 100), t.result, t.pnl, t.left, t.msg || '', t.real ? 1 : 0, t.pat === 'against' ? (t.patSkip ? 2 : 1) : t.pat === 'with' ? 3 : 0, t.realSkip === 'underdog' ? 1 : t.realSkip === 'conf' ? 2 : 0, t.fav != null ? t.fav : (t.quoted >= 0.5 ? 1 : 0)]) },
+      late: { since: S.late.since, antic: { since: anticSince(), next: anticPct() }, stats: S.late.stats, real: S.late.real || null, byPat: S.late.byPat || null, byFav: S.late.byFav || null, byBlock: lateByBlock(), trades: S.late.trades.slice(-6).map((t) => [t.ts, t.Ws, t.side, t.status, t.px || 0, t.quoted, Math.round(t.q * 100), t.result, t.pnl, t.left, t.msg || '', t.real ? 1 : 0, t.pat === 'against' ? (t.patSkip ? 2 : 1) : t.pat === 'with' ? 3 : 0, t.realSkip === 'underdog' ? 1 : t.realSkip === 'conf' ? 2 : t.realSkip === 'hours' ? 3 : 0, t.fav != null ? t.fav : (t.quoted >= 0.5 ? 1 : 0)]) },
       lag: { since: S.lagt.since, stats: S.lagt.stats, byGap: S.lagt.byGap, est: S.lagt.est, src: US.up ? 's' : 'p', trades: S.lagt.trades.slice(-4).map((t) => [t.ts, t.Ws, t.side, t.status, t.px || 0, t.seen, t.com, t.result, t.pnl, t.left, t.msg || '']) },
     };
     while (JSON.stringify(snap).length > 2900 && snap.trades.length > 3) snap.trades.shift();   // ntfy messages are capped at 4 KB
@@ -791,6 +808,7 @@ export function createAutopilot(o) {
         const upd = { betPct: num(a.betPct, 1, 100), dailyStopPct: num(a.dailyStopPct, 0, 100), lossStreak: num(a.lossStreak, 0, 10), cooldownMin: num(a.cooldownMin, 5, 1440), goal: num(a.goal, 0, 1e7), lateBet: num(a.lateBet, 1, 1000), lateBetPct: num(a.lateBetPct, 0, 100), lateMinReal: num(a.lateMinReal, 50, 99), anticStart: num(a.anticStart, 1, 50), anticStep: num(a.anticStep, 0, 50), anticFloor: num(a.anticFloor, 1, 50), minModel: a.minModel === null ? null : num(a.minModel, 50, 99), minMarket: a.minMarket === null ? null : num(a.minMarket, 50, 99) };
         for (const [k, v] of Object.entries(upd)) if (v !== undefined && k in a) S[k] = v;
         for (const k of ['notifyFills', 'notifyResults', 'lateFavOnly', 'mainOn', 'lateAntic']) if (typeof a[k] === 'boolean') S[k] = a[k];
+        if (Array.isArray(a.lateHours) && a.lateHours.length === 3 && a.lateHours.every((x) => typeof x === 'boolean')) S.lateHours = a.lateHours.slice();
         if (typeof a.lateLive === 'boolean' && a.lateLive !== S.lateLive) {
           S.lateLive = a.lateLive;
           push({ title: a.lateLive ? 'LATE COIN-FLIP: REAL TRADES ON' : 'Late coin-flip: practice only', body: a.lateLive ? `Real orders of ${S.lateBetPct > 0 ? S.lateBetPct + '% of buying power' : '$' + S.lateBet} in the last 75-30 s of close windows, while autopilot is Live.${S.mode === 'live' ? '' : ' Autopilot is in Practice now, so nothing real until you switch to Live.'}` : 'No more real late coin-flip orders.', priority: a.lateLive ? 4 : 2, tags: a.lateLive ? 'money_with_wings' : 'test_tube', click: o.site + 'autopilot.html' });
