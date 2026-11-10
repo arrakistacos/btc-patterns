@@ -486,18 +486,72 @@ export function createAutopilot(o) {
     log(z.lag == null ? `US lag: not enough data yet (${z.samples} samples)` : `US lag: price changes on US trail polymarket.com by ~${z.lag} s (corr ${z.corr}, 80% by ${z.by80} s), average gap ${z.gap}¢ over ${z.samples} samples`);
     save(); publishSoon();
   }
+  // Live US prices come from the official market-data stream (signed with the API key): real time, nothing to poll,
+  // no rate limit. Without a key, or while the stream is down, the recorder polls the public best-price endpoint
+  // every 2 s instead (slower if Polymarket US asks).
+  const US = { ws: null, up: false, want: null, slug: null, rid: null, bid: null, ask: null, at: 0, msgs: 0, fails: 0, retryAt: 0, errAt: 0 };
+  const WS_PATH = '/v1/ws/markets';
+  function wsHeaders() {
+    const ts = String(Date.now());
+    return { 'X-PM-Access-Key': KEY_ID, 'X-PM-Timestamp': ts, 'X-PM-Signature': edSign(null, Buffer.from(ts + 'GET' + WS_PATH), KEY).toString('base64'), 'User-Agent': 'btc-patterns-autopilot/' + AUTOPILOT_VERSION };
+  }
+  const amt = (x) => (x && x.value != null && +x.value > 0 ? +x.value : undefined);
+  function usSubscribe() {
+    if (!US.up || !US.want || US.slug === US.want) return;
+    try {
+      if (US.rid) US.ws.send(JSON.stringify({ unsubscribe: { requestId: US.rid } }));
+      US.rid = 'lag-' + Date.now().toString(36); US.slug = US.want; US.bid = US.ask = null;
+      US.ws.send(JSON.stringify({ subscribe: { requestId: US.rid, subscriptionType: 'SUBSCRIPTION_TYPE_MARKET_DATA_LITE', marketSlugs: [US.slug] } }));
+    } catch (e) { log('US price stream: subscribe failed:', e.message); }
+  }
+  function usStream(slug) {
+    US.want = slug;
+    if (US.ws) return usSubscribe();
+    if (!KEY || typeof WebSocket !== 'function' || Date.now() < US.retryAt) return;
+    let ws;
+    try { ws = new WebSocket(API.replace(/^http/, 'ws') + WS_PATH, { headers: wsHeaders() }); }
+    catch (e) { US.retryAt = Date.now() + 600000; log('US price stream unavailable, polling instead:', e.message); return; }
+    US.ws = ws; US.up = false; US.slug = null; US.rid = null;
+    ws.onopen = () => { if (US.ws !== ws) return; US.up = true; if (US.fails) log('US price stream connected'); US.fails = 0; usSubscribe(); };
+    ws.onmessage = (ev) => {
+      let m; try { m = JSON.parse(typeof ev.data === 'string' ? ev.data : Buffer.from(ev.data).toString()); } catch { return; }
+      const d = m.marketDataLite;
+      if (d && d.marketSlug === US.slug) {
+        const b = amt(d.bestBid), a = amt(d.bestAsk);
+        if (b !== undefined) US.bid = b; if (a !== undefined) US.ask = a;
+        US.at = Date.now(); US.msgs++;
+      } else if (m.error && Date.now() - US.errAt > 600000) { US.errAt = Date.now(); log('US price stream error:', JSON.stringify(m.error).slice(0, 160)); }
+    };
+    const dead = (ev) => {
+      if (US.ws !== ws) return;
+      try { ws.close(); } catch { /* already closed */ }
+      US.ws = null; US.up = false; US.slug = null; US.fails++;
+      US.retryAt = Date.now() + Math.min(600000, 5000 * 2 ** Math.min(US.fails, 7));
+      if (US.fails === 1 || US.fails % 10 === 0) log(`US price stream closed${ev && ev.code ? ' (' + ev.code + ')' : ''}; polling until it reconnects`);
+    };
+    ws.onclose = dead; ws.onerror = dead;   // a refused connection may only report an error
+  }
+  const usLive = (slug) => US.up && US.slug === slug && US.bid != null && US.ask != null;
+  let lagPollAt = 0, lagPollEvery = o.lagPollEvery != null ? o.lagPollEvery : 2000;
   // x: { Ws, e, btc, com: () => ({ bid, ask }) }  (.com Up token's best bid/ask, read when the US answer arrives)
   async function observeLag(x) {
     const now = Date.now();
     // stays out of the way: never while a real order is going in, and backs off if Polymarket US says slow down
-    if (lagBusy || busy || now < lagPauseUntil || now - lagLast < lagEvery) return;
-    lagBusy = true; lagLast = now;
+    if (lagBusy || busy || now - lagLast < lagEvery) return;
+    lagBusy = true;
     try {
       const mkt = await marketFor(x.Ws);
-      const t0 = Date.now(); const b = await bbo(mkt.slug); const t1 = Date.now();
+      usStream(mkt.slug);
+      let b, t0, t1, src;
+      if (usLive(mkt.slug)) { b = { bid: US.bid, ask: US.ask }; t0 = t1 = Date.now(); src = 's'; }
+      else {
+        if (now < lagPauseUntil || now - lagPollAt < Math.max(lagPollEvery, lagEvery)) return;
+        lagPollAt = now; t0 = Date.now(); b = await bbo(mkt.slug); t1 = Date.now(); src = 'p';
+      }
+      lagLast = now;
       const com = x.com(); if (!com || com.bid == null || com.ask == null || b.bid == null || b.ask == null) return;
       const ts = Math.round((t0 + t1) / 2), e = Math.round(x.e + (ts - now) / 1000);
-      lagLines.push([dayOf(ts), JSON.stringify([ts, x.Ws, e, r2(x.btc), com.bid, com.ask, b.bid, b.ask, t1 - t0])]);
+      lagLines.push([dayOf(ts), JSON.stringify([ts, x.Ws, e, r2(x.btc), com.bid, com.ask, b.bid, b.ask, t1 - t0, src])]);
       lagFlush();
       const comMid = (com.bid + com.ask) / 2, usMid = (b.bid + b.ask) / 2;
       lagRing.push([ts, x.Ws, comMid, usMid]);
@@ -530,7 +584,7 @@ export function createAutopilot(o) {
       log(`US lag test: ${rec.status} ${rec.side}${rec.px ? ' @ ' + cents(rec.px) : ''} (US ${cents(px)} vs .com ${cents(rec.com)}, ${Math.round(gap * 100)}¢ gap, ${rec.left}s left)${rec.msg ? ' - ' + rec.msg : ''}`);
       save(); publishSoon();
     } catch (err) {
-      if (err && err.status === 429) { lagPauseUntil = Date.now() + 120000; lagEvery = Math.min(lagEvery * 2, 8000); log(`lag recorder: Polymarket US asked us to slow down — pausing 2 min, then one check every ${lagEvery / 1000} s`); }
+      if (err && err.status === 429) { lagPauseUntil = Date.now() + 120000; lagPollEvery = Math.min(lagPollEvery * 2, 16000); log(`lag recorder: Polymarket US asked us to slow down — pausing 2 min, then one check every ${lagPollEvery / 1000} s`); }
       else if (Date.now() - lagErrAt > 600000) { lagErrAt = Date.now(); log('lag recorder:', err.message.slice(0, 160)); }
     } finally { lagBusy = false; }
   }
@@ -627,7 +681,7 @@ export function createAutopilot(o) {
       bal: { live: S.liveBal, practice: S.practice }, stats: S.stats, days, acks: acks.slice(-5),
       trades: S.trades.slice(-12).map(tr),
       late: { since: S.late.since, stats: S.late.stats, real: S.late.real || null, byPat: S.late.byPat || null, trades: S.late.trades.slice(-6).map((t) => [t.ts, t.Ws, t.side, t.status, t.px || 0, t.quoted, Math.round(t.q * 100), t.result, t.pnl, t.left, t.msg || '', t.real ? 1 : 0, t.pat === 'against' ? (t.patSkip ? 2 : 1) : t.pat === 'with' ? 3 : 0]) },
-      lag: { since: S.lagt.since, stats: S.lagt.stats, byGap: S.lagt.byGap, est: S.lagt.est, trades: S.lagt.trades.slice(-4).map((t) => [t.ts, t.Ws, t.side, t.status, t.px || 0, t.seen, t.com, t.result, t.pnl, t.left, t.msg || '']) },
+      lag: { since: S.lagt.since, stats: S.lagt.stats, byGap: S.lagt.byGap, est: S.lagt.est, src: US.up ? 's' : 'p', trades: S.lagt.trades.slice(-4).map((t) => [t.ts, t.Ws, t.side, t.status, t.px || 0, t.seen, t.com, t.result, t.pnl, t.left, t.msg || '']) },
     };
     while (JSON.stringify(snap).length > 2900 && snap.trades.length > 3) snap.trades.shift();   // ntfy messages are capped at 4 KB
     while (JSON.stringify(snap).length > 2900 && snap.late.trades.length > 2) snap.late.trades.shift();
@@ -792,6 +846,21 @@ export function createAutopilot(o) {
     let mkt;
     try { mkt = await marketFor(Ws); out.market = mkt; } catch (e) { out.market = { error: e.message }; return out; }
     try { const bk = await book(mkt.slug); out.book = { bestBid: bk.bids[0] || null, bestAsk: bk.asks[0] || null, state: bk.state }; } catch (e) { out.book = { error: e.message }; }
+    // live price stream (used by the US lag recorder)
+    out.stream = await new Promise((res) => {
+      let ws, done = false, opened = false; const t0 = Date.now();
+      const fin = (r) => { if (done) return; done = true; clearTimeout(to); try { if (ws) ws.close(); } catch { /* closed */ } res(r); };
+      const to = setTimeout(() => fin({ error: 'no price update within 10 s', opened }), 10000);
+      try { ws = new WebSocket(API.replace(/^http/, 'ws') + WS_PATH, { headers: wsHeaders() }); } catch (e) { fin({ error: e.message }); return; }
+      ws.onopen = () => { opened = true; ws.send(JSON.stringify({ subscribe: { requestId: 'check', subscriptionType: 'SUBSCRIPTION_TYPE_MARKET_DATA_LITE', marketSlugs: [mkt.slug] } })); };
+      ws.onmessage = (ev) => {
+        let m; try { m = JSON.parse(typeof ev.data === 'string' ? ev.data : Buffer.from(ev.data).toString()); } catch { return; }
+        if (m.marketDataLite) fin({ ok: true, ms: Date.now() - t0, first: m.marketDataLite });
+        else if (m.error) fin({ error: JSON.stringify(m.error).slice(0, 200), opened });
+      };
+      ws.onclose = (ev) => fin({ error: `closed (${ev.code}${ev.reason ? ' ' + ev.reason : ''})`, opened });
+      ws.onerror = () => fin({ error: opened ? 'stream error' : 'connection refused (key not accepted for the stream?)', opened });
+    });
     // Previews never trade. Prices are far from the market on purpose.
     const prev = (intent, yes) => api('POST', '/v1/order/preview', { request: { marketSlug: mkt.slug, intent, type: 'ORDER_TYPE_LIMIT', price: { value: yes, currency: 'USD' }, quantity: 1, tif: 'TIME_IN_FORCE_IMMEDIATE_OR_CANCEL', manualOrderIndicator: 'MANUAL_ORDER_INDICATOR_AUTOMATIC' } }).catch((e) => ({ error: e.message }));
     out.previewBuyUp = await prev('ORDER_INTENT_BUY_LONG', '0.02');

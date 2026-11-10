@@ -487,8 +487,8 @@
     function renderLag(G) {
       if (!G) return;
       const z = G.est, gs = G.stats, settled = gs.w + gs.l;
-      if (z && z.lag != null) { $('gL').textContent = z.lag <= 0 ? 'no lag' : `${z.lag} s`; $('gLs').textContent = `${z.gap}¢ average gap · ${z.samples} checks · ${new Date(z.at).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}`; }
-      else { $('gL').textContent = '—'; $('gLs').textContent = z ? `measuring… ${z.samples} checks so far` : 'measuring… first estimate after 10 min'; }
+      if (z && z.lag != null) { $('gL').textContent = z.lag <= 0 ? 'no lag' : `${z.lag} s`; $('gLs').textContent = `${z.gap}¢ average gap · ${z.samples} checks · ${new Date(z.at).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}${G.src === 'p' ? ' · polling' : ''}`; }
+      else { $('gL').textContent = '—'; $('gLs').textContent = (z ? `measuring… ${z.samples} checks so far` : 'measuring… first estimate after 10 min') + (G.src === 's' ? ' · live stream' : G.src === 'p' ? ' · polling' : ''); }
       $('gN').textContent = gs.n; $('gNs').textContent = 'since ' + new Date(G.since).toLocaleDateString([], { month: 'short', day: 'numeric' }) + (gs.nofill ? ` · ${gs.nofill} price ran away` : '');
       $('gW').textContent = settled ? Math.round(gs.w / settled * 100) + '%' : '—'; $('gWs').textContent = settled ? `${gs.w} of ${settled}` : 'no results yet';
       $('gP').textContent = signed(gs.pnl); $('gP').className = 'v num ' + cls(gs.pnl);
