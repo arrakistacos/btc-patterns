@@ -359,6 +359,9 @@ function evaluate() {
   let why;
   const closed = closedCandles();
   const mk = pmMid();
+  // US lag recorder: about once a second, Polymarket US best prices next to polymarket.com's (practice lag test too)
+  if (healthy && mk != null && pm.bid != null && pm.ask != null && pm.t === Ws && C.length && e >= 5)
+    AP.observeLag({ Ws, e, btc: C[C.length - 1].c, com: () => (pm.t === Ws && pm.bid != null && pm.ask != null ? { bid: pm.bid, ask: pm.ask } : null) });
   if (closed.length < 60 || !C.length) why = 'loading candles';
   else if (!healthy) why = `feeds stale (coinbase ${cbAge.toFixed(1)}s, polymarket ${isFinite(pmAge) ? pmAge.toFixed(1) + 's' : '—'})`;
   else if (mk == null || pm.bid == null || pm.ask == null) why = 'waiting for odds';

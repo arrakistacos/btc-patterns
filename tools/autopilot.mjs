@@ -18,11 +18,11 @@
  *   AUTOPILOT_PASSWORD         password for the autopilot page. Without it the page can't connect.
  *   PM_API, PM_GATEWAY         API hosts (defaults https://api.polymarket.us, https://gateway.polymarket.us)
  */
-import { existsSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
 import { createPrivateKey, sign as edSign } from 'node:crypto';
 import { join } from 'node:path';
 
-export const AUTOPILOT_VERSION = '1.0.0';
+export const AUTOPILOT_VERSION = '1.1.0';
 const W = 300;
 const DEFAULTS = {
   enabled: true, mode: 'practice', betPct: 20, dailyStopPct: 50, notifyFills: true, notifyResults: true,
@@ -46,6 +46,36 @@ const r4 = (x) => Math.round(x * 1e4) / 1e4;
 const cents = (p) => Math.round(p * 100) + '¢';
 const money = (x) => (x < 0 ? '-$' : '$') + Math.abs(x).toFixed(2);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// Seconds by which US price changes trail polymarket.com changes. ring: [tsMs, Ws, comMid, usMid] about once a second.
+// Correlates each 1-second .com change with the US change k seconds later (k = -5..15) and picks the best k.
+export function estimateLag(ring) {
+  const by = new Map();
+  for (const [ts, Ws, c, u] of ring) {
+    if (!by.has(Ws)) by.set(Ws, new Map());
+    by.get(Ws).set(Math.round(ts / 1000), [c, u]);
+  }
+  const res = [];
+  for (let k = -5; k <= 15; k++) {
+    let sxy = 0, sxx = 0, syy = 0, n = 0;
+    for (const m of by.values()) for (const [sec, [c]] of m) {
+      const p = m.get(sec - 1), a = m.get(sec + k), b = m.get(sec + k - 1);
+      if (!p || !a || !b) continue;
+      const dc = c - p[0], du = a[1] - b[1];
+      sxy += dc * du; sxx += dc * dc; syy += du * du; n++;
+    }
+    res.push([k, sxx && syy ? sxy / Math.sqrt(sxx * syy) : 0, n]);
+  }
+  const best = res.reduce((a, b) => (b[1] > a[1] ? b : a), res[0]);
+  // "most of it lands by N s": where the positive correlations at k >= 0 reach 80% of their total
+  const pos = res.filter(([k, r]) => k >= 0 && r > 0), tot = pos.reduce((a, [, r]) => a + r, 0);
+  let acc = 0, by80 = null;
+  for (const [k, r] of pos) { acc += r; if (by80 == null && tot && acc / tot >= 0.8) by80 = k; }
+  let gs = 0;
+  for (const [, , c, u] of ring) gs += Math.abs(c - u);
+  if (!(best[1] > 0.05) || best[2] < 60) return { lag: null, corr: Math.round(best[1] * 100) / 100, n: best[2], by80: null, gap: ring.length ? Math.round(ring.reduce((a, [, , c, u]) => a + Math.abs(c - u), 0) / ring.length * 1000) / 10 : null, samples: ring.length };
+  return { lag: best[0], corr: Math.round(best[1] * 100) / 100, n: best[2], by80, gap: ring.length ? Math.round(gs / ring.length * 1000) / 10 : null, samples: ring.length };
+}
 
 export function createAutopilot(o) {
   const { dir, log, push, Signal, APC, tzName = 'America/Chicago' } = o;
@@ -414,6 +444,113 @@ export function createAutopilot(o) {
     }
   }
 
+  // ------------------------------------------------------------ US lag recorder + practice lag test
+  // The smart-money wallets win on speed: they buy before prices catch up with Bitcoin. This measures how far
+  // Polymarket US trails polymarket.com (the bot's live odds) and paper-trades the gap.
+  //   Recorder   about once a second during each window: BTC price, .com bid/ask, US best bid/ask → lag/lag-YYYY-MM-DD.jsonl
+  //   Estimate   every 10 minutes: how many seconds US price changes trail .com changes (best cross-correlation)
+  //   Test       when the US price for a side is 3¢+ cheaper than .com says it's worth, paper-buy $10 there (once a
+  //              window), re-checking the US price first the way a real order would, and score it on the US result.
+  const LAGT = { every: o.lagEvery != null ? o.lagEvery : 900, gap: 0.03, minLeft: 20, maxLeft: 270, maxPx: 0.90, minPx: 0.10, maxComSpread: 0.03, stake: 10, keepDays: 14 };
+  const LAG_DIR = join(dir, 'lag');
+  S.lagt = S.lagt || { since: Date.now(), stats: zeroStats(), byGap: {}, trades: [], est: null };
+  const gapBucket = (g) => (g < 0.05 ? '3-5' : g < 0.08 ? '5-8' : '8+');
+  let lagBusy = false, lagLast = 0, lagEvery = LAGT.every, lagPauseUntil = 0, lagLines = [], lagFlushAt = 0, lagPruned = '', lagEstAt = Date.now(), lagErrAt = 0;
+  const lagRing = [];                       // [tsMs, Ws, comMid, usMid] for the lag estimate, last 2 hours
+  const lagTried = new Set();
+  async function bbo(slug) {
+    const md = (await gw(`/v1/markets/${slug}/bbo`)).marketData || {};
+    const v = (x) => (x && +x.value > 0 ? +x.value : null);
+    return { bid: v(md.bestBid), ask: v(md.bestAsk), bidQty: +md.bidShares || 0, askQty: +md.askShares || 0 };
+  }
+  function lagFlush(force) {
+    if (!lagLines.length || (!force && Date.now() - lagFlushAt < 30000)) return;
+    lagFlushAt = Date.now();
+    const byDay = {};
+    for (const [d, l] of lagLines) (byDay[d] = byDay[d] || []).push(l);
+    lagLines = [];
+    try {
+      mkdirSync(LAG_DIR, { recursive: true });
+      for (const [d, ls] of Object.entries(byDay)) appendFileSync(join(LAG_DIR, `lag-${d}.jsonl`), ls.join('\n') + '\n');
+      const today = dayOf(Date.now());
+      if (lagPruned !== today) {           // keep two weeks
+        lagPruned = today;
+        const cut = dayOf(Date.now() - LAGT.keepDays * 86400000);
+        for (const f of readdirSync(LAG_DIR)) { const m = /^lag-(\d{4}-\d\d-\d\d)\.jsonl$/.exec(f); if (m && m[1] < cut) unlinkSync(join(LAG_DIR, f)); }
+      }
+    } catch (e) { log('lag recorder: could not write:', e.message); }
+  }
+  function lagEstimate() {
+    S.lagt.est = Object.assign({ at: Date.now() }, estimateLag(lagRing));
+    const z = S.lagt.est;
+    log(z.lag == null ? `US lag: not enough data yet (${z.samples} samples)` : `US lag: price changes on US trail polymarket.com by ~${z.lag} s (corr ${z.corr}, 80% by ${z.by80} s), average gap ${z.gap}¢ over ${z.samples} samples`);
+    save(); publishSoon();
+  }
+  // x: { Ws, e, btc, com: () => ({ bid, ask }) }  (.com Up token's best bid/ask, read when the US answer arrives)
+  async function observeLag(x) {
+    const now = Date.now();
+    // stays out of the way: never while a real order is going in, and backs off if Polymarket US says slow down
+    if (lagBusy || busy || now < lagPauseUntil || now - lagLast < lagEvery) return;
+    lagBusy = true; lagLast = now;
+    try {
+      const mkt = await marketFor(x.Ws);
+      const t0 = Date.now(); const b = await bbo(mkt.slug); const t1 = Date.now();
+      const com = x.com(); if (!com || com.bid == null || com.ask == null || b.bid == null || b.ask == null) return;
+      const ts = Math.round((t0 + t1) / 2), e = Math.round(x.e + (ts - now) / 1000);
+      lagLines.push([dayOf(ts), JSON.stringify([ts, x.Ws, e, r2(x.btc), com.bid, com.ask, b.bid, b.ask, t1 - t0])]);
+      lagFlush();
+      const comMid = (com.bid + com.ask) / 2, usMid = (b.bid + b.ask) / 2;
+      lagRing.push([ts, x.Ws, comMid, usMid]);
+      while (lagRing.length && lagRing[0][0] < ts - 2 * 3600000) lagRing.shift();
+      if (now - lagEstAt > 10 * 60000 && lagRing.length > 300) { lagEstAt = now; lagEstimate(); }
+      // practice lag trade
+      const left = W - e;
+      if (lagTried.has(x.Ws) || left > LAGT.maxLeft || left < LAGT.minLeft || com.ask - com.bid > LAGT.maxComSpread) return;
+      const upPx = b.ask, upGap = comMid - upPx;               // US price to buy Up vs what .com says Up is worth
+      const dnPx = r4(1 - b.bid), dnGap = (1 - comMid) - dnPx; // same for Down
+      const up = upGap >= dnGap, px = up ? upPx : dnPx, gap = up ? upGap : dnGap;
+      if (gap < LAGT.gap - 1e-9 || px > LAGT.maxPx || px < LAGT.minPx) return;
+      lagTried.add(x.Ws);
+      for (const k of lagTried) if (k < x.Ws - 3600) lagTried.delete(k);
+      const rec = { Ws: x.Ws, ts, side: up ? 'UP' : 'DOWN', seen: r4(px), com: r4(up ? comMid : 1 - comMid), gap: r4(gap), left: Math.round(left), slug: mkt.slug, result: null, pnl: null };
+      // a real order would arrive a moment later: re-check the US price and fill only up to 1 tick above what we saw
+      const b2 = await bbo(mkt.slug);
+      const px2 = up ? b2.ask : (b2.bid != null ? r4(1 - b2.bid) : null), avail = up ? b2.askQty : b2.bidQty;
+      const feeAt = (p) => mkt.feeK * p * (1 - p);
+      rec.delayMs = Date.now() - t1;
+      if (px2 == null || px2 > px + mkt.tick + 1e-9) { rec.status = 'nofill'; rec.msg = px2 == null ? 'Nothing for sale a moment later' : `Price moved to ${cents(px2)} before the order`; }
+      else {
+        const qty = r2(Math.min(LAGT.stake / (px2 + feeAt(px2)), avail || Infinity));
+        if (qty <= 0) { rec.status = 'nofill'; rec.msg = 'Nothing for sale'; }
+        else Object.assign(rec, { status: 'filled', px: r4(px2), qty, cost: r2(qty * px2 + feeAt(px2) * qty) });
+      }
+      S.lagt.trades.push(rec);
+      if (S.lagt.trades.length > 300) S.lagt.trades.splice(0, S.lagt.trades.length - 300);
+      if (rec.status === 'filled') { S.lagt.stats.n++; S.lagt.stats.staked = r2(S.lagt.stats.staked + rec.cost); } else S.lagt.stats.nofill++;
+      log(`US lag test: ${rec.status} ${rec.side}${rec.px ? ' @ ' + cents(rec.px) : ''} (US ${cents(px)} vs .com ${cents(rec.com)}, ${Math.round(gap * 100)}¢ gap, ${rec.left}s left)${rec.msg ? ' - ' + rec.msg : ''}`);
+      save(); publishSoon();
+    } catch (err) {
+      if (err && err.status === 429) { lagPauseUntil = Date.now() + 120000; lagEvery = Math.min(lagEvery * 2, 8000); log(`lag recorder: Polymarket US asked us to slow down — pausing 2 min, then one check every ${lagEvery / 1000} s`); }
+      else if (Date.now() - lagErrAt > 600000) { lagErrAt = Date.now(); log('lag recorder:', err.message.slice(0, 160)); }
+    } finally { lagBusy = false; }
+  }
+  async function settleLag() {
+    const now = Date.now() / 1000;
+    for (const t of S.lagt.trades) {
+      if (t.result != null || t.status !== 'filled' || now < t.Ws + W + 15) continue;
+      let s = null;
+      try { const j = await gw(`/v1/markets/${t.slug}/settlement`); if (j.settlement != null) s = +j.settlement; } catch { /* not yet */ }
+      if (s == null && now > t.Ws + W + 600) { try { const u = await Signal.fetchUsTerms(t.Ws); if (u.settlementPrice && u.priceToBeat) s = u.settlementPrice >= u.priceToBeat ? 1 : 0; } catch { /* later */ } }
+      if (s == null) continue;
+      const won = (s >= 0.5) === (t.side === 'UP');
+      t.result = won ? 1 : 0; t.pnl = r2((won ? t.qty : 0) - t.cost);
+      const st = S.lagt.stats; st.pnl = r2(st.pnl + t.pnl); if (won) st.w++; else st.l++;
+      const z = S.lagt.byGap[gapBucket(t.gap)] || (S.lagt.byGap[gapBucket(t.gap)] = { n: 0, w: 0, staked: 0, pnl: 0 });
+      z.n++; if (won) z.w++; z.staked = r2(z.staked + t.cost); z.pnl = r2(z.pnl + t.pnl);
+      save(); publishSoon();
+    }
+  }
+
   // ------------------------------------------------------------ settings scoreboard
   // Every second of every tradable window, check every combination of gap target × model minimum ×
   // Polymarket minimum. Record the first BUY each combination would make, then score it on the Polymarket US
@@ -490,9 +627,11 @@ export function createAutopilot(o) {
       bal: { live: S.liveBal, practice: S.practice }, stats: S.stats, days, acks: acks.slice(-5),
       trades: S.trades.slice(-12).map(tr),
       late: { since: S.late.since, stats: S.late.stats, real: S.late.real || null, byPat: S.late.byPat || null, trades: S.late.trades.slice(-6).map((t) => [t.ts, t.Ws, t.side, t.status, t.px || 0, t.quoted, Math.round(t.q * 100), t.result, t.pnl, t.left, t.msg || '', t.real ? 1 : 0, t.pat === 'against' ? (t.patSkip ? 2 : 1) : t.pat === 'with' ? 3 : 0]) },
+      lag: { since: S.lagt.since, stats: S.lagt.stats, byGap: S.lagt.byGap, est: S.lagt.est, trades: S.lagt.trades.slice(-4).map((t) => [t.ts, t.Ws, t.side, t.status, t.px || 0, t.seen, t.com, t.result, t.pnl, t.left, t.msg || '']) },
     };
     while (JSON.stringify(snap).length > 2900 && snap.trades.length > 3) snap.trades.shift();   // ntfy messages are capped at 4 KB
     while (JSON.stringify(snap).length > 2900 && snap.late.trades.length > 2) snap.late.trades.shift();
+    while (JSON.stringify(snap).length > 2900 && snap.lag.trades.length > 1) snap.lag.trades.shift();
     return snap;
   }
   // Status updates share ntfy's daily message allowance with BUY alerts, so they are sparing: at most one every
@@ -620,7 +759,7 @@ export function createAutopilot(o) {
   function tick(why) {
     botWhy = why || botWhy;
     const now = Date.now();
-    if (now - lastSettleCheck > 10000) { lastSettleCheck = now; settle().catch((e) => log('autopilot settle:', e.message)); settleLate().catch((e) => log('late test settle:', e.message)); sbSettle().catch((e) => log('scoreboard settle:', e.message)); }
+    if (now - lastSettleCheck > 10000) { lastSettleCheck = now; settle().catch((e) => log('autopilot settle:', e.message)); settleLate().catch((e) => log('late test settle:', e.message)); settleLag().catch((e) => log('lag test settle:', e.message)); sbSettle().catch((e) => log('scoreboard settle:', e.message)); }
     if (now - STARTED > 30000) publishScore();
     if (S.halted && S.halted.untilTs && now >= S.halted.untilTs) {
       S.halted = null; save(); publishSoon(1500, true);
@@ -661,6 +800,6 @@ export function createAutopilot(o) {
   }
 
   function start() { listen(); publishSoon(5000, true); }
-  process.on('exit', () => sbSave(true));
-  return { onSignal, observe, observeLate, settleLate, tick, start, check, settle, sbSettle, scoreboard, publishScore, minModel, minMarket, target, state: () => S, hasKey: () => !!KEY, flush: publish };
+  process.on('exit', () => { sbSave(true); lagFlush(true); });
+  return { onSignal, observe, observeLate, settleLate, observeLag, settleLag, lagEstimate, lagFlush, tick, start, check, settle, sbSettle, scoreboard, publishScore, minModel, minMarket, target, state: () => S, hasKey: () => !!KEY, flush: publish };
 }
