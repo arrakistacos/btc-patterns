@@ -30,6 +30,8 @@ const DEFAULTS = {
   lateLive: false, lateBet: 5,           // late coin-flip: real orders (Live mode only), dollars per trade…
   lateBetPct: 0,                         // …or, when > 0, this % of buying power per trade
   mainOn: true,                          // regular BUY-signal bets use real money in Live (off = practice only, coin flips still real)
+  lateAntic: false,                      // Anticipation mode: real coin-flip size steps down after each loss…
+  anticStart: 20, anticStep: 5, anticFloor: 10,   // …anticStart % right after a loss, minus anticStep per coin flip since, never below anticFloor
   lateFavOnly: true,                     // real coin-flip money only when the model backs Polymarket's favorite
   lateMinReal: 65,                       // …and only when the model gives that side at least this % (60 = no extra filter)
   goal: 0,                               // dollars: pause + notify when the current mode's balance reaches this (0 = off)
@@ -368,6 +370,22 @@ export function createAutopilot(o) {
     }
     S.late.byFav = bf;
   }
+  // Anticipation mode: coin flips settled since the most recent loss (every tracked flip, real or practice).
+  // null = no loss on record yet. Bet = anticStart% right after a loss, then anticStep less per flip, down to anticFloor%.
+  function anticSince() {
+    let n = 0;
+    for (let i = S.late.trades.length - 1; i >= 0; i--) {
+      const t = S.late.trades[i];
+      if (t.status !== 'filled' || t.result == null) continue;
+      if (!t.result) return n;
+      n++;
+    }
+    return null;
+  }
+  function anticPct() {
+    const k = anticSince(), lo = Math.min(S.anticFloor, S.anticStart);
+    return k == null ? lo : Math.max(lo, S.anticStart - S.anticStep * k);
+  }
   const lateTried = new Set();
   async function observeLate(x) {           // x: { Ws, e, pUp, mkUp } with mkUp = Polymarket's Up odds the bot sees
     const left = W - x.e;
@@ -404,7 +422,8 @@ export function createAutopilot(o) {
           try {
             const bal = (await refreshLive()).buyingPower;
             const step = mkt.minQty > 0 ? mkt.minQty : 0.01;
-            const stake = S.lateBetPct > 0 ? bal * S.lateBetPct / 100 : Math.min(S.lateBet, bal);
+            if (S.lateAntic) rec.betPct = anticPct();
+            const stake = S.lateAntic ? bal * rec.betPct / 100 : S.lateBetPct > 0 ? bal * S.lateBetPct / 100 : Math.min(S.lateBet, bal);
             const qty = r2(Math.floor(stake / (limit + feeAt(limit)) / step + 1e-9) * step);
             if (bal < MIN_BALANCE || qty < step) { outOfMoney(bal); rec.status = 'skipped'; rec.msg = 'Out of money'; }
             else {
@@ -414,9 +433,9 @@ export function createAutopilot(o) {
               if (ord.filled > 0) {
                 const px = ord.notional / ord.filled, fee = r4(feeAt(px) * ord.filled), cost = r2(ord.notional + fee);
                 Object.assign(rec, { status: 'filled', qty: r2(ord.filled), px: r4(px), cost });
-                record({ Ws: x.Ws, mode: 'live', strategy: 'late', side: rec.side, status: ord.filled < qty - 1e-9 ? 'partial' : 'filled', q: rec.q, qty: r2(ord.filled), want: qty, px: r4(px), fee, cost, limit, orderId: ord.orderId, slug: mkt.slug, result: null, pnl: null, balBefore: r2(bal) });
+                record({ Ws: x.Ws, mode: 'live', strategy: 'late', betPct: rec.betPct, side: rec.side, status: ord.filled < qty - 1e-9 ? 'partial' : 'filled', q: rec.q, qty: r2(ord.filled), want: qty, px: r4(px), fee, cost, limit, orderId: ord.orderId, slug: mkt.slug, result: null, pnl: null, balBefore: r2(bal) });
                 S.stats.live.n++; S.stats.live.staked = r2(S.stats.live.staked + cost); day.n++;
-                if (S.notifyFills) push({ title: `BOUGHT ${rec.side} (LATE)`, body: `${r2(ord.filled)} @ ${cents(px)} = ${money(cost)} · late coin-flip, ${rec.left}s left`, priority: 4, tags: up ? 'green_circle' : 'red_circle', click: o.site + 'autopilot.html' });
+                if (S.notifyFills) push({ title: `BOUGHT ${rec.side} (LATE)`, body: `${r2(ord.filled)} @ ${cents(px)} = ${money(cost)} · late coin-flip, ${rec.left}s left${S.lateAntic ? ` · anticipation ${rec.betPct}%` : ''}`, priority: 4, tags: up ? 'green_circle' : 'red_circle', click: o.site + 'autopilot.html' });
               } else {
                 rec.status = 'nofill'; rec.msg = ord.msg || `No fill at ${cents(limit)} or better`;
                 record({ Ws: x.Ws, mode: 'live', strategy: 'late', side: rec.side, status: 'nofill', msg: rec.msg, q: rec.q, qty, limit, orderId: ord.orderId });
@@ -702,10 +721,10 @@ export function createAutopilot(o) {
     const snap = {
       v: 1, ts: Date.now(), ver: AUTOPILOT_VERSION, since: STARTED, why: botWhy, note: lastNote, keys: !!KEY,
       msgs: o.budget && isFinite(o.budget.left()) ? Math.floor(o.budget.left()) : null,   // ntfy messages left (free ntfy.sh)
-      ap: { enabled: S.enabled, mode: S.mode, mainOn: S.mainOn !== false, betPct: S.betPct, dailyStopPct: S.dailyStopPct, lossStreak: S.lossStreak, cooldownMin: S.cooldownMin, goal: S.goal, lateLive: S.lateLive, lateBet: S.lateBet, lateBetPct: S.lateBetPct, lateFavOnly: S.lateFavOnly, lateMinReal: S.lateMinReal, streak: S.streak[S.mode] || 0, notifyFills: S.notifyFills, notifyResults: S.notifyResults, minModel: minModel(o.defMinModel), minMarket: minMarket(o.defMinMarket), target: target(o.defTarget), halted: S.halted },
+      ap: { enabled: S.enabled, mode: S.mode, mainOn: S.mainOn !== false, betPct: S.betPct, dailyStopPct: S.dailyStopPct, lossStreak: S.lossStreak, cooldownMin: S.cooldownMin, goal: S.goal, lateLive: S.lateLive, lateBet: S.lateBet, lateBetPct: S.lateBetPct, lateFavOnly: S.lateFavOnly, lateMinReal: S.lateMinReal, lateAntic: S.lateAntic, anticStart: S.anticStart, anticStep: S.anticStep, anticFloor: S.anticFloor, streak: S.streak[S.mode] || 0, notifyFills: S.notifyFills, notifyResults: S.notifyResults, minModel: minModel(o.defMinModel), minMarket: minMarket(o.defMinMarket), target: target(o.defTarget), halted: S.halted },
       bal: { live: S.liveBal, practice: S.practice }, stats: S.stats, days, acks: acks.slice(-5),
       trades: S.trades.slice(-12).map(tr),
-      late: { since: S.late.since, stats: S.late.stats, real: S.late.real || null, byPat: S.late.byPat || null, byFav: S.late.byFav || null, trades: S.late.trades.slice(-6).map((t) => [t.ts, t.Ws, t.side, t.status, t.px || 0, t.quoted, Math.round(t.q * 100), t.result, t.pnl, t.left, t.msg || '', t.real ? 1 : 0, t.pat === 'against' ? (t.patSkip ? 2 : 1) : t.pat === 'with' ? 3 : 0, t.realSkip === 'underdog' ? 1 : t.realSkip === 'conf' ? 2 : 0, t.fav != null ? t.fav : (t.quoted >= 0.5 ? 1 : 0)]) },
+      late: { since: S.late.since, antic: { since: anticSince(), next: anticPct() }, stats: S.late.stats, real: S.late.real || null, byPat: S.late.byPat || null, byFav: S.late.byFav || null, trades: S.late.trades.slice(-6).map((t) => [t.ts, t.Ws, t.side, t.status, t.px || 0, t.quoted, Math.round(t.q * 100), t.result, t.pnl, t.left, t.msg || '', t.real ? 1 : 0, t.pat === 'against' ? (t.patSkip ? 2 : 1) : t.pat === 'with' ? 3 : 0, t.realSkip === 'underdog' ? 1 : t.realSkip === 'conf' ? 2 : 0, t.fav != null ? t.fav : (t.quoted >= 0.5 ? 1 : 0)]) },
       lag: { since: S.lagt.since, stats: S.lagt.stats, byGap: S.lagt.byGap, est: S.lagt.est, src: US.up ? 's' : 'p', trades: S.lagt.trades.slice(-4).map((t) => [t.ts, t.Ws, t.side, t.status, t.px || 0, t.seen, t.com, t.result, t.pnl, t.left, t.msg || '']) },
     };
     while (JSON.stringify(snap).length > 2900 && snap.trades.length > 3) snap.trades.shift();   // ntfy messages are capped at 4 KB
@@ -768,9 +787,9 @@ export function createAutopilot(o) {
         break;
       case 'set': {
         const num = (v, lo, hi) => (typeof v === 'number' && isFinite(v) && v >= lo && v <= hi ? v : undefined);
-        const upd = { betPct: num(a.betPct, 1, 100), dailyStopPct: num(a.dailyStopPct, 0, 100), lossStreak: num(a.lossStreak, 0, 10), cooldownMin: num(a.cooldownMin, 5, 1440), goal: num(a.goal, 0, 1e7), lateBet: num(a.lateBet, 1, 1000), lateBetPct: num(a.lateBetPct, 0, 100), lateMinReal: num(a.lateMinReal, 50, 99), minModel: a.minModel === null ? null : num(a.minModel, 50, 99), minMarket: a.minMarket === null ? null : num(a.minMarket, 50, 99) };
+        const upd = { betPct: num(a.betPct, 1, 100), dailyStopPct: num(a.dailyStopPct, 0, 100), lossStreak: num(a.lossStreak, 0, 10), cooldownMin: num(a.cooldownMin, 5, 1440), goal: num(a.goal, 0, 1e7), lateBet: num(a.lateBet, 1, 1000), lateBetPct: num(a.lateBetPct, 0, 100), lateMinReal: num(a.lateMinReal, 50, 99), anticStart: num(a.anticStart, 1, 50), anticStep: num(a.anticStep, 0, 50), anticFloor: num(a.anticFloor, 1, 50), minModel: a.minModel === null ? null : num(a.minModel, 50, 99), minMarket: a.minMarket === null ? null : num(a.minMarket, 50, 99) };
         for (const [k, v] of Object.entries(upd)) if (v !== undefined && k in a) S[k] = v;
-        for (const k of ['notifyFills', 'notifyResults', 'lateFavOnly', 'mainOn']) if (typeof a[k] === 'boolean') S[k] = a[k];
+        for (const k of ['notifyFills', 'notifyResults', 'lateFavOnly', 'mainOn', 'lateAntic']) if (typeof a[k] === 'boolean') S[k] = a[k];
         if (typeof a.lateLive === 'boolean' && a.lateLive !== S.lateLive) {
           S.lateLive = a.lateLive;
           push({ title: a.lateLive ? 'LATE COIN-FLIP: REAL TRADES ON' : 'Late coin-flip: practice only', body: a.lateLive ? `Real orders of ${S.lateBetPct > 0 ? S.lateBetPct + '% of buying power' : '$' + S.lateBet} in the last 75-30 s of close windows, while autopilot is Live.${S.mode === 'live' ? '' : ' Autopilot is in Practice now, so nothing real until you switch to Live.'}` : 'No more real late coin-flip orders.', priority: a.lateLive ? 4 : 2, tags: a.lateLive ? 'money_with_wings' : 'test_tube', click: o.site + 'autopilot.html' });

@@ -158,8 +158,13 @@
       <div class="row" style="margin-bottom:6px">
         <label><input type="checkbox" id="lateFav"> Real money only when the model backs the favorite</label>
         <span class="row">and model at least <input id="lateMin" type="number" min="60" max="95" step="1" style="width:64px">%</span>
-        <button id="lateSave">Save</button>
       </div>
+      <div class="row" style="margin-bottom:4px">
+        <label><input type="checkbox" id="anOn"> Anticipation mode</label>
+        <span class="row">start <input id="anStart" type="number" min="1" max="50" step="1" style="width:56px">%, then −<input id="anStep" type="number" min="0" max="50" step="1" style="width:52px"> per flip, down to <input id="anFloor" type="number" min="1" max="50" step="1" style="width:56px">%</span>
+      </div>
+      <p class="hint" id="anLine" style="margin:0 0 8px">Bets big right after a loss and steps down with each coin flip since (real or practice), on the idea that a loss is rarely followed by another. Replaces the bet size above while on.</p>
+      <div class="row" style="margin-bottom:10px"><button id="lateSave">Save coin-flip settings</button></div>
       <p class="hint" id="favLine" style="margin:0 0 4px"></p>
       <p class="hint" id="patLine" style="margin:0 0 8px"></p>
       <p class="hint" id="lateNote" style="margin-top:0">Real orders only while autopilot is <b>Live</b> and on. They count toward your balance, stops, 2-loss pause and goal, and are skipped if a normal trade already happened in that window. Real money is also skipped when the model backs the underdog (Polymarket's price for its side is under 50¢) or gives its side less than your minimum, and when price is pressing a chart pattern line (triangle, wedge or flag) that points against the flip. Skipped flips are still tracked as practice.</p>
@@ -397,6 +402,7 @@
       for (const [n, ok, msg] of s.acks || []) if (pending.has(n)) { pending.delete(n); toast((ok ? '✓ ' : '✗ ') + (msg || (ok ? 'Done' : 'Refused')), ok ? 'ok' : 'err'); }
       if (!pending.size) fastUntil = 0;
       const ap = s.ap, mode = ap.mode, live = mode === 'live';
+      window.__ap = ap;
       const state = ap.halted ? (ap.halted.kind === 'pause' ? 'paused' : ap.halted.kind === 'goal' ? 'goal' : 'halted') : !ap.enabled ? 'off' : mode;
       $('banner').className = 'banner ' + state;
       $('stateWord').textContent = { halted: 'HALTED', paused: 'PAUSED', goal: 'GOAL MET 🏆', off: 'OFF', live: 'LIVE', practice: 'PRACTICE' }[state];
@@ -470,6 +476,8 @@
       $('lPs').textContent = ls.staked ? `${(ls.pnl / ls.staked * 100 >= 0 ? '+' : '−')}$${Math.abs(ls.pnl / ls.staked * 100).toFixed(2)} per $100` : '';
       const bp = L.byPat || {}, pl = (k, label) => { const z = bp[k]; return z && z.n ? `${label}: ${z.n} trades, ${Math.round(z.w / z.n * 100)}% won, ${(z.pnl >= 0 ? '+' : '−')}$${Math.abs(z.pnl / z.staked * 100).toFixed(2)} per $100` : null; };
       const bfv = L.byFav || {}, fl = (k, label) => { const z = bfv[k]; return z && z.n ? `${label}: ${z.n} trade${z.n === 1 ? '' : 's'}, ${Math.round(z.w / z.n * 100)}% won, ${(z.pnl >= 0 ? '+' : '−')}$${Math.abs(z.pnl / z.staked * 100).toFixed(2)} per $100` : null; };
+      const an = L.antic, apx = (window.__ap || {});
+      if (an) $('anLine').textContent = (apx.lateAntic ? `ON · next real coin flip: ${an.next}% of buying power` : `Off · if on, the next real coin flip would be ${an.next}%`) + (an.since == null ? ' (no loss on record yet)' : ` (${an.since} coin flip${an.since === 1 ? '' : 's'} since the last loss)`) + '. Bets big right after a loss and steps down with each coin flip since (real or practice), on the idea that a loss is rarely followed by another.';
       $('favLine').textContent = [fl('fav', 'Model backed the favorite'), fl('dog', 'backed the underdog')].filter(Boolean).join(' · ');
       $('patLine').textContent = ['Chart pattern ' + (pl('against', 'against the flip') || 'against the flip: no trades yet'), pl('with', 'with it'), pl('none', 'no pattern line')].filter(Boolean).join(' · ');
       const rows = (L.trades || []).slice().reverse().map(([ts, Ws, side, status, px, quoted, q, result, pnl, left, msg, real, pat, skip, fav]) => {
@@ -492,6 +500,7 @@
         $('lateLive').checked = !!ap.lateLive;
         const pct = ap.lateBetPct > 0; $('lateUnit').value = pct ? 'pct' : 'usd'; $('lateBet').value = pct ? ap.lateBetPct : (ap.lateBet || 5);
         $('lateFav').checked = ap.lateFavOnly !== false; $('lateMin').value = ap.lateMinReal || 60;
+        $('anOn').checked = !!ap.lateAntic; $('anStart').value = ap.anticStart || 20; $('anStep').value = ap.anticStep != null ? ap.anticStep : 5; $('anFloor').value = ap.anticFloor || 10;
       }
       $('lateBody').innerHTML = rows.length ? rows.join('') : '<tr><td colspan="4" class="muted">No late coin-flip trades yet.</td></tr>';
     }
@@ -545,13 +554,15 @@
     $('lateBet').addEventListener('input', () => { lateDirty = true; });
     $('lateUnit').addEventListener('change', () => { lateDirty = true; });
     $('lateFav').addEventListener('change', () => { lateDirty = true; });
+    for (const id of ['anOn', 'anStart', 'anStep', 'anFloor']) $(id).addEventListener(id === 'anOn' ? 'change' : 'input', () => { lateDirty = true; });
     $('lateMin').addEventListener('input', () => { lateDirty = true; });
     $('lateSave').onclick = () => {
       const bet = +$('lateBet').value, on = $('lateLive').checked, pct = $('lateUnit').value === 'pct';
       if (pct ? !(bet >= 1 && bet <= 100) : !(bet >= 1 && bet <= 1000)) return toast(pct ? 'Percent must be 1–100' : 'Bet must be $1–$1000', 'err');
       const minR = +$('lateMin').value;
       if (!(minR >= 60 && minR <= 95)) return toast('Minimum model % must be 60–95', 'err');
-      const args = Object.assign(pct ? { lateLive: on, lateBetPct: bet } : { lateLive: on, lateBet: bet, lateBetPct: 0 }, { lateFavOnly: $('lateFav').checked, lateMinReal: minR });
+      const args = Object.assign(pct ? { lateLive: on, lateBetPct: bet } : { lateLive: on, lateBet: bet, lateBetPct: 0 }, { lateFavOnly: $('lateFav').checked, lateMinReal: minR, lateAntic: $('anOn').checked, anticStart: +$('anStart').value, anticStep: +$('anStep').value, anticFloor: +$('anFloor').value });
+      if (args.lateAntic && !(args.anticStart >= 1 && args.anticStart <= 50 && args.anticFloor >= 1 && args.anticFloor <= args.anticStart && args.anticStep >= 0 && args.anticStep <= 50)) return toast('Anticipation: start 1–50%, floor 1% up to the start, step 0–50', 'err');
       const amount = pct ? `${bet}% of your buying power` : `$${bet}`;
       const go = () => { lateDirty = false; send('set', args, on ? 'Turning on real late coin-flip trades' : 'Saving'); };
       if (on && !(st && st.ap.lateLive)) {
