@@ -383,9 +383,9 @@ export function createAutopilot(o) {
     const p = Object.fromEntries(new Intl.DateTimeFormat('en-US', { timeZone: tzName, hour: 'numeric', minute: 'numeric', second: 'numeric', hourCycle: 'h23' }).formatToParts(new Date(ms)).map((x) => [x.type, +x.value]));
     return Math.floor(ms / 1000) * 1000 - (((p.hour % 24) % 8) * 3600 + p.minute * 60 + p.second) * 1000;
   }
-  function anticSince() {
+  function anticSince(at = Date.now()) {
     let n = 0;
-    const from = S.anticBlockReset !== false ? blockStartMs(Date.now()) : 0;   // fresh start each block: ignore earlier flips
+    const from = S.anticBlockReset !== false ? blockStartMs(at) : 0;   // fresh start each block: ignore earlier flips
     for (let i = S.late.trades.length - 1; i >= 0; i--) {
       const t = S.late.trades[i];
       if ((t.ts || t.Ws * 1000) < from) break;
@@ -405,6 +405,17 @@ export function createAutopilot(o) {
       if (t.quoted >= 0.5 && t.q * 100 >= (S.lateMinReal || 60) - 1e-9) { b.fn++; b.fw += t.result; b.fstaked += t.cost; b.fpnl += t.pnl; }   // would pass your filters
     }
     return z.map((b) => [b.n, b.w, r2(b.staked), r2(b.pnl), b.fn, b.fw, r2(b.fstaked), r2(b.fpnl)]);
+  }
+  // What the page shows: the ladder for the next real coin flip. If the current block is switched off, that flip
+  // happens in the next ticked block, which (with the per-block reset) starts at the bottom.
+  function anticView() {
+    const hrs = Array.isArray(S.lateHours) ? S.lateHours : [true, true, true], cur = blockOf(Date.now());
+    if (hrs[cur] !== false) return { since: anticSince(), next: anticPct() };
+    let k = 1; while (k < 3 && hrs[(cur + k) % 3] === false) k++;
+    if (k === 3) return { since: null, next: anticPct(), none: 1 };          // no block ticked: no real coin flips
+    const nb = (cur + k) % 3;
+    if (S.anticBlockReset !== false) return { since: null, next: Math.min(S.anticFloor, S.anticStart), nextBlock: nb };
+    return { since: anticSince(), next: anticPct(), nextBlock: nb };
   }
   function anticPct() {
     const k = anticSince(), lo = Math.min(S.anticFloor, S.anticStart);
@@ -750,7 +761,7 @@ export function createAutopilot(o) {
       ap: { enabled: S.enabled, mode: S.mode, mainOn: S.mainOn !== false, betPct: S.betPct, dailyStopPct: S.dailyStopPct, lossStreak: S.lossStreak, cooldownMin: S.cooldownMin, goal: S.goal, lateLive: S.lateLive, lateBet: S.lateBet, lateBetPct: S.lateBetPct, lateFavOnly: S.lateFavOnly, lateMinReal: S.lateMinReal, lateHours: S.lateHours, lateAntic: S.lateAntic, anticBlockReset: S.anticBlockReset !== false, anticStart: S.anticStart, anticStep: S.anticStep, anticFloor: S.anticFloor, streak: S.streak[S.mode] || 0, notifyFills: S.notifyFills, notifyResults: S.notifyResults, minModel: minModel(o.defMinModel), minMarket: minMarket(o.defMinMarket), target: target(o.defTarget), halted: S.halted },
       bal: { live: S.liveBal, practice: S.practice }, stats: S.stats, days, acks: acks.slice(-5),
       trades: S.trades.slice(-12).map(tr),
-      late: { since: S.late.since, antic: { since: anticSince(), next: anticPct() }, stats: S.late.stats, real: S.late.real || null, byPat: S.late.byPat || null, byFav: S.late.byFav || null, byBlock: lateByBlock(), trades: S.late.trades.slice(-6).map((t) => [t.ts, t.Ws, t.side, t.status, t.px || 0, t.quoted, Math.round(t.q * 100), t.result, t.pnl, t.left, t.msg || '', t.real ? 1 : 0, t.pat === 'against' ? (t.patSkip ? 2 : 1) : t.pat === 'with' ? 3 : 0, t.realSkip === 'underdog' ? 1 : t.realSkip === 'conf' ? 2 : t.realSkip === 'hours' ? 3 : 0, t.fav != null ? t.fav : (t.quoted >= 0.5 ? 1 : 0)]) },
+      late: { since: S.late.since, antic: anticView(), stats: S.late.stats, real: S.late.real || null, byPat: S.late.byPat || null, byFav: S.late.byFav || null, byBlock: lateByBlock(), trades: S.late.trades.slice(-6).map((t) => [t.ts, t.Ws, t.side, t.status, t.px || 0, t.quoted, Math.round(t.q * 100), t.result, t.pnl, t.left, t.msg || '', t.real ? 1 : 0, t.pat === 'against' ? (t.patSkip ? 2 : 1) : t.pat === 'with' ? 3 : 0, t.realSkip === 'underdog' ? 1 : t.realSkip === 'conf' ? 2 : t.realSkip === 'hours' ? 3 : 0, t.fav != null ? t.fav : (t.quoted >= 0.5 ? 1 : 0)]) },
       lag: { since: S.lagt.since, stats: S.lagt.stats, byGap: S.lagt.byGap, est: S.lagt.est, src: US.up ? 's' : 'p', trades: S.lagt.trades.slice(-4).map((t) => [t.ts, t.Ws, t.side, t.status, t.px || 0, t.seen, t.com, t.result, t.pnl, t.left, t.msg || '']) },
     };
     while (JSON.stringify(snap).length > 2900 && snap.trades.length > 3) snap.trades.shift();   // ntfy messages are capped at 4 KB
