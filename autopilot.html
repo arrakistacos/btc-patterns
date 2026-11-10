@@ -402,7 +402,7 @@
       for (const [n, ok, msg] of s.acks || []) if (pending.has(n)) { pending.delete(n); toast((ok ? '✓ ' : '✗ ') + (msg || (ok ? 'Done' : 'Refused')), ok ? 'ok' : 'err'); }
       if (!pending.size) fastUntil = 0;
       const ap = s.ap, mode = ap.mode, live = mode === 'live';
-      window.__ap = ap;
+      window.__ap = ap; window.__s = s;
       const state = ap.halted ? (ap.halted.kind === 'pause' ? 'paused' : ap.halted.kind === 'goal' ? 'goal' : 'halted') : !ap.enabled ? 'off' : mode;
       $('banner').className = 'banner ' + state;
       $('stateWord').textContent = { halted: 'HALTED', paused: 'PAUSED', goal: 'GOAL MET 🏆', off: 'OFF', live: 'LIVE', practice: 'PRACTICE' }[state];
@@ -476,8 +476,17 @@
       $('lPs').textContent = ls.staked ? `${(ls.pnl / ls.staked * 100 >= 0 ? '+' : '−')}$${Math.abs(ls.pnl / ls.staked * 100).toFixed(2)} per $100` : '';
       const bp = L.byPat || {}, pl = (k, label) => { const z = bp[k]; return z && z.n ? `${label}: ${z.n} trades, ${Math.round(z.w / z.n * 100)}% won, ${(z.pnl >= 0 ? '+' : '−')}$${Math.abs(z.pnl / z.staked * 100).toFixed(2)} per $100` : null; };
       const bfv = L.byFav || {}, fl = (k, label) => { const z = bfv[k]; return z && z.n ? `${label}: ${z.n} trade${z.n === 1 ? '' : 's'}, ${Math.round(z.w / z.n * 100)}% won, ${(z.pnl >= 0 ? '+' : '−')}$${Math.abs(z.pnl / z.staked * 100).toFixed(2)} per $100` : null; };
-      const an = L.antic, apx = (window.__ap || {});
-      if (an) $('anLine').textContent = (apx.lateAntic ? `ON · next real coin flip: ${an.next}% of buying power` : `Off · if on, the next real coin flip would be ${an.next}%`) + (an.since == null ? ' (no loss on record yet)' : ` (${an.since} coin flip${an.since === 1 ? '' : 's'} since the last loss)`) + '. Bets big right after a loss and steps down with each coin flip since (real or practice), on the idea that a loss is rarely followed by another.';
+      const an = L.antic, apx = (window.__ap || {}), sx = window.__s || {};
+      if (an) {
+        // the whole ladder, with the step the next real coin flip will use in brackets, and its dollar value
+        const st0 = apx.anticStart || 20, stp = apx.anticStep != null ? apx.anticStep : 5, fl0 = Math.min(apx.anticFloor || 10, st0);
+        const steps = []; for (let k = 0; k < 12; k++) { const v = Math.max(fl0, st0 - stp * k); steps.push(v); if (v === fl0 || stp === 0) break; }
+        const at = an.since == null ? steps.length - 1 : Math.min(an.since, steps.length - 1);
+        const ladder = steps.map((v, i) => (i === at ? `[${v}%]` : `${v}%`)).join(' → ') + (steps.length > 1 ? ' … back to ' + steps[0] + '% after a loss' : '');
+        const bp = sx.bal && sx.bal.live ? sx.bal.live.buyingPower : null;
+        const dollars = bp != null ? ` ≈ ${money(bp * an.next / 100)} of ${money(bp)}` : '';
+        $('anLine').innerHTML = `<b style="color:var(--text)">${apx.lateAntic ? 'ON' : 'Off'} · next real coin flip: ${an.next}%${esc(dollars)}</b> ` + esc((an.since == null ? '(no loss on record yet)' : `(${an.since} coin flip${an.since === 1 ? '' : 's'} since the last loss)`)) + `<br>Ladder: ${esc(ladder)}<br>Bets big right after a loss and steps down with each coin flip since (real or practice), on the idea that a loss is rarely followed by another. The floor can go as low as 1%.`;
+      }
       $('favLine').textContent = [fl('fav', 'Model backed the favorite'), fl('dog', 'backed the underdog')].filter(Boolean).join(' · ');
       $('patLine').textContent = ['Chart pattern ' + (pl('against', 'against the flip') || 'against the flip: no trades yet'), pl('with', 'with it'), pl('none', 'no pattern line')].filter(Boolean).join(' · ');
       const rows = (L.trades || []).slice().reverse().map(([ts, Ws, side, status, px, quoted, q, result, pnl, left, msg, real, pat, skip, fav]) => {

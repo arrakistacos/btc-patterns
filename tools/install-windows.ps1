@@ -40,6 +40,9 @@ function StopBot {
   Get-CimInstance Win32_Process -Filter "Name='node.exe'" | Where-Object { $_.CommandLine -like '*signal-bot.mjs*' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
 }
 
+# The background task was created as administrator, so replacing it needs administrator too. Check before changing anything.
+$isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+if (-not $isAdmin) { Say "Please run this from PowerShell opened with 'Run as administrator' (right-click PowerShell > Run as administrator). Nothing was changed." 'Red'; exit 1 }
 if ($Uninstall) {
   StopBot
   Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue | Unregister-ScheduledTask -Confirm:$false
@@ -104,7 +107,7 @@ if ($Autopilot) {
   if ($secret) { $lines += "PM_SECRET_KEY=$($secret.Trim())" }
   $lines += "AUTOPILOT_PASSWORD=$pw"
   Set-Content -Path $EnvFile -Value $lines -Encoding ASCII
-  icacls $EnvFile /inheritance:r /grant:r "$($env:USERNAME):(R,W)" | Out-Null   # only your account can read it
+  icacls $EnvFile /inheritance:r /grant:r "$($env:USERNAME):(R,W)" 2>&1 | Out-Null   # only your account can read it (already locked down after the first install)
   Say "Saved to $EnvFile (readable only by $env:USERNAME)." 'Green'
 }
 
