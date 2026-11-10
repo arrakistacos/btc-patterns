@@ -31,7 +31,8 @@ const DEFAULTS = {
   lateBetPct: 0,                         // …or, when > 0, this % of buying power per trade
   mainOn: true,                          // regular BUY-signal bets use real money in Live (off = practice only, coin flips still real)
   lateAntic: false,                      // Anticipation mode: real coin-flip size steps down after each loss…
-  anticStart: 20, anticStep: 5, anticFloor: 10,   // …anticStart % right after a loss, minus anticStep per coin flip since, never below anticFloor
+  anticStart: 20, anticStep: 5, anticFloor: 10,
+  anticBlockReset: true,                 // each new 8-hour block starts at the bottom of the ladder until a real loss in that block   // …anticStart % right after a loss, minus anticStep per coin flip since, never below anticFloor
   lateHours: [true, true, true],         // real coin flips allowed in each 8-hour block, Central time: 12am-8am, 8am-4pm, 4pm-12am
   lateFavOnly: true,                     // real coin-flip money only when the model backs Polymarket's favorite
   lateMinReal: 65,                       // …and only when the model gives that side at least this % (60 = no extra filter)
@@ -377,10 +378,17 @@ export function createAutopilot(o) {
   // Anticipation mode: real-money coin flips settled since the most recent real-money loss (practice, skipped and
   // unfilled flips don't count).
   // null = no loss on record yet. Bet = anticStart% right after a loss, then anticStep less per flip, down to anticFloor%.
+  // When the current 8-hour block started (12am, 8am or 4pm Central), in ms
+  function blockStartMs(ms) {
+    const p = Object.fromEntries(new Intl.DateTimeFormat('en-US', { timeZone: tzName, hour: 'numeric', minute: 'numeric', second: 'numeric', hourCycle: 'h23' }).formatToParts(new Date(ms)).map((x) => [x.type, +x.value]));
+    return Math.floor(ms / 1000) * 1000 - (((p.hour % 24) % 8) * 3600 + p.minute * 60 + p.second) * 1000;
+  }
   function anticSince() {
     let n = 0;
+    const from = S.anticBlockReset !== false ? blockStartMs(Date.now()) : 0;   // fresh start each block: ignore earlier flips
     for (let i = S.late.trades.length - 1; i >= 0; i--) {
       const t = S.late.trades[i];
+      if ((t.ts || t.Ws * 1000) < from) break;
       if (!t.real || t.status !== 'filled' || t.result == null) continue;   // only coin flips that went in with real money
       if (!t.result) return n;
       n++;
@@ -739,7 +747,7 @@ export function createAutopilot(o) {
     const snap = {
       v: 1, ts: Date.now(), ver: AUTOPILOT_VERSION, since: STARTED, why: botWhy, note: lastNote, keys: !!KEY,
       msgs: o.budget && isFinite(o.budget.left()) ? Math.floor(o.budget.left()) : null,   // ntfy messages left (free ntfy.sh)
-      ap: { enabled: S.enabled, mode: S.mode, mainOn: S.mainOn !== false, betPct: S.betPct, dailyStopPct: S.dailyStopPct, lossStreak: S.lossStreak, cooldownMin: S.cooldownMin, goal: S.goal, lateLive: S.lateLive, lateBet: S.lateBet, lateBetPct: S.lateBetPct, lateFavOnly: S.lateFavOnly, lateMinReal: S.lateMinReal, lateHours: S.lateHours, lateAntic: S.lateAntic, anticStart: S.anticStart, anticStep: S.anticStep, anticFloor: S.anticFloor, streak: S.streak[S.mode] || 0, notifyFills: S.notifyFills, notifyResults: S.notifyResults, minModel: minModel(o.defMinModel), minMarket: minMarket(o.defMinMarket), target: target(o.defTarget), halted: S.halted },
+      ap: { enabled: S.enabled, mode: S.mode, mainOn: S.mainOn !== false, betPct: S.betPct, dailyStopPct: S.dailyStopPct, lossStreak: S.lossStreak, cooldownMin: S.cooldownMin, goal: S.goal, lateLive: S.lateLive, lateBet: S.lateBet, lateBetPct: S.lateBetPct, lateFavOnly: S.lateFavOnly, lateMinReal: S.lateMinReal, lateHours: S.lateHours, lateAntic: S.lateAntic, anticBlockReset: S.anticBlockReset !== false, anticStart: S.anticStart, anticStep: S.anticStep, anticFloor: S.anticFloor, streak: S.streak[S.mode] || 0, notifyFills: S.notifyFills, notifyResults: S.notifyResults, minModel: minModel(o.defMinModel), minMarket: minMarket(o.defMinMarket), target: target(o.defTarget), halted: S.halted },
       bal: { live: S.liveBal, practice: S.practice }, stats: S.stats, days, acks: acks.slice(-5),
       trades: S.trades.slice(-12).map(tr),
       late: { since: S.late.since, antic: { since: anticSince(), next: anticPct() }, stats: S.late.stats, real: S.late.real || null, byPat: S.late.byPat || null, byFav: S.late.byFav || null, byBlock: lateByBlock(), trades: S.late.trades.slice(-6).map((t) => [t.ts, t.Ws, t.side, t.status, t.px || 0, t.quoted, Math.round(t.q * 100), t.result, t.pnl, t.left, t.msg || '', t.real ? 1 : 0, t.pat === 'against' ? (t.patSkip ? 2 : 1) : t.pat === 'with' ? 3 : 0, t.realSkip === 'underdog' ? 1 : t.realSkip === 'conf' ? 2 : t.realSkip === 'hours' ? 3 : 0, t.fav != null ? t.fav : (t.quoted >= 0.5 ? 1 : 0)]) },
@@ -807,7 +815,7 @@ export function createAutopilot(o) {
         const num = (v, lo, hi) => (typeof v === 'number' && isFinite(v) && v >= lo && v <= hi ? v : undefined);
         const upd = { betPct: num(a.betPct, 1, 100), dailyStopPct: num(a.dailyStopPct, 0, 100), lossStreak: num(a.lossStreak, 0, 10), cooldownMin: num(a.cooldownMin, 5, 1440), goal: num(a.goal, 0, 1e7), lateBet: num(a.lateBet, 1, 1000), lateBetPct: num(a.lateBetPct, 0, 100), lateMinReal: num(a.lateMinReal, 50, 99), anticStart: num(a.anticStart, 1, 50), anticStep: num(a.anticStep, 0, 50), anticFloor: num(a.anticFloor, 1, 50), minModel: a.minModel === null ? null : num(a.minModel, 50, 99), minMarket: a.minMarket === null ? null : num(a.minMarket, 50, 99) };
         for (const [k, v] of Object.entries(upd)) if (v !== undefined && k in a) S[k] = v;
-        for (const k of ['notifyFills', 'notifyResults', 'lateFavOnly', 'mainOn', 'lateAntic']) if (typeof a[k] === 'boolean') S[k] = a[k];
+        for (const k of ['notifyFills', 'notifyResults', 'lateFavOnly', 'mainOn', 'lateAntic', 'anticBlockReset']) if (typeof a[k] === 'boolean') S[k] = a[k];
         if (Array.isArray(a.lateHours) && a.lateHours.length === 3 && a.lateHours.every((x) => typeof x === 'boolean')) S.lateHours = a.lateHours.slice();
         if (typeof a.lateLive === 'boolean' && a.lateLive !== S.lateLive) {
           S.lateLive = a.lateLive;

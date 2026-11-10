@@ -170,6 +170,7 @@
         <label><input type="checkbox" id="anOn"> Anticipation mode</label>
         <span class="row">start <input id="anStart" type="number" min="1" max="50" step="1" style="width:56px">%, then −<input id="anStep" type="number" min="0" max="50" step="1" style="width:52px"> per flip, down to <input id="anFloor" type="number" min="1" max="50" step="1" style="width:56px">%</span>
       </div>
+      <div class="row" style="margin-bottom:4px"><label><input type="checkbox" id="anBlock"> Start each time block at the bottom of the ladder until a real loss in that block</label></div>
       <p class="hint" id="anLine" style="margin:0 0 8px">Bets big right after a real-money loss and steps down with each real coin flip since. Replaces the bet size above while on.</p>
       <div class="row" style="margin-bottom:10px"><button id="lateSave">Save coin-flip settings</button></div>
       <p class="hint" id="favLine" style="margin:0 0 4px"></p>
@@ -488,11 +489,11 @@
         // the whole ladder, with the step the next real coin flip will use in brackets, and its dollar value
         const st0 = apx.anticStart || 20, stp = apx.anticStep != null ? apx.anticStep : 5, fl0 = Math.min(apx.anticFloor || 10, st0);
         const steps = []; for (let k = 0; k < 12; k++) { const v = Math.max(fl0, st0 - stp * k); steps.push(v); if (v === fl0 || stp === 0) break; }
-        const at = an.since == null ? steps.length - 1 : Math.min(an.since, steps.length - 1);
+        const at = an.since == null ? steps.length - 1 : Math.min(an.since, steps.length - 1);   // no loss yet = bottom
         const ladder = steps.map((v, i) => (i === at ? `[${v}%]` : `${v}%`)).join(' → ') + (steps.length > 1 ? ' … back to ' + steps[0] + '% after a loss' : '');
         const bp = sx.bal && sx.bal.live ? sx.bal.live.buyingPower : null;
         const dollars = bp != null ? ` ≈ ${money(bp * an.next / 100)} of ${money(bp)}` : '';
-        $('anLine').innerHTML = `<b style="color:var(--text)">${apx.lateAntic ? 'ON' : 'Off'} · next real coin flip: ${an.next}%${esc(dollars)}</b> ` + esc((an.since == null ? '(no real-money loss on record yet)' : `(${an.since} real coin flip${an.since === 1 ? '' : 's'} since the last real loss)`)) + `<br>Ladder: ${esc(ladder)}<br>Bets big right after a real-money loss and steps down with each real coin flip since, on the idea that a loss is rarely followed by another. Practice, skipped and unfilled flips don't move the ladder. The floor can go as low as 1%.`;
+        $('anLine').innerHTML = `<b style="color:var(--text)">${apx.lateAntic ? 'ON' : 'Off'} · next real coin flip: ${an.next}%${esc(dollars)}</b> ` + esc((an.since == null ? (apx.anticBlockReset !== false ? '(no real loss yet this time block, so it stays at the bottom until one)' : '(no real-money loss on record yet)') : `(${an.since} real coin flip${an.since === 1 ? '' : 's'} since the last real loss)`)) + `<br>Ladder: ${esc(ladder)}<br>Bets big right after a real-money loss and steps down with each real coin flip since, on the idea that a loss is rarely followed by another. Practice, skipped and unfilled flips don't move the ladder. The floor can go as low as 1%.`;
       }
       if (L.byBlock) {
         const names = ['12am–8am', '8am–4pm', '4pm–12am'], lhx = Array.isArray(apx.lateHours) ? apx.lateHours : [true, true, true];
@@ -521,7 +522,7 @@
         const pct = ap.lateBetPct > 0; $('lateUnit').value = pct ? 'pct' : 'usd'; $('lateBet').value = pct ? ap.lateBetPct : (ap.lateBet || 5);
         $('lateFav').checked = ap.lateFavOnly !== false; $('lateMin').value = ap.lateMinReal || 60;
         const lh = Array.isArray(ap.lateHours) ? ap.lateHours : [true, true, true]; for (let i = 0; i < 3; i++) $('lh' + i).checked = lh[i] !== false;
-        $('anOn').checked = !!ap.lateAntic; $('anStart').value = ap.anticStart || 20; $('anStep').value = ap.anticStep != null ? ap.anticStep : 5; $('anFloor').value = ap.anticFloor || 10;
+        $('anOn').checked = !!ap.lateAntic; $('anBlock').checked = ap.anticBlockReset !== false; $('anStart').value = ap.anticStart || 20; $('anStep').value = ap.anticStep != null ? ap.anticStep : 5; $('anFloor').value = ap.anticFloor || 10;
       }
       $('lateBody').innerHTML = rows.length ? rows.join('') : '<tr><td colspan="4" class="muted">No late coin-flip trades yet.</td></tr>';
     }
@@ -575,14 +576,14 @@
     $('lateBet').addEventListener('input', () => { lateDirty = true; });
     $('lateUnit').addEventListener('change', () => { lateDirty = true; });
     $('lateFav').addEventListener('change', () => { lateDirty = true; });
-    for (const id of ['lh0', 'lh1', 'lh2', 'anOn', 'anStart', 'anStep', 'anFloor']) $(id).addEventListener(id === 'anOn' ? 'change' : 'input', () => { lateDirty = true; });
+    for (const id of ['lh0', 'lh1', 'lh2', 'anBlock', 'anOn', 'anStart', 'anStep', 'anFloor']) $(id).addEventListener(id === 'anOn' ? 'change' : 'input', () => { lateDirty = true; });
     $('lateMin').addEventListener('input', () => { lateDirty = true; });
     $('lateSave').onclick = () => {
       const bet = +$('lateBet').value, on = $('lateLive').checked, pct = $('lateUnit').value === 'pct';
       if (pct ? !(bet >= 1 && bet <= 100) : !(bet >= 1 && bet <= 1000)) return toast(pct ? 'Percent must be 1–100' : 'Bet must be $1–$1000', 'err');
       const minR = +$('lateMin').value;
       if (!(minR >= 60 && minR <= 95)) return toast('Minimum model % must be 60–95', 'err');
-      const args = Object.assign(pct ? { lateLive: on, lateBetPct: bet } : { lateLive: on, lateBet: bet, lateBetPct: 0 }, { lateFavOnly: $('lateFav').checked, lateMinReal: minR, lateHours: [0, 1, 2].map((i) => $('lh' + i).checked), lateAntic: $('anOn').checked, anticStart: +$('anStart').value, anticStep: +$('anStep').value, anticFloor: +$('anFloor').value });
+      const args = Object.assign(pct ? { lateLive: on, lateBetPct: bet } : { lateLive: on, lateBet: bet, lateBetPct: 0 }, { lateFavOnly: $('lateFav').checked, lateMinReal: minR, lateHours: [0, 1, 2].map((i) => $('lh' + i).checked), lateAntic: $('anOn').checked, anticBlockReset: $('anBlock').checked, anticStart: +$('anStart').value, anticStep: +$('anStep').value, anticFloor: +$('anFloor').value });
       if (args.lateAntic && !(args.anticStart >= 1 && args.anticStart <= 50 && args.anticFloor >= 1 && args.anticFloor <= args.anticStart && args.anticStep >= 0 && args.anticStep <= 50)) return toast('Anticipation: start 1–50%, floor 1% up to the start, step 0–50', 'err');
       const amount = pct ? `${bet}% of your buying power` : `$${bet}`;
       const go = () => { lateDirty = false; send('set', args, on ? 'Turning on real late coin-flip trades' : 'Saving'); };
