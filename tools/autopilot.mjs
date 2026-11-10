@@ -29,6 +29,7 @@ const DEFAULTS = {
   lossStreak: 2, cooldownMin: 60,        // pause this long after this many losses in a row (0 = never)
   lateLive: false, lateBet: 5,           // late coin-flip: real orders (Live mode only), dollars per trade…
   lateBetPct: 0,                         // …or, when > 0, this % of buying power per trade
+  mainOn: true,                          // regular BUY-signal bets use real money in Live (off = practice only, coin flips still real)
   lateFavOnly: true,                     // real coin-flip money only when the model backs Polymarket's favorite
   lateMinReal: 65,                       // …and only when the model gives that side at least this % (60 = no extra filter)
   goal: 0,                               // dollars: pause + notify when the current mode's balance reaches this (0 = off)
@@ -228,8 +229,12 @@ export function createAutopilot(o) {
 
   async function trade(sig) {
     const { Ws, favUp, q } = sig;
-    const mode = S.mode, live = mode === 'live';
+    // Regular bets switched off while Live: the signal is paper-traded on the practice account instead,
+    // so its results still show, and it doesn't block a real coin flip in the same window.
+    const paper = S.mode === 'live' && S.mainOn === false;
+    const mode = paper ? 'practice' : S.mode, live = mode === 'live';
     const side = favUp ? 'UP' : 'DOWN';
+    const broke = (b) => { if (!paper) outOfMoney(b); };   // an empty practice account never stops real trading
     if (live && !KEY) { halt('No API key installed', 'Re-run the installer with -Autopilot to add your Polymarket US key, or switch to Practice.'); return; }
     const mkt = await marketFor(Ws);
     const bk = await book(mkt.slug);
@@ -245,11 +250,11 @@ export function createAutopilot(o) {
     if (limit < best - 1e-9) return record({ Ws, mode, side, status: 'skipped', msg: `Polymarket US price ${cents(best)} too high for a ${Math.round(q * 100)}% chance`, q, px: best });
 
     const bal = live ? (await refreshLive()).buyingPower : S.practice.balance;
-    if (bal < MIN_BALANCE) { outOfMoney(bal); return record({ Ws, mode, side, status: 'skipped', msg: 'Out of money', q }); }
+    if (bal < MIN_BALANCE) { broke(bal); return record({ Ws, mode, side, status: 'skipped', msg: paper ? 'Practice balance is empty' : 'Out of money', q, paper: paper ? 1 : undefined }); }
     const stake = bal * S.betPct / 100;
     const step = mkt.minQty > 0 ? mkt.minQty : 0.01;
     const qty = r2(Math.floor(stake / (limit + feeAt(limit)) / step + 1e-9) * step);
-    if (qty < step) { outOfMoney(bal); return record({ Ws, mode, side, status: 'skipped', msg: 'Balance too small for one contract', q }); }
+    if (qty < step) { broke(bal); return record({ Ws, mode, side, status: 'skipped', msg: 'Balance too small for one contract', q, paper: paper ? 1 : undefined }); }
     const day = dayRec(mode, Date.now(), bal);
 
     let filled = 0, notional = 0, orderId = null, msg = '';
@@ -262,13 +267,13 @@ export function createAutopilot(o) {
       filled = r2(filled);
     }
 
-    if (!(filled > 0)) return record({ Ws, mode, side, status: 'nofill', msg: msg || `No fill at ${cents(limit)} or better`, q, qty, limit, orderId });
+    if (!(filled > 0)) return record({ Ws, mode, side, status: 'nofill', msg: msg || `No fill at ${cents(limit)} or better`, q, qty, limit, orderId, paper: paper ? 1 : undefined });
     const px = notional / filled, fee = r4(feeAt(px) * filled), cost = r2(notional + fee);
     if (!live) S.practice.balance = r2(S.practice.balance - cost);
-    const t = record({ Ws, mode, side, status: filled < qty - 1e-9 ? 'partial' : 'filled', q, mkt: sig.marketPct, qty: filled, want: qty, px: r4(px), fee, cost, limit, orderId, slug: mkt.slug, result: null, pnl: null, balBefore: r2(bal) });
+    const t = record({ Ws, mode, side, status: filled < qty - 1e-9 ? 'partial' : 'filled', q, mkt: sig.marketPct, qty: filled, want: qty, px: r4(px), fee, cost, limit, orderId, slug: mkt.slug, result: null, pnl: null, balBefore: r2(bal), paper: paper ? 1 : undefined });
     S.stats[mode].n++; S.stats[mode].staked = r2(S.stats[mode].staked + cost);
     day.n++;
-    log(`AUTOPILOT ${mode.toUpperCase()} bought ${side} ${filled} @ ${cents(px)} = ${money(cost)} (${S.betPct}% of ${money(bal)})`);
+    log(`AUTOPILOT ${mode.toUpperCase()}${paper ? ' (regular bets off)' : ''} bought ${side} ${filled} @ ${cents(px)} = ${money(cost)} (${S.betPct}% of ${money(bal)})`);
     // A real purchase replaces the BUY alert, so it always notifies (loudly), with the signal's numbers.
     // Practice fills are mentioned inside the bot's BUY alert instead of a second message.
     if (live) push({ title: `BOUGHT ${side}`, body: `${filled} @ ${cents(px)} = ${money(cost)} (${S.betPct}% of ${money(bal)}) · MODEL ${Math.round(sig.modelPct || q * 100)}% · POLYMARKET ${Math.round(sig.marketPct || 0)}%`, priority: 5, tags: side === 'UP' ? 'green_circle' : 'red_circle', click: o.site + 'autopilot.html' });
@@ -387,7 +392,7 @@ export function createAutopilot(o) {
       else {
         const limit = r2(levels[0][0] + mkt.tick);
         // Real money only when switched on, autopilot is Live and on, not halted/paused, and no normal trade this window
-        const eligible = S.lateLive && S.mode === 'live' && S.enabled && !S.halted && KEY && !busy && !S.trades.some((t) => t.Ws === x.Ws);
+        const eligible = S.lateLive && S.mode === 'live' && S.enabled && !S.halted && KEY && !busy && !S.trades.some((t) => t.Ws === x.Ws && t.mode === 'live');
         // Filters for real money; a skipped flip is still tracked as practice so the results keep coming in:
         //   a chart pattern line against the flip, the model backing the underdog, or model confidence below the minimum
         rec.fav = rec.quoted >= 0.5 ? 1 : 0;
@@ -697,7 +702,7 @@ export function createAutopilot(o) {
     const snap = {
       v: 1, ts: Date.now(), ver: AUTOPILOT_VERSION, since: STARTED, why: botWhy, note: lastNote, keys: !!KEY,
       msgs: o.budget && isFinite(o.budget.left()) ? Math.floor(o.budget.left()) : null,   // ntfy messages left (free ntfy.sh)
-      ap: { enabled: S.enabled, mode: S.mode, betPct: S.betPct, dailyStopPct: S.dailyStopPct, lossStreak: S.lossStreak, cooldownMin: S.cooldownMin, goal: S.goal, lateLive: S.lateLive, lateBet: S.lateBet, lateBetPct: S.lateBetPct, lateFavOnly: S.lateFavOnly, lateMinReal: S.lateMinReal, streak: S.streak[S.mode] || 0, notifyFills: S.notifyFills, notifyResults: S.notifyResults, minModel: minModel(o.defMinModel), minMarket: minMarket(o.defMinMarket), target: target(o.defTarget), halted: S.halted },
+      ap: { enabled: S.enabled, mode: S.mode, mainOn: S.mainOn !== false, betPct: S.betPct, dailyStopPct: S.dailyStopPct, lossStreak: S.lossStreak, cooldownMin: S.cooldownMin, goal: S.goal, lateLive: S.lateLive, lateBet: S.lateBet, lateBetPct: S.lateBetPct, lateFavOnly: S.lateFavOnly, lateMinReal: S.lateMinReal, streak: S.streak[S.mode] || 0, notifyFills: S.notifyFills, notifyResults: S.notifyResults, minModel: minModel(o.defMinModel), minMarket: minMarket(o.defMinMarket), target: target(o.defTarget), halted: S.halted },
       bal: { live: S.liveBal, practice: S.practice }, stats: S.stats, days, acks: acks.slice(-5),
       trades: S.trades.slice(-12).map(tr),
       late: { since: S.late.since, stats: S.late.stats, real: S.late.real || null, byPat: S.late.byPat || null, byFav: S.late.byFav || null, trades: S.late.trades.slice(-6).map((t) => [t.ts, t.Ws, t.side, t.status, t.px || 0, t.quoted, Math.round(t.q * 100), t.result, t.pnl, t.left, t.msg || '', t.real ? 1 : 0, t.pat === 'against' ? (t.patSkip ? 2 : 1) : t.pat === 'with' ? 3 : 0, t.realSkip === 'underdog' ? 1 : t.realSkip === 'conf' ? 2 : 0, t.fav != null ? t.fav : (t.quoted >= 0.5 ? 1 : 0)]) },
@@ -765,7 +770,7 @@ export function createAutopilot(o) {
         const num = (v, lo, hi) => (typeof v === 'number' && isFinite(v) && v >= lo && v <= hi ? v : undefined);
         const upd = { betPct: num(a.betPct, 1, 100), dailyStopPct: num(a.dailyStopPct, 0, 100), lossStreak: num(a.lossStreak, 0, 10), cooldownMin: num(a.cooldownMin, 5, 1440), goal: num(a.goal, 0, 1e7), lateBet: num(a.lateBet, 1, 1000), lateBetPct: num(a.lateBetPct, 0, 100), lateMinReal: num(a.lateMinReal, 50, 99), minModel: a.minModel === null ? null : num(a.minModel, 50, 99), minMarket: a.minMarket === null ? null : num(a.minMarket, 50, 99) };
         for (const [k, v] of Object.entries(upd)) if (v !== undefined && k in a) S[k] = v;
-        for (const k of ['notifyFills', 'notifyResults', 'lateFavOnly']) if (typeof a[k] === 'boolean') S[k] = a[k];
+        for (const k of ['notifyFills', 'notifyResults', 'lateFavOnly', 'mainOn']) if (typeof a[k] === 'boolean') S[k] = a[k];
         if (typeof a.lateLive === 'boolean' && a.lateLive !== S.lateLive) {
           S.lateLive = a.lateLive;
           push({ title: a.lateLive ? 'LATE COIN-FLIP: REAL TRADES ON' : 'Late coin-flip: practice only', body: a.lateLive ? `Real orders of ${S.lateBetPct > 0 ? S.lateBetPct + '% of buying power' : '$' + S.lateBet} in the last 75-30 s of close windows, while autopilot is Live.${S.mode === 'live' ? '' : ' Autopilot is in Practice now, so nothing real until you switch to Live.'}` : 'No more real late coin-flip orders.', priority: a.lateLive ? 4 : 2, tags: a.lateLive ? 'money_with_wings' : 'test_tube', click: o.site + 'autopilot.html' });

@@ -188,6 +188,7 @@
     <div class="card">
       <h3>Settings</h3>
       <div class="grid2">
+        <label class="field"><span>Regular BUY-alert bets</span><select id="sMain"><option value="1">Real money (when Live)</option><option value="0">Practice only (coin flips only)</option></select><span class="hint">Practice-only BUY bets still show their results here and never block a coin flip.</span></label>
         <label class="field"><span>Bet size, % of balance per BUY alert</span><span class="row"><input id="sBet" type="number" min="1" max="100" step="1"> %</span></label>
         <label class="field"><span>Stop for the day after losing (% of the day's starting balance, 0 = never)</span><span class="row"><input id="sStop" type="number" min="0" max="100" step="5"> %</span></label>
         <label class="field"><span>Goal: notify me and pause when the balance reaches (0 = off)</span><span class="row">$<input id="sGoal" type="number" min="0" step="10"></span><span class="hint">Uses the current mode's balance: practice or your Polymarket US cash.</span></label>
@@ -399,7 +400,7 @@
       const state = ap.halted ? (ap.halted.kind === 'pause' ? 'paused' : ap.halted.kind === 'goal' ? 'goal' : 'halted') : !ap.enabled ? 'off' : mode;
       $('banner').className = 'banner ' + state;
       $('stateWord').textContent = { halted: 'HALTED', paused: 'PAUSED', goal: 'GOAL MET 🏆', off: 'OFF', live: 'LIVE', practice: 'PRACTICE' }[state];
-      $('stateLine').textContent = ap.halted ? ap.halted.reason : !ap.enabled ? 'Not trading. BUY alerts still reach your phone.' : live ? `Trading real money: ${ap.betPct}% of buying power on every BUY alert` : `Pretend money: ${ap.betPct}% of the practice balance on every BUY alert`;
+      $('stateLine').textContent = ap.halted ? ap.halted.reason : !ap.enabled ? 'Not trading. BUY alerts still reach your phone.' : live ? (ap.mainOn === false ? (ap.lateLive ? `Coin flips only: ${ap.lateBetPct > 0 ? ap.lateBetPct + '% of buying power' : '$' + ap.lateBet} per late coin flip. BUY alerts are practice only.` : 'Regular bets are practice only and late coin flips are off, so nothing real will trade.') : `Trading real money: ${ap.betPct}% of buying power on every BUY alert`) : `Pretend money: ${ap.betPct}% of the practice balance on every BUY alert`;
       $('stateSub').textContent = ap.halted ? ap.halted.detail : `Trades when the gap reaches the ${ap.target || 80}% target, the model ≥ ${ap.minModel}% and Polymarket ≥ ${ap.minMarket}% for the same side.` + (ap.lossStreak ? ` Pauses ${ap.cooldownMin} min after ${ap.lossStreak} losses in a row${ap.streak ? ` (${ap.streak} so far)` : ''}.` : '');
       $('resumeBtn').classList.toggle('hide', !ap.halted);
       $('powerBtn').textContent = ap.enabled ? 'Turn off' : 'Turn on';
@@ -447,6 +448,7 @@
 
       // settings: don't overwrite what you're editing
       if (first || !document.activeElement || !document.activeElement.closest('.grid2')) {
+        $('sMain').value = ap.mainOn === false ? '0' : '1';
         $('sBet').value = ap.betPct; $('sStop').value = ap.dailyStopPct;
         $('sGoal').value = ap.goal || 0;
         $('sStreak').value = ap.lossStreak != null ? ap.lossStreak : 2; $('sCool').value = ap.cooldownMin || 60;
@@ -566,7 +568,7 @@
       if (!(goal >= 0)) return toast('Goal must be $0 or more', 'err');
       if (!(streak >= 0 && streak <= 10 && Number.isInteger(streak))) return toast('Losses in a row must be 0–10', 'err');
       if (!(cool >= 5 && cool <= 1440)) return toast('Pause must be 5–1440 minutes', 'err');
-      send('set', { betPct: bet, dailyStopPct: stop, goal, lossStreak: streak, cooldownMin: cool, minModel: +$('sMinModel').value, minMarket: +$('sMinMarket').value, target: +$('sTarget').value, notifyFills: $('sFills').checked, notifyResults: $('sResults').checked }, 'Saving settings');
+      send('set', { mainOn: $('sMain').value === '1', betPct: bet, dailyStopPct: stop, goal, lossStreak: streak, cooldownMin: cool, minModel: +$('sMinModel').value, minMarket: +$('sMinMarket').value, target: +$('sTarget').value, notifyFills: $('sFills').checked, notifyResults: $('sResults').checked }, 'Saving settings');
     };
     $('pReset').onclick = () => { const b = +$('pBal').value; if (!(b >= 10)) return toast('At least $10', 'err'); send('resetPractice', { balance: b }, 'Resetting practice'); };
 

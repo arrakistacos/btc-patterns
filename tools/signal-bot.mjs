@@ -403,7 +403,7 @@ function evaluate() {
         AP.onSignal({ Ws, favUp, q: r.q, modelPct, marketPct, left }).then((t) => {
           const filled = t && (t.status === 'filled' || t.status === 'partial');
           if (filled && t.mode === 'live') return;                                   // autopilot already sent BOUGHT
-          if (filled) return buyAlert(` · practice bought @ ${Math.round(t.px * 100)}¢`);
+          if (filled) return buyAlert(` · ${t.paper ? 'regular bets off, ' : ''}practice bought @ ${Math.round(t.px * 100)}¢`);
           if (t && t.mode === 'live') return buyAlert(` · autopilot did not buy: ${t.msg || t.status}`);
           return buyAlert();
         }).catch(() => buyAlert());
