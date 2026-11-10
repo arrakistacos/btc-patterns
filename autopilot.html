@@ -163,7 +163,7 @@
         <label><input type="checkbox" id="anOn"> Anticipation mode</label>
         <span class="row">start <input id="anStart" type="number" min="1" max="50" step="1" style="width:56px">%, then −<input id="anStep" type="number" min="0" max="50" step="1" style="width:52px"> per flip, down to <input id="anFloor" type="number" min="1" max="50" step="1" style="width:56px">%</span>
       </div>
-      <p class="hint" id="anLine" style="margin:0 0 8px">Bets big right after a loss and steps down with each coin flip since (real or practice), on the idea that a loss is rarely followed by another. Replaces the bet size above while on.</p>
+      <p class="hint" id="anLine" style="margin:0 0 8px">Bets big right after a real-money loss and steps down with each real coin flip since. Replaces the bet size above while on.</p>
       <div class="row" style="margin-bottom:10px"><button id="lateSave">Save coin-flip settings</button></div>
       <p class="hint" id="favLine" style="margin:0 0 4px"></p>
       <p class="hint" id="patLine" style="margin:0 0 8px"></p>
@@ -485,7 +485,7 @@
         const ladder = steps.map((v, i) => (i === at ? `[${v}%]` : `${v}%`)).join(' → ') + (steps.length > 1 ? ' … back to ' + steps[0] + '% after a loss' : '');
         const bp = sx.bal && sx.bal.live ? sx.bal.live.buyingPower : null;
         const dollars = bp != null ? ` ≈ ${money(bp * an.next / 100)} of ${money(bp)}` : '';
-        $('anLine').innerHTML = `<b style="color:var(--text)">${apx.lateAntic ? 'ON' : 'Off'} · next real coin flip: ${an.next}%${esc(dollars)}</b> ` + esc((an.since == null ? '(no loss on record yet)' : `(${an.since} coin flip${an.since === 1 ? '' : 's'} since the last loss)`)) + `<br>Ladder: ${esc(ladder)}<br>Bets big right after a loss and steps down with each coin flip since (real or practice), on the idea that a loss is rarely followed by another. The floor can go as low as 1%.`;
+        $('anLine').innerHTML = `<b style="color:var(--text)">${apx.lateAntic ? 'ON' : 'Off'} · next real coin flip: ${an.next}%${esc(dollars)}</b> ` + esc((an.since == null ? '(no real-money loss on record yet)' : `(${an.since} real coin flip${an.since === 1 ? '' : 's'} since the last real loss)`)) + `<br>Ladder: ${esc(ladder)}<br>Bets big right after a real-money loss and steps down with each real coin flip since, on the idea that a loss is rarely followed by another. Practice, skipped and unfilled flips don't move the ladder. The floor can go as low as 1%.`;
       }
       $('favLine').textContent = [fl('fav', 'Model backed the favorite'), fl('dog', 'backed the underdog')].filter(Boolean).join(' · ');
       $('patLine').textContent = ['Chart pattern ' + (pl('against', 'against the flip') || 'against the flip: no trades yet'), pl('with', 'with it'), pl('none', 'no pattern line')].filter(Boolean).join(' · ');

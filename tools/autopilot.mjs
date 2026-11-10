@@ -370,13 +370,14 @@ export function createAutopilot(o) {
     }
     S.late.byFav = bf;
   }
-  // Anticipation mode: coin flips settled since the most recent loss (every tracked flip, real or practice).
+  // Anticipation mode: real-money coin flips settled since the most recent real-money loss (practice, skipped and
+  // unfilled flips don't count).
   // null = no loss on record yet. Bet = anticStart% right after a loss, then anticStep less per flip, down to anticFloor%.
   function anticSince() {
     let n = 0;
     for (let i = S.late.trades.length - 1; i >= 0; i--) {
       const t = S.late.trades[i];
-      if (t.status !== 'filled' || t.result == null) continue;
+      if (!t.real || t.status !== 'filled' || t.result == null) continue;   // only coin flips that went in with real money
       if (!t.result) return n;
       n++;
     }
