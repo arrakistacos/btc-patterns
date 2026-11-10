@@ -1,16 +1,16 @@
 {
- "generated": "2026-11-09T19:52:41.641Z",
+ "generated": "2026-11-10T03:38:16.320Z",
  "window": {
   "mode": "end60",
   "volBars": 48,
   "volScale": 1,
   "beta": 0,
   "gamma": -0.3,
-  "velBars": 3
+  "velBars": 6
  },
  "marketMatch": {
   "mode": "end60",
-  "volBars": 24,
+  "volBars": 12,
   "volScale": 1,
   "beta": 0,
   "gamma": -0.15,
