@@ -294,7 +294,23 @@ function pmMid() {
 }
 
 // ---------------------------------------------------------------- pattern lean (refreshed once per candle)
-let patternFor = null, patternZ = 0;
+let patternFor = null, patternZ = 0, patLines = [];
+// Chart patterns whose boundary lines can push price back (the ones you can switch on in the chart)
+const PAT_TYPES = new Set(['asc_triangle', 'desc_triangle', 'sym_triangle', 'rising_wedge', 'falling_wedge', 'bull_flag', 'bear_flag']);
+const PAT_NEAR = 20;   // dollars: price this close to a line is "pressing" it
+// +1: price is pressing a pattern's bottom line (a bounce would push it up); -1: pressing a top line; 0: neither
+function patternPress(S, t) {
+  let near = 0;
+  for (const p of patLines) {
+    const at = (pts) => pts[0][1] + (pts[1][1] - pts[0][1]) * (t - pts[0][0]) / ((pts[1][0] - pts[0][0]) || 1);
+    const U = p.type.endsWith('flag') ? p.lines[1].pts[0][1] : at(p.lines[0].pts);
+    const L = p.type.endsWith('flag') ? p.lines[2].pts[0][1] : at(p.lines[1].pts);
+    if (!(U > L)) continue;
+    const top = S <= U + 5 && U - S <= PAT_NEAR, bot = S >= L - 5 && S - L <= PAT_NEAR;
+    if (top && !bot) near = near > 0 ? 2 : -1; else if (bot && !top) near = near < 0 ? 2 : 1;
+  }
+  return near === 2 ? 0 : near;   // lines on both sides: no call
+}
 function closedCandles() { const t = nowS(); let end = C.length; while (end > 0 && C[end - 1].t + W > t) end--; return C.slice(0, end); }
 function refreshPattern(closed) {
   const last = closed[closed.length - 1];
@@ -302,7 +318,8 @@ function refreshPattern(closed) {
   try {
     const R = E.analyze(closed.slice(-1200), { interval: W });
     patternZ = R.prediction ? R.prediction.z : 0;
-  } catch { patternZ = 0; }
+    patLines = (R.active || []).filter((x) => PAT_TYPES.has(x.type) && x.status === 'forming' && x.lines);
+  } catch { patternZ = 0; patLines = []; }
   patternFor = last.t;
 }
 
@@ -365,7 +382,7 @@ function evaluate() {
     const w = { S, K, sigma: sig0 * params.volScale, left, e, Ws };
     const r = Signal.evalSignal({ w, favUp, ask, cost, oursFav, hist }, AP.target(TARGET));   // the autopilot page can change the target
     AP.observe({ Ws, e, w, favUp, ask, cost, oursFav, hist, favMid });   // settings scoreboard: every combination, every window
-    AP.observeLate({ Ws, e, pUp, mkUp: mk });                          // late coin-flip test (practice only)
+    AP.observeLate({ Ws, e, pUp, mkUp: mk, press: patternPress(S, nowS()) });                          // late coin-flip test (practice only)
     // Alert filter: both the model's win chance and Polymarket's own odds for that side must reach the minimums
     const modelPct = r.buy ? r.q * 100 : 0, marketPct = favMid * 100;
     const minM = AP.minModel(MIN_MODEL), minK = AP.minMarket(MIN_MARKET);   // the autopilot page can change these

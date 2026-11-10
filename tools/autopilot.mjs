@@ -334,6 +334,8 @@ export function createAutopilot(o) {
     for (const k of lateTried) if (k < x.Ws - 3600) lateTried.delete(k);
     if (S.late.trades.some((t) => t.Ws === x.Ws)) return;
     const rec = { Ws: x.Ws, ts: Date.now(), side: up ? 'UP' : 'DOWN', q: r4(q), quoted: r4(up ? x.mkUp : 1 - x.mkUp), left: Math.round(left), result: null, pnl: null };
+    // Chart pattern check: price pressing a triangle/wedge/flag line that would push it against our side
+    rec.pat = !x.press ? 'none' : (x.press > 0) === up ? 'with' : 'against';
     try {
       const mkt = await marketFor(x.Ws); rec.slug = mkt.slug;
       const bk = await book(mkt.slug);
@@ -344,7 +346,10 @@ export function createAutopilot(o) {
       else {
         const limit = r2(levels[0][0] + mkt.tick);
         // Real money only when switched on, autopilot is Live and on, not halted/paused, and no normal trade this window
-        const real = S.lateLive && S.mode === 'live' && S.enabled && !S.halted && KEY && !busy && !S.trades.some((t) => t.Ws === x.Ws);
+        const eligible = S.lateLive && S.mode === 'live' && S.enabled && !S.halted && KEY && !busy && !S.trades.some((t) => t.Ws === x.Ws);
+        // a pattern line against the flip: no real money, but still tracked as a practice trade to see if skipping helps
+        const real = eligible && rec.pat !== 'against';
+        if (eligible && !real) rec.patSkip = 1;
         if (real) {
           busy = true;
           try {
@@ -386,7 +391,7 @@ export function createAutopilot(o) {
     if (S.late.trades.length > 300) S.late.trades.splice(0, S.late.trades.length - 300);
     if (rec.status === 'filled') { S.late.stats.n++; S.late.stats.staked = r2(S.late.stats.staked + rec.cost); }
     if (rec.status === 'nofill') S.late.stats.nofill++;
-    log(`late coin-flip ${rec.real ? 'REAL' : 'test'}: ${rec.status} ${rec.side}${rec.px ? ' @ ' + cents(rec.px) : ''} (Polymarket showed ${cents(rec.quoted)}, model ${Math.round(q * 100)}%, ${rec.left}s left)${rec.msg ? ' - ' + rec.msg : ''}`);
+    log(`late coin-flip ${rec.real ? 'REAL' : 'test'}${rec.patSkip ? ' (real skipped: chart pattern against)' : ''}: ${rec.status} ${rec.side}${rec.px ? ' @ ' + cents(rec.px) : ''} (Polymarket showed ${cents(rec.quoted)}, model ${Math.round(q * 100)}%, ${rec.left}s left)${rec.msg ? ' - ' + rec.msg : ''}`);
     save(); publishSoon();
   }
   async function settleLate() {
@@ -401,6 +406,10 @@ export function createAutopilot(o) {
       t.result = won ? 1 : 0; t.pnl = r2((won ? t.qty : 0) - t.cost);
       const st = S.late.stats; st.pnl = r2(st.pnl + t.pnl); if (won) st.w++; else st.l++;
       if (t.real) { const rs = S.late.real || (S.late.real = zeroStats()); rs.n++; rs.staked = r2(rs.staked + t.cost); rs.pnl = r2(rs.pnl + t.pnl); if (won) rs.w++; else rs.l++; }
+      if (t.pat) {   // results split by chart pattern (per $100 so practice $10 and real bets compare)
+        const bp = S.late.byPat || (S.late.byPat = {}); const z = bp[t.pat] || (bp[t.pat] = { n: 0, w: 0, staked: 0, pnl: 0 });
+        z.n++; if (won) z.w++; z.staked = r2(z.staked + t.cost); z.pnl = r2(z.pnl + t.pnl);
+      }
       save(); publishSoon();
     }
   }
@@ -480,7 +489,7 @@ export function createAutopilot(o) {
       ap: { enabled: S.enabled, mode: S.mode, betPct: S.betPct, dailyStopPct: S.dailyStopPct, lossStreak: S.lossStreak, cooldownMin: S.cooldownMin, goal: S.goal, lateLive: S.lateLive, lateBet: S.lateBet, lateBetPct: S.lateBetPct, streak: S.streak[S.mode] || 0, notifyFills: S.notifyFills, notifyResults: S.notifyResults, minModel: minModel(o.defMinModel), minMarket: minMarket(o.defMinMarket), target: target(o.defTarget), halted: S.halted },
       bal: { live: S.liveBal, practice: S.practice }, stats: S.stats, days, acks: acks.slice(-5),
       trades: S.trades.slice(-12).map(tr),
-      late: { since: S.late.since, stats: S.late.stats, real: S.late.real || null, trades: S.late.trades.slice(-6).map((t) => [t.ts, t.Ws, t.side, t.status, t.px || 0, t.quoted, Math.round(t.q * 100), t.result, t.pnl, t.left, t.msg || '', t.real ? 1 : 0]) },
+      late: { since: S.late.since, stats: S.late.stats, real: S.late.real || null, byPat: S.late.byPat || null, trades: S.late.trades.slice(-6).map((t) => [t.ts, t.Ws, t.side, t.status, t.px || 0, t.quoted, Math.round(t.q * 100), t.result, t.pnl, t.left, t.msg || '', t.real ? 1 : 0, t.pat === 'against' ? (t.patSkip ? 2 : 1) : t.pat === 'with' ? 3 : 0]) },
     };
     while (JSON.stringify(snap).length > 2900 && snap.trades.length > 3) snap.trades.shift();   // ntfy messages are capped at 4 KB
     while (JSON.stringify(snap).length > 2900 && snap.late.trades.length > 2) snap.late.trades.shift();

@@ -156,7 +156,8 @@
         <span class="row"><input id="lateBet" type="number" min="1" max="1000" step="1"><select id="lateUnit"><option value="usd">dollars</option><option value="pct">% of balance</option></select> per trade</span>
         <button id="lateSave">Save</button>
       </div>
-      <p class="hint" id="lateNote" style="margin-top:0">Real orders only while autopilot is <b>Live</b> and on. They count toward your balance, stops, 2-loss pause and goal, and are skipped if a normal trade already happened in that window.</p>
+      <p class="hint" id="patLine" style="margin:0 0 8px"></p>
+      <p class="hint" id="lateNote" style="margin-top:0">Real orders only while autopilot is <b>Live</b> and on. They count toward your balance, stops, 2-loss pause and goal, and are skipped if a normal trade already happened in that window. If price is pressing a chart pattern line (triangle, wedge or flag) that points against the flip, no real money goes in; it's tracked as practice instead.</p>
       <div class="scroll"><table>
         <thead><tr><th>Window</th><th>Side</th><th class="r">Paid</th><th class="r">Result</th></tr></thead>
         <tbody id="lateBody"><tr><td colspan="4" class="muted">No late coin-flip trades yet.</td></tr></tbody>
@@ -443,10 +444,12 @@
       $('lW').textContent = settled ? Math.round(ls.w / settled * 100) + '%' : '—'; $('lWs').textContent = settled ? `${ls.w} of ${settled}` : 'no results yet';
       $('lP').textContent = signed(ls.pnl); $('lP').className = 'v num ' + cls(ls.pnl);
       $('lPs').textContent = ls.staked ? `${(ls.pnl / ls.staked * 100 >= 0 ? '+' : '−')}$${Math.abs(ls.pnl / ls.staked * 100).toFixed(2)} per $100` : '';
-      const rows = (L.trades || []).slice().reverse().map(([ts, Ws, side, status, px, quoted, q, result, pnl, left, msg, real]) => {
+      const bp = L.byPat || {}, pl = (k, label) => { const z = bp[k]; return z && z.n ? `${label}: ${z.n} trades, ${Math.round(z.w / z.n * 100)}% won, ${(z.pnl >= 0 ? '+' : '−')}$${Math.abs(z.pnl / z.staked * 100).toFixed(2)} per $100` : null; };
+      $('patLine').textContent = ['Chart pattern ' + (pl('against', 'against the flip') || 'against the flip: no trades yet'), pl('with', 'with it'), pl('none', 'no pattern line')].filter(Boolean).join(' · ');
+      const rows = (L.trades || []).slice().reverse().map(([ts, Ws, side, status, px, quoted, q, result, pnl, left, msg, real, pat]) => {
         const wd = new Date(Ws * 1000);
         const when = `<span class="nw">${wd.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}</span><div class="hint nw">${left}s left · model ${q}%</div>`;
-        const sideCell = `<span class="${side === 'UP' ? 'up' : 'down'}" style="font-weight:700">${side}</span>${real ? ' <span class="tag l">REAL</span>' : ''}`;
+        const sideCell = `<span class="${side === 'UP' ? 'up' : 'down'}" style="font-weight:700">${side}</span>${real ? ' <span class="tag l">REAL</span>' : ''}${pat === 1 || pat === 2 ? ` <span class="tag" style="background:rgba(234,57,67,.18);color:#ffb3b8">PATTERN ✗${pat === 2 ? ' · real skipped' : ''}</span>` : pat === 3 ? ' <span class="tag p">PATTERN ✓</span>' : ''}`;
         if (status !== 'filled') return `<tr><td>${when}</td><td>${sideCell}</td><td colspan="2" class="muted">${esc(msg || status)}</td></tr>`;
         const res = result == null ? '<span class="muted">waiting…</span>' : `<span class="${result ? 'up' : 'down'}" style="font-weight:700">${result ? 'WON' : 'LOST'}</span><div class="num nw ${cls(pnl)}">${signed(pnl)}</div>`;
         return `<tr><td>${when}</td><td>${sideCell}</td><td class="r num"><span class="nw">${Math.round(px * 100)}¢</span><div class="hint nw">showed ${Math.round(quoted * 100)}¢</div></td><td class="r">${res}</td></tr>`;
