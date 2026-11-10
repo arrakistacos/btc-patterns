@@ -445,7 +445,7 @@ export function createAutopilot(o) {
       else {
         const limit = r2(levels[0][0] + mkt.tick);
         // Real money only when switched on, autopilot is Live and on, not halted/paused, and no normal trade this window
-        const eligible = S.lateLive && S.mode === 'live' && S.enabled && !S.halted && KEY && !busy && !S.trades.some((t) => t.Ws === x.Ws && t.mode === 'live');
+        const eligible = S.lateLive && S.mode === 'live' && S.enabled && !S.halted && KEY && !busy && !S.trades.some((t) => t.Ws === x.Ws && t.mode === 'live' && (t.status === 'filled' || t.status === 'partial'));   // only real money already in this window blocks it
         // Filters for real money; a skipped flip is still tracked as practice so the results keep coming in:
         //   a chart pattern line against the flip, the model backing the underdog, or model confidence below the minimum
         rec.fav = rec.quoted >= 0.5 ? 1 : 0;
