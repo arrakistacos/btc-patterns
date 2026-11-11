@@ -115,10 +115,9 @@ export function createAutopilot(o) {
     while (keys.length > 30) delete S.days[keys.shift()];
     return S.days[d][mode];
   }
-  // Profit ledger for the Profits page: real-money results per trading day running 8am to 8am Central, labelled by
-  // the date it ENDS (the overnight session that finished at 8am today is today's bar). Tracking begins the day the
-  // ledger is first created. Row = [profit, start balance, trades, wins].
-  const pday = (ms) => dayOf(ms + 16 * 3600000);
+  // Profit ledger for the Profits page: real-money results per calendar day, midnight to midnight Central. Tracking
+  // begins the day the ledger is first created. Row = [profit, start balance, trades, wins].
+  const pday = (ms) => dayOf(ms);
   const addDays = (d, k) => { const t = new Date(d + 'T12:00:00Z'); t.setUTCDate(t.getUTCDate() + k); return t.toISOString().slice(0, 10); };
   function ledgerDay(d) {
     const L = S.ledger.days;
@@ -138,13 +137,29 @@ export function createAutopilot(o) {
     const r = ledgerDay(pday(Date.now()));
     if (r[1] == null) r[1] = r2(S.liveBal.buyingPower - r[0]);
   }
-  if (S.ledger && S.ledger.lab !== 'end') {   // ledgers from before labels moved to the end date: shift every day by one
-    const days = {};
-    for (const [d, r] of Object.entries(S.ledger.days)) days[addDays(d, 1)] = r;
-    S.ledger = { start: addDays(S.ledger.start, 1), days, lab: 'end' };
+  // Rebuild days from the real trades the bot still keeps. keepBal: reuse starting balances already recorded for a day
+  // (only meaningful when the old ledger used the same kind of day); otherwise the balance before that day's first trade.
+  function ledgerFromTrades(from, keepBal) {
+    const today = pday(Date.now()), old = S.ledger ? S.ledger.days : {}, days = {}, firstBal = {};
+    const live = S.trades.filter((t) => t.mode === 'live');
+    const oldest = live.length ? pday(live[0].ts) : today;
+    for (const t of live) {
+      if (t.result == null || t.pnl == null) continue;
+      const d = pday(t.ts); if (d < from) continue;
+      const r = days[d] || (days[d] = [0, null, 0, 0]);
+      r[0] = r2(r[0] + t.pnl); r[2]++; if (t.result) r[3]++;
+      if (firstBal[d] == null && t.balBefore != null) firstBal[d] = t.balBefore;
+    }
+    for (const d of Object.keys(days)) days[d][1] = keepBal && old[d] && old[d][1] != null ? old[d][1] : firstBal[d] != null ? firstBal[d] : null;
+    if (keepBal) for (const [d, r] of Object.entries(old)) if (d >= from && !days[d] && (d < oldest || r[2] === 0)) days[d] = r;   // days the trade list no longer covers, and quiet days
+    return { days, oldest };
+  }
+  if (S.ledger && S.ledger.lab !== 'cal') {   // ledgers kept in 8am-to-8am days: rebuild them as calendar days
+    const from = S.ledger.lab === 'end' ? addDays(S.ledger.start, -1) : S.ledger.start;
+    S.ledger = { start: from, days: ledgerFromTrades(from, false).days, lab: 'cal' };
   }
   if (!S.ledger) {
-    S.ledger = { start: pday(Date.now()), days: {}, lab: 'end' };
+    S.ledger = { start: pday(Date.now()), days: {}, lab: 'cal' };
     for (const t of S.trades) if (t.mode === 'live' && t.result != null && t.pnl != null) ledgerAdd(t);   // today's results so far
   }
 
@@ -864,23 +879,12 @@ export function createAutopilot(o) {
     return out;
   }
   // Track from an earlier (or later) date: rebuild the ledger from the real trades the bot still keeps.
-  // Days recorded earlier keep their 8am starting balance; others use the balance before that day's first trade.
+  // Days recorded earlier keep their recorded starting balance; others use the balance before that day's first trade.
   function ledgerRebuild(from) {
     const today = pday(Date.now());
     if (!/^\d{4}-\d\d-\d\d$/.test(from) || from > today) return { ok: false, msg: 'Pick a date up to today' };
-    const old = S.ledger.days, days = {}, firstBal = {};
-    const live = S.trades.filter((t) => t.mode === 'live');
-    const oldest = live.length ? pday(live[0].ts) : today;
-    for (const t of live) {
-      if (t.result == null || t.pnl == null) continue;
-      const d = pday(t.ts); if (d < from) continue;
-      const r = days[d] || (days[d] = [0, null, 0, 0]);
-      r[0] = r2(r[0] + t.pnl); r[2]++; if (t.result) r[3]++;
-      if (firstBal[d] == null && t.balBefore != null) firstBal[d] = t.balBefore;
-    }
-    for (const d of Object.keys(days)) days[d][1] = old[d] && old[d][1] != null ? old[d][1] : firstBal[d] != null ? firstBal[d] : null;
-    for (const [d, r] of Object.entries(old)) if (d >= from && !days[d] && (d < oldest || r[2] === 0)) days[d] = r;   // days the trade list no longer covers, and quiet days
-    S.ledger = { start: from, days, lab: 'end' };
+    const { days, oldest } = ledgerFromTrades(from, true);
+    S.ledger = { start: from, days, lab: 'cal' };
     save(); ledPubAt = 0; publishLedger(); publishSoon(1500, true);
     return { ok: true, msg: from < oldest ? `Tracking from ${from}; trades before ${oldest} are no longer on the laptop, so those days show $0` : `Tracking from ${from}` };
   }

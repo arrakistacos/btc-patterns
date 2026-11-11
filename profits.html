@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>BTC Profits</title>
-<meta name="description" content="Daily real-money profit from the BTC Pattern Watch autopilot, per 8am-to-8am Central trading day, with live market connection health.">
+<meta name="description" content="Daily real-money profit from the BTC Pattern Watch autopilot, per calendar day (Central time), with live market connection health.">
 <meta name="theme-color" content="#0b0e14">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%230b0e14'/%3E%3Crect x='6' y='16' width='4' height='10' rx='1' fill='%2316c784'/%3E%3Crect x='14' y='10' width='4' height='16' rx='1' fill='%2316c784'/%3E%3Crect x='22' y='19' width='4' height='7' rx='1' fill='%23ea3943'/%3E%3C/svg%3E">
 <style>
@@ -115,8 +115,7 @@
 
   <section id="dash" class="hide" style="display:flex;flex-direction:column;gap:14px">
     <div class="tiles">
-      <div class="tile"><div class="k">Today</div><div class="v num" id="tToday">—</div><div class="s" id="tTodayS">8am yesterday → 8am today</div></div>
-      <div class="tile"><div class="k">Since 8am</div><div class="v num" id="tNow">—</div><div class="s" id="tNowS">counts toward tomorrow</div></div>
+      <div class="tile"><div class="k">Today</div><div class="v num" id="tToday">—</div><div class="s" id="tTodayS">since midnight</div></div>
       <div class="tile"><div class="k">Last 7 days</div><div class="v num" id="t7">—</div><div class="s" id="t7S"></div></div>
       <div class="tile"><div class="k">Last 30 days</div><div class="v num" id="t30">—</div><div class="s" id="t30S"></div></div>
       <div class="tile"><div class="k">All time</div><div class="v num" id="tAll">—</div><div class="s" id="tAllS"></div></div>
@@ -127,7 +126,7 @@
       <div class="chartHead">
         <div>
           <h3>Daily profit</h3>
-          <div class="sub" id="chartSub">Real money, per trading day (8am to 8am Central, dated by the day it ends)</div>
+          <div class="sub" id="chartSub">Real money, per day (midnight to midnight, Central time)</div>
         </div>
         <div class="spacer"></div>
         <div class="seg" id="unitSeg"><button data-u="bal">Balance</button><button data-u="$">$</button><button data-u="%">%</button></div>
@@ -141,7 +140,7 @@
         <div id="tip" class="hide"></div>
       </div>
       <div class="pan hide" id="pan"><span id="panFrom"></span><input type="range" id="panR" min="0" max="0" value="0" aria-label="Scroll through days"><span id="panTo"></span></div>
-      <div class="legend"><span id="lgBal"><span class="sw" style="background:#3d7bd9"></span>Balance</span><span><span class="sw" style="background:var(--up)"></span>Profit</span><span><span class="sw" style="background:var(--down)"></span>Loss</span><span id="lgLine" class="hide"><span class="sw" style="background:#e3c770;height:2px;vertical-align:3px"></span>Running total profit</span><span id="lgToday"><span class="sw" style="background:rgba(61,123,217,.45);outline:1px dashed #7d8899;outline-offset:-1px"></span>In progress (since 8am)</span></div>
+      <div class="legend"><span id="lgBal"><span class="sw" style="background:#3d7bd9"></span>Balance</span><span><span class="sw" style="background:var(--up)"></span>Profit</span><span><span class="sw" style="background:var(--down)"></span>Loss</span><span id="lgLine" class="hide"><span class="sw" style="background:#e3c770;height:2px;vertical-align:3px"></span>Running total profit</span><span id="lgToday"><span class="sw" style="background:rgba(61,123,217,.45);outline:1px dashed #7d8899;outline-offset:-1px"></span>Today so far</span></div>
     </section>
 
     <section class="card">
@@ -158,7 +157,7 @@
   <label class="field"><span>Show values in</span><select id="pUnit"><option value="bal">Balance, with each day's profit or loss on top</option><option value="$">Profit in dollars</option><option value="%">Profit as % of the day's starting balance</option></select></label>
   <label class="field"><span>Chart starts on (blank = first tracked day). An earlier date asks the bot to rebuild from its trade records.</span><input id="pFrom" type="date"></label>
   <label style="margin-bottom:8px"><input id="pLine" type="checkbox"> Running total line</label><br>
-  <label style="margin-bottom:14px"><input id="pToday" type="checkbox"> Show the in-progress bar (since 8am)</label>
+  <label style="margin-bottom:14px"><input id="pToday" type="checkbox"> Show today's bar while the day is in progress</label>
   <div class="row" style="justify-content:space-between"><button id="pReset" type="button">Defaults</button><span class="row"><button id="pCancel" type="button">Cancel</button><button class="primary" id="pSave" type="button">Save</button></span></div>
 </dialog>
 <div id="toast"></div>
@@ -186,9 +185,8 @@
     const cls = (x) => x > 0 ? 'up' : x < 0 ? 'down' : '';
     const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
     const ago = (ms) => { const s = Math.max(0, (Date.now() - ms) / 1000); return s < 90 ? Math.round(s) + ' s ago' : s < 5400 ? Math.round(s / 60) + ' min ago' : Math.round(s / 3600) + ' h ago'; };
-    // trading days run 8am to 8am Central and are labelled by the date they start
-    const pday = (ms) => new Date(ms + 16 * 3600000).toLocaleDateString('en-CA', { timeZone: 'America/Chicago' });   // trading day = 8am to 8am, dated by the day it ends
-    const calToday = () => new Date().toLocaleDateString('en-CA', { timeZone: 'America/Chicago' });
+    // days are calendar days, midnight to midnight Central time
+    const pday = (ms) => new Date(ms).toLocaleDateString('en-CA', { timeZone: 'America/Chicago' });   // calendar day, Central time
     const addDays = (d, k) => { const t = new Date(d + 'T12:00:00Z'); t.setUTCDate(t.getUTCDate() + k); return t.toISOString().slice(0, 10); };
     const dLabel = (d, o) => new Date(d + 'T12:00:00Z').toLocaleDateString('en-US', Object.assign({ timeZone: 'UTC' }, o || { month: 'short', day: 'numeric' }));
     function toast(msg, kind) { const t = $('toast'); t.textContent = msg; t.className = kind || ''; t.style.display = 'block'; clearTimeout(toast.h); toast.h = setTimeout(() => { t.style.display = 'none'; }, 3500); }
@@ -196,7 +194,7 @@
     let sess = null, st = null, led = null, pollTimer = null, fastUntil = 0, lastOk = 0, ledAsked = 0, refreshAsked = 0;
 
     // ---------------- ledger copy kept in this browser (so history loads instantly next time)
-    const ledKey = () => 'btcpw.profits.ledger2.' + sess.topic;   // v2: days dated by their end
+    const ledKey = () => 'btcpw.profits.ledger3.' + sess.topic;   // v3: calendar days
     function ledLoad() { led = ls.get(ledKey()) || { start: null, days: {} }; }
     function ledSave() { ls.set(ledKey(), led); }
     function setStart(start) {   // the bot decides where tracking starts (it can rebuild from an earlier date)
@@ -306,13 +304,9 @@
       $(id + 'S').textContent = rows.length ? `${sb > 0 ? pctS(pnl / sb * 100) + ' · ' : ''}${days.length ? `${up} of ${days.length} day${days.length === 1 ? '' : 's'} up` : 'no trades yet'}${label ? ' · ' + label : ''}` : '';
     }
     function renderTiles(S) {
-      const desc = (r) => `${r.pct != null ? pctS(r.pct) + ' · ' : ''}${r.n} trade${r.n === 1 ? '' : 's'}${r.n ? ', ' + r.w + ' won' : ''}`;
-      // Today = the session that ended at 8am today (includes last night); Since 8am = the session in progress
-      const td = S.find((r) => r.d === calToday()), now = S.find((r) => r.today);
-      $('tToday').textContent = td ? signed(td.pnl) : '—'; $('tToday').className = 'v num ' + cls(td && td.pnl);
-      $('tTodayS').textContent = td ? desc(td) + ' · 8am yesterday → 8am today' : '8am yesterday → 8am today';
-      $('tNow').textContent = now ? signed(now.pnl) : '—'; $('tNow').className = 'v num ' + cls(now && now.pnl);
-      $('tNowS').textContent = now ? desc(now) + ` · counts toward ${dLabel(now.d, { weekday: 'short' })}` : 'counts toward tomorrow';
+      const t = S.find((r) => r.today);
+      $('tToday').textContent = t ? signed(t.pnl) : '—'; $('tToday').className = 'v num ' + cls(t && t.pnl);
+      $('tTodayS').textContent = t ? `${t.pct != null ? pctS(t.pct) + ' · ' : ''}${t.n} trade${t.n === 1 ? '' : 's'}${t.n ? ', ' + t.w + ' won' : ''} since midnight` : 'since midnight';
       periodTile('t7', S.slice(-7)); periodTile('t30', S.slice(-30));
       periodTile('tAll', S, led.start ? 'since ' + dLabel(led.start) : '');
       const b = st && st.bal && st.bal.live;
@@ -347,7 +341,7 @@
       const hasData = BAL ? S.some((r) => r.sb != null) : S.some((r) => r.n > 0);
       $('empty').classList.toggle('hide', hasData);
       if (!hasData) $('empty').innerHTML = '<span></span>';
-      if (!hasData) $('empty').firstChild.textContent = led.start ? `Tracking since ${dLabel(led.start, { weekday: 'short', month: 'short', day: 'numeric' })}. One bar per trading day (8am to 8am Central, dated by the day it ends) once real trades settle.` : 'Waiting for the first results from your bot…';
+      if (!hasData) $('empty').firstChild.textContent = led.start ? `Tracking since ${dLabel(led.start, { weekday: 'short', month: 'short', day: 'numeric' })}. One bar per day (midnight to midnight, Central time) once real trades settle.` : 'Waiting for the first results from your bot…';
       // y scale: always includes $0, so a run of profitable days starts the axis at exactly $0
       let hi = 0, lo = 0;
       if (BAL) { for (const r of S) if (r.sb != null) hi = Math.max(hi, r.sb, r.sb + r.pnl); }   // balances: axis from $0 up
@@ -437,7 +431,7 @@
         c.fillText(t, Math.max(L + w / 2, x), H - 8); lastX = x + w / 2;
       });
       G = { S, L, pw, bw, T, ph, off, maxOff, total };
-      $('chartSub').textContent = `Real money, per trading day (8am to 8am Central, dated by the day it ends)${led.start ? ' · since ' + dLabel(led.start, { month: 'short', day: 'numeric', year: 'numeric' }) : ''}`;
+      $('chartSub').textContent = `Real money, per day (midnight to midnight, Central time)${led.start ? ' · since ' + dLabel(led.start, { month: 'short', day: 'numeric', year: 'numeric' }) : ''}`;
     }
     // tooltip
     function tipAt(clientX, clientY) {
@@ -446,8 +440,8 @@
       const i = Math.floor((x - G.L) / G.bw);
       if (i < 0 || i >= G.S.length) return hideTip();
       const r = G.S[i], tip = $('tip');
-      const range = `${dLabel(r.d, { weekday: 'short', month: 'short', day: 'numeric' })} · ${dLabel(addDays(r.d, -1), { weekday: 'short' })} 8am → ${dLabel(r.d, { weekday: 'short' })} 8am`;
-      tip.innerHTML = `<div class="muted">${esc(range)}${r.today ? ' · in progress' : ''}</div><b class="num ${cls(r.pnl)}">${esc(signed(r.pnl))}</b> <span class="num ${cls(r.pct)}">${esc(pctS(r.pct))}</span>${r.sb != null ? `<div class="num">${esc(money(r.sb))} → <b>${esc(money(r.sb + r.pnl))}</b></div>` : ''}<div class="muted">${r.n ? `${r.n} trade${r.n === 1 ? '' : 's'}, ${r.w} won` : 'no trades'}</div>`;
+      const range = dLabel(r.d, { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' });
+      tip.innerHTML = `<div class="muted">${esc(range)}${r.today ? ' · so far' : ''}</div><b class="num ${cls(r.pnl)}">${esc(signed(r.pnl))}</b> <span class="num ${cls(r.pct)}">${esc(pctS(r.pct))}</span>${r.sb != null ? `<div class="num">${esc(money(r.sb))} → <b>${esc(money(r.sb + r.pnl))}</b></div>` : ''}<div class="muted">${r.n ? `${r.n} trade${r.n === 1 ? '' : 's'}, ${r.w} won` : 'no trades'}</div>`;
       tip.classList.remove('hide');
       const tw = tip.offsetWidth, th = tip.offsetHeight, cx = G.L + i * G.bw + G.bw / 2;
       tip.style.left = Math.max(4, Math.min(b.width - tw - 4, cx - tw / 2)) + 'px';
