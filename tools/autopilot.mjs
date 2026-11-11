@@ -116,8 +116,9 @@ export function createAutopilot(o) {
     return S.days[d][mode];
   }
   // Profit ledger for the Profits page: real-money results per trading day running 8am to 8am Central, labelled by
-  // the date it starts. Tracking begins the day the ledger is first created. Row = [profit, start balance, trades, wins].
-  const pday = (ms) => dayOf(ms - 8 * 3600000);
+  // the date it ENDS (the overnight session that finished at 8am today is today's bar). Tracking begins the day the
+  // ledger is first created. Row = [profit, start balance, trades, wins].
+  const pday = (ms) => dayOf(ms + 16 * 3600000);
   const addDays = (d, k) => { const t = new Date(d + 'T12:00:00Z'); t.setUTCDate(t.getUTCDate() + k); return t.toISOString().slice(0, 10); };
   function ledgerDay(d) {
     const L = S.ledger.days;
@@ -137,8 +138,13 @@ export function createAutopilot(o) {
     const r = ledgerDay(pday(Date.now()));
     if (r[1] == null) r[1] = r2(S.liveBal.buyingPower - r[0]);
   }
+  if (S.ledger && S.ledger.lab !== 'end') {   // ledgers from before labels moved to the end date: shift every day by one
+    const days = {};
+    for (const [d, r] of Object.entries(S.ledger.days)) days[addDays(d, 1)] = r;
+    S.ledger = { start: addDays(S.ledger.start, 1), days, lab: 'end' };
+  }
   if (!S.ledger) {
-    S.ledger = { start: pday(Date.now()), days: {} };
+    S.ledger = { start: pday(Date.now()), days: {}, lab: 'end' };
     for (const t of S.trades) if (t.mode === 'live' && t.result != null && t.pnl != null) ledgerAdd(t);   // today's results so far
   }
 
@@ -874,7 +880,7 @@ export function createAutopilot(o) {
     }
     for (const d of Object.keys(days)) days[d][1] = old[d] && old[d][1] != null ? old[d][1] : firstBal[d] != null ? firstBal[d] : null;
     for (const [d, r] of Object.entries(old)) if (d >= from && !days[d] && (d < oldest || r[2] === 0)) days[d] = r;   // days the trade list no longer covers, and quiet days
-    S.ledger = { start: from, days };
+    S.ledger = { start: from, days, lab: 'end' };
     save(); ledPubAt = 0; publishLedger(); publishSoon(1500, true);
     return { ok: true, msg: from < oldest ? `Tracking from ${from}; trades before ${oldest} are no longer on the laptop, so those days show $0` : `Tracking from ${from}` };
   }
