@@ -29,8 +29,8 @@ say() { echo -e "\033[36m$*\033[0m"; }
 # 1) Node.js 22+
 if ! command -v node >/dev/null || [ "$(node -p 'process.versions.node.split(".")[0]')" -lt 22 ]; then
   say 'Installing Node.js 22...'
-  curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash - >/dev/null
-  sudo apt-get install -y nodejs >/dev/null
+  curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E DEBIAN_FRONTEND=noninteractive bash - >/dev/null 2>&1
+  sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq nodejs >/dev/null 2>&1
 fi
 NODE=$(command -v node); say "Node.js $($NODE --version) at $NODE"
 

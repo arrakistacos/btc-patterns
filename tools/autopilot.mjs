@@ -676,8 +676,10 @@ export function createAutopilot(o) {
     };
     const dead = (ev) => {
       if (US.ws !== ws) return;
-      try { ws.close(); } catch { /* already closed */ }
+      // forget this socket BEFORE closing it: closing can fire onerror/onclose again right away
       US.ws = null; US.up = false; US.slug = null; US.fails++;
+      ws.onopen = ws.onmessage = ws.onclose = ws.onerror = null;
+      try { ws.close(); } catch { /* already closed */ }
       US.retryAt = Date.now() + Math.min(600000, 5000 * 2 ** Math.min(US.fails, 7));
       if (US.fails === 1 || US.fails % 10 === 0) log(`US price stream closed${ev && ev.code ? ' (' + ev.code + ')' : ''}; polling until it reconnects`);
     };
