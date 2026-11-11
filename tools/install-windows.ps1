@@ -51,6 +51,13 @@ if ($Uninstall) {
   Say "Removed the scheduled task and stopped the bot. Files are still in $Dir (delete the folder if you like)." 'Green'
   exit 0
 }
+# The bot may run on a Raspberry Pi instead (install-pi.ps1). Two bots would place double trades.
+if (Test-Path (Join-Path $Dir 'pi-host.txt')) {
+  Say "Your bot runs on the Raspberry Pi ($((Get-Content (Join-Path $Dir 'pi-host.txt') -Raw).Trim())), so this laptop's bot stays off." 'Yellow'
+  Say 'To update the Pi bot:      irm https://raw.githubusercontent.com/arrakistacos/btc-patterns/main/tools/install-pi.ps1 -OutFile $env:TEMP\btc-pi.ps1; powershell -ExecutionPolicy Bypass -File $env:TEMP\btc-pi.ps1' 'Yellow'
+  Say 'To move it back here:      run that with -Back' 'Yellow'
+  exit 1
+}
 if (-not $Topic) { Say 'Please pass your ntfy topic:  -Topic btcpw-xxxxxxxx' 'Red'; exit 1 }
 if ($Topic -notmatch '^[A-Za-z0-9_-]{8,64}$') { Say 'Topic must be 8-64 letters, digits, - or _' 'Red'; exit 1 }
 if ($Topic -match '^(your|my)[-_]?(real[-_]?)?topic' -or $Topic -match 'topic[-_]?here') { Say "'$Topic' is the example from the instructions. Use the topic you subscribed to in the ntfy app on your phone." 'Red'; exit 1 }

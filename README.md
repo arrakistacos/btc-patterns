@@ -198,3 +198,17 @@ The **🔔 Alerts** button in the signal banner beeps, vibrates (Android) and sh
 - `vendor/` — TradingView Lightweight Charts v4.2.3 (Apache-2.0)
 
 Educational tool, not financial advice.
+
+### Running the bot on a Raspberry Pi (secrets stay on the laptop)
+
+`tools/install-pi.ps1`, run on the Windows laptop as administrator, moves the bot to a Raspberry Pi (64-bit Raspberry Pi OS / Debian 12):
+
+```
+irm https://raw.githubusercontent.com/arrakistacos/btc-patterns/main/tools/install-pi.ps1 -OutFile $env:TEMP\btc-pi.ps1; powershell -ExecutionPolicy Bypass -File $env:TEMP\btc-pi.ps1 -PiHost picactus@192.168.1.118
+```
+
+- It stops and disables the laptop bot (only one bot may trade), copies its state (trades, ledger, settings, scoreboard) to the Pi the first time, and runs `tools/pi-setup.sh` there: Node.js 22, the bot files in `~/btc-bot`, and a `btc-bot` systemd service that starts at boot and restarts if it stops.
+- The Pi never stores the Polymarket key or autopilot password. The service (`tools/pi-launcher.mjs`) starts **locked** and waits on a private unix socket (`/run/btc-bot`, mode 0700); the laptop sends the secrets from its `polymarket.env` over SSH (`tools/pi-unlock.mjs`), and they live only in the bot's memory (the service has swap and core dumps disabled and can only write its own folder). While locked it sends one "Pi bot is locked" alert (then every 6 hours).
+- The laptop gets a restricted SSH key (`~/.ssh/btc_pi_unlock`) that can only run `status`, `unlock` or `park`, and a scheduled task ("BTC Pattern Watch Pi unlock") that unlocks the Pi every 5 minutes if it has restarted, even when nobody is logged in.
+- `-Status` shows whether the Pi bot is running or locked, `-Unlock` unlocks it now, and `-Back` (as administrator) parks the Pi bot and turns the laptop bot back on. While the Pi runs the bot, `install-windows.ps1` refuses to start the laptop bot.
+- Pi log: `ssh picactus@192.168.1.118 tail -f btc-bot/signal-bot.log`; service: `sudo systemctl status btc-bot`.
