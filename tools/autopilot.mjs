@@ -115,6 +115,32 @@ export function createAutopilot(o) {
     while (keys.length > 30) delete S.days[keys.shift()];
     return S.days[d][mode];
   }
+  // Profit ledger for the Profits page: real-money results per trading day running 8am to 8am Central, labelled by
+  // the date it starts. Tracking begins the day the ledger is first created. Row = [profit, start balance, trades, wins].
+  const pday = (ms) => dayOf(ms - 8 * 3600000);
+  const addDays = (d, k) => { const t = new Date(d + 'T12:00:00Z'); t.setUTCDate(t.getUTCDate() + k); return t.toISOString().slice(0, 10); };
+  function ledgerDay(d) {
+    const L = S.ledger.days;
+    if (!L[d]) {
+      L[d] = [0, null, 0, 0];
+      const keys = Object.keys(L).sort(); while (keys.length > 2000) delete L[keys.shift()];
+    }
+    return L[d];
+  }
+  function ledgerAdd(t) {
+    const d = pday(t.ts); if (d < S.ledger.start) return;
+    const r = ledgerDay(d); r[0] = r2(r[0] + t.pnl); r[2]++; if (t.result) r[3]++;
+  }
+  function ledgerStartBal() {   // the day's starting balance: first balance seen that day, minus anything already won or lost
+    if (!S.liveBal) return;
+    if (S.trades.some((t) => t.mode === 'live' && t.result == null && (t.status === 'filled' || t.status === 'partial'))) return;   // money tied up in an open trade
+    const r = ledgerDay(pday(Date.now()));
+    if (r[1] == null) r[1] = r2(S.liveBal.buyingPower - r[0]);
+  }
+  if (!S.ledger) {
+    S.ledger = { start: pday(Date.now()), days: {} };
+    for (const t of S.trades) if (t.mode === 'live' && t.result != null && t.pnl != null) ledgerAdd(t);   // today's results so far
+  }
 
   // ------------------------------------------------------------ Polymarket US API
   let KEY = null; const KEY_ID = env.PM_KEY_ID || '';
@@ -154,6 +180,7 @@ export function createAutopilot(o) {
     const r = await api('GET', '/v1/account/balances');
     const b = (r.balances || [])[0] || {};
     S.liveBal = { buyingPower: r2(+b.buyingPower || 0), cash: r2(+b.currentBalance || 0), at: Date.now() };
+    ledgerStartBal();
     return S.liveBal;
   }
   const mcache = new Map();
@@ -341,6 +368,7 @@ export function createAutopilot(o) {
       st.pnl = r2(st.pnl + t.pnl); if (won) st.w++; else st.l++;
       const day = dayRec(t.mode, t.ts);
       day.pnl = r2(day.pnl + t.pnl); if (won) day.w++;
+      if (t.mode === 'live') ledgerAdd(t);
       if (t.mode === 'practice' && won) S.practice.balance = r2(S.practice.balance + t.qty);
       log(`AUTOPILOT ${t.mode} ${t.side} ${won ? 'WON' : 'LOST'} ${money(t.pnl)}`);
       if (S.notifyResults) push({ title: `${t.mode === 'live' ? '' : 'PRACTICE '}${won ? 'WON' : 'LOST'} ${money(t.pnl)}`, body: `${t.side} ${t.qty} @ ${cents(t.px)} · today ${money(day.pnl)}`, priority: won ? 2 : 3, tags: won ? 'white_check_mark' : 'x', click: o.site + 'autopilot.html' });
@@ -784,6 +812,8 @@ export function createAutopilot(o) {
       bal: { live: S.liveBal, practice: S.practice }, stats: S.stats, days, acks: acks.slice(-5),
       trades: S.trades.slice(-12).map(tr),
       late: { since: S.late.since, antic: anticView(), blockLosses: blockLosses(), capHit: capHit() ? 1 : 0, stats: S.late.stats, real: S.late.real || null, byPat: S.late.byPat || null, byFav: S.late.byFav || null, byBlock: lateByBlock(), trades: S.late.trades.slice(-6).map((t) => [t.ts, t.Ws, t.side, t.status, t.px || 0, t.quoted, Math.round(t.q * 100), t.result, t.pnl, t.left, t.msg || '', t.real ? 1 : 0, t.pat === 'against' ? (t.patSkip ? 2 : 1) : t.pat === 'with' ? 3 : 0, t.realSkip === 'underdog' ? 1 : t.realSkip === 'conf' ? 2 : t.realSkip === 'hours' ? 3 : t.realSkip === 'maxloss' ? 4 : 0, t.fav != null ? t.fav : (t.quoted >= 0.5 ? 1 : 0)]) },
+      led: (() => { const d = pday(Date.now()); return [S.ledger.start, d, ...ledgerDay(d)]; })(),
+      h: Object.assign({ u: US.up ? 1 : 0, a: S.liveBal ? Math.round((Date.now() - S.liveBal.at) / 1000) : null, k: KEY ? 1 : 0 }, o.health ? o.health() : {}),
       lag: { since: S.lagt.since, stats: S.lagt.stats, byGap: S.lagt.byGap, est: S.lagt.est, src: US.up ? 's' : 'p', trades: S.lagt.trades.slice(-4).map((t) => [t.ts, t.Ws, t.side, t.status, t.px || 0, t.seen, t.com, t.result, t.pnl, t.left, t.msg || '']) },
     };
     while (JSON.stringify(snap).length > 2900 && snap.trades.length > 3) snap.trades.shift();   // ntfy messages are capped at 4 KB
@@ -817,6 +847,20 @@ export function createAutopilot(o) {
     if (pubTimer && pubDue <= want && (pubUrgent || !urgent)) return;    // something sooner is already scheduled
     clearTimeout(pubTimer); pubDue = want; pubUrgent = !!urgent;
     pubTimer = setTimeout(() => { pubTimer = null; publish(null, pubUrgent); }, want - Date.now());
+  }
+  // Ledger history goes out on request (the Profits page asks when it has no copy yet), 100 days per message
+  let ledPubAt = 0;
+  function ledgerChunks() {
+    const rows = [], today = pday(Date.now());
+    for (let d = S.ledger.start; d <= today; d = addDays(d, 1)) rows.push(S.ledger.days[d] || [0, null, 0, 0]);
+    const N = 100, of = Math.ceil(rows.length / N), out = [];
+    for (let i = 0; i < rows.length; i += N) out.push({ v: 1, kind: 'ledger', ts: Date.now(), start: S.ledger.start, d0: addDays(S.ledger.start, i), i: out.length, of, rows: rows.slice(i, i + N) });
+    return out;
+  }
+  function publishLedger() {
+    if (Date.now() - ledPubAt < 5 * 60000) return;
+    ledPubAt = Date.now();
+    ledgerChunks().forEach((c, k) => setTimeout(() => publish(c, true), 2500 + k * 1500));
   }
   // Scoreboard goes out as its own message: when results changed (at most hourly), or every 6 hours anyway
   function publishScore(force) {
@@ -872,6 +916,7 @@ export function createAutopilot(o) {
         msg = `Practice reset to ${money(b)}`; break;
       }
       case 'refresh': if (S.mode === 'live' && KEY) await refreshLive().catch(() => {}); break;
+      case 'ledger': publishLedger(); break;
       case 'score': if (Date.now() - sbPubAt > 5 * 60000) { sbPubAt = Date.now(); sbChanged = false; setTimeout(() => publish(scoreboard(), true), 2500); } break;
       default: ok = false; msg = 'Unknown command';
     }
@@ -974,5 +1019,5 @@ export function createAutopilot(o) {
 
   function start() { listen(); publishSoon(5000, true); }
   process.on('exit', () => { sbSave(true); lagFlush(true); });
-  return { onSignal, observe, observeLate, settleLate, observeLag, settleLag, lagEstimate, lagFlush, tick, start, check, settle, sbSettle, scoreboard, publishScore, minModel, minMarket, target, state: () => S, hasKey: () => !!KEY, flush: publish };
+  return { ledgerChunks, onSignal, observe, observeLate, settleLate, observeLag, settleLag, lagEstimate, lagFlush, tick, start, check, settle, sbSettle, scoreboard, publishScore, minModel, minMarket, target, state: () => S, hasKey: () => !!KEY, flush: publish };
 }

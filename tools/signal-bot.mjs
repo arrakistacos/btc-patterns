@@ -167,7 +167,9 @@ if (!DRY && !CHECK_AP) {
 }
 
 // ---------------------------------------------------------------- autopilot
-const AP = createAutopilot({ dir: ROOT, log, push, budget, Signal, APC, topic: NTFY_TOPIC, ntfyServer: NTFY_SERVER, ntfyToken: NTFY_TOKEN, site: SITE, tzName: TZ_NAME, defMinModel: MIN_MODEL, defMinMarket: MIN_MARKET, defTarget: TARGET });
+// feed health for the Profits page: seconds since the last Bitcoin price and Polymarket odds, and whether Coinbase's live feed is up
+const health = () => ({ c: lastTrade ? Math.round(nowS() - lastTrade) : null, w: nowS() - lastCbMsg <= 10 ? 1 : 0, p: pm.lastMsg ? Math.round(nowS() - pm.lastMsg) : null });
+const AP = createAutopilot({ health, dir: ROOT, log, push, budget, Signal, APC, topic: NTFY_TOPIC, ntfyServer: NTFY_SERVER, ntfyToken: NTFY_TOKEN, site: SITE, tzName: TZ_NAME, defMinModel: MIN_MODEL, defMinMarket: MIN_MARKET, defTarget: TARGET });
 if (CHECK_AP) {
   const r = await AP.check(Math.floor(Date.now() / 1000 / 300) * 300);
   console.log(JSON.stringify(r, null, 2));

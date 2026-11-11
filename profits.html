@@ -1,0 +1,502 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>BTC Profits</title>
+<meta name="description" content="Daily real-money profit from the BTC Pattern Watch autopilot, per 8am-to-8am Central trading day, with live market connection health.">
+<meta name="theme-color" content="#0b0e14">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%230b0e14'/%3E%3Crect x='6' y='16' width='4' height='10' rx='1' fill='%2316c784'/%3E%3Crect x='14' y='10' width='4' height='16' rx='1' fill='%2316c784'/%3E%3Crect x='22' y='19' width='4' height='7' rx='1' fill='%23ea3943'/%3E%3C/svg%3E">
+<style>
+  :root {
+    --bg: #0b0e14; --panel: #11151d; --panel2: #161b25; --line: #222a37;
+    --text: #d6dde8; --muted: #7d8899; --up: #16c784; --down: #ea3943; --amber: #f5b041; --accent: #5aa9ff;
+    --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  a { color: var(--accent); }
+  .num { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+  .up { color: var(--up); } .down { color: var(--down); } .muted { color: var(--muted); } .amber { color: var(--amber); }
+  .hide { display: none !important; }
+  header { display: flex; align-items: center; gap: 14px; padding: 10px 16px; border-bottom: 1px solid var(--line); background: var(--panel); position: sticky; top: 0; z-index: 5; }
+  .brand { font-weight: 700; letter-spacing: .02em; } .brand small { color: var(--muted); font-weight: 500; margin-left: 6px; }
+  .spacer { flex: 1; }
+  header a { white-space: nowrap; font-size: 13px; }
+  main { max-width: 1080px; margin: 0 auto; padding: 16px; display: flex; flex-direction: column; gap: 14px; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px; }
+  .card h3 { margin: 0; font-size: 12px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); font-weight: 600; }
+  button, select, input { background: var(--panel2); color: var(--text); border: 1px solid var(--line); border-radius: 8px; padding: 8px 11px; font: inherit; }
+  button { cursor: pointer; font-weight: 600; }
+  button:hover { border-color: #33405a; }
+  button:disabled { opacity: .5; cursor: default; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #06101f; }
+  button.icon { padding: 6px 10px; font-size: 13px; }
+  label { display: inline-flex; align-items: center; gap: 8px; }
+  .row { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+  .field { display: flex; flex-direction: column; align-items: flex-start; gap: 5px; }
+  .field > span { font-size: 12px; color: var(--muted); }
+  .hint { font-size: 12px; color: var(--muted); }
+
+  #login { max-width: 440px; margin: 40px auto; }
+  #login .field { align-items: stretch; } #login .field input { width: 100%; }
+  #loginErr { color: var(--down); min-height: 1.4em; font-size: 13px; }
+
+  /* summary */
+  .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; }
+  .tile { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px; min-width: 0; }
+  .tile .k { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .07em; }
+  .tile .v { font-size: 22px; font-weight: 700; margin-top: 2px; white-space: nowrap; }
+  .tile .s { font-size: 12px; color: var(--muted); margin-top: 1px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+  /* chart */
+  #chartCard { display: flex; flex-direction: column; gap: 10px; }
+  .chartHead { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+  .chartHead .sub { font-size: 12px; color: var(--muted); }
+  .seg { display: inline-flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+  .seg button { border: 0; border-radius: 0; padding: 6px 12px; background: var(--panel2); color: var(--muted); font-size: 13px; }
+  .seg button.on { background: #24324a; color: var(--text); }
+  .plot { position: relative; height: 360px; touch-action: pan-y; }
+  .plot canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+  #tip { position: absolute; pointer-events: none; background: #0e131c; border: 1px solid #2c3647; border-radius: 9px; padding: 8px 10px; font-size: 12px; line-height: 1.5; box-shadow: 0 6px 24px rgba(0,0,0,.45); white-space: nowrap; z-index: 2; }
+  #tip b { font-size: 14px; }
+  #empty { position: absolute; inset: 0 0 26px 64px; display: flex; align-items: center; justify-content: center; text-align: center; color: var(--muted); font-size: 13px; pointer-events: none; padding: 0 20px; }
+  #empty span { background: var(--panel); padding: 8px 12px; border-radius: 9px; max-width: 420px; }
+  .pan { display: flex; align-items: center; gap: 10px; font-size: 12px; color: var(--muted); }
+  .pan input[type=range] { flex: 1; padding: 0; accent-color: var(--accent); background: transparent; border: 0; }
+  .legend { display: flex; flex-wrap: wrap; gap: 14px; font-size: 12px; color: var(--muted); }
+  .sw { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 6px; vertical-align: -1px; }
+  /* full screen: the browser's own, or a fixed overlay where that isn't available (iPhone) */
+  #chartCard:fullscreen, #chartCard.fs { position: fixed; inset: 0; z-index: 50; border-radius: 0; border: 0; padding: max(14px, env(safe-area-inset-top)) max(16px, env(safe-area-inset-right)) max(14px, env(safe-area-inset-bottom)) max(16px, env(safe-area-inset-left)); background: var(--bg); }
+  #chartCard:fullscreen .plot, #chartCard.fs .plot { flex: 1; height: auto; min-height: 200px; }
+
+  /* health */
+  .health { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 8px 18px; margin-top: 10px; }
+  .hrow { display: flex; gap: 10px; align-items: baseline; padding: 6px 0; border-bottom: 1px solid #1a212d; min-width: 0; }
+  .dot { width: 9px; height: 9px; border-radius: 50%; flex: none; transform: translateY(-1px); background: var(--muted); }
+  .dot.g { background: var(--up); box-shadow: 0 0 8px rgba(22,199,132,.6); } .dot.a { background: var(--amber); } .dot.r { background: var(--down); box-shadow: 0 0 8px rgba(234,57,67,.6); }
+  .hrow .n { font-weight: 600; } .hrow .d { font-size: 12px; color: var(--muted); }
+
+  dialog { background: var(--panel); color: var(--text); border: 1px solid var(--line); border-radius: 12px; max-width: 420px; width: calc(100% - 32px); }
+  dialog::backdrop { background: rgba(0,0,0,.6); }
+  dialog .field { margin-bottom: 12px; } dialog .field input, dialog .field select { width: 100%; }
+  #toast { position: fixed; left: 50%; bottom: 20px; transform: translateX(-50%); background: #1d2533; border: 1px solid var(--line); padding: 9px 14px; border-radius: 9px; display: none; z-index: 60; font-size: 13px; }
+  #toast.err { border-color: var(--down); }
+  @media (max-width: 560px) { .plot { height: 280px; } .tile .v { font-size: 19px; } header { gap: 10px; padding: 10px 12px; } .brand { font-size: 13px; } .brand small { display: none; } }
+</style>
+</head>
+<body>
+<header>
+  <div class="brand">BTC Profits <small>Pattern Watch</small></div>
+  <div class="spacer"></div>
+  <a href="autopilot.html">Autopilot ›</a>
+  <a href="./">Chart ›</a>
+  <button id="logout" class="hide icon">Log out</button>
+</header>
+
+<main>
+  <section id="login" class="card">
+    <h3 style="margin-bottom:10px">Log in to see your profits</h3>
+    <form id="loginForm" class="field" style="gap:12px">
+      <label class="field"><span>ntfy topic (the same one your phone alerts use)</span><input id="inTopic" autocomplete="username" required pattern="[A-Za-z0-9_\-]{8,64}" spellcheck="false" autocapitalize="off"></label>
+      <label class="field"><span>Autopilot password</span><input id="inPass" type="password" autocomplete="current-password" required></label>
+      <label><input id="inRemember" type="checkbox" checked> Stay logged in on this device</label>
+      <details><summary class="hint">Advanced</summary><label class="field" style="margin-top:8px"><span>ntfy server</span><input id="inServer" value="https://ntfy.sh" spellcheck="false"></label></details>
+      <button class="primary" id="loginBtn" type="submit">Log in</button>
+      <div id="loginErr"></div>
+    </form>
+    <p class="hint">Same login as the autopilot page. This page only reads encrypted results from your bot.</p>
+  </section>
+
+  <section id="dash" class="hide" style="display:flex;flex-direction:column;gap:14px">
+    <div class="tiles">
+      <div class="tile"><div class="k">Today</div><div class="v num" id="tToday">—</div><div class="s" id="tTodayS">since 8am</div></div>
+      <div class="tile"><div class="k">Last 7 days</div><div class="v num" id="t7">—</div><div class="s" id="t7S"></div></div>
+      <div class="tile"><div class="k">Last 30 days</div><div class="v num" id="t30">—</div><div class="s" id="t30S"></div></div>
+      <div class="tile"><div class="k">All time</div><div class="v num" id="tAll">—</div><div class="s" id="tAllS"></div></div>
+      <div class="tile"><div class="k">Balance</div><div class="v num" id="tBal">—</div><div class="s" id="tBalS">Polymarket US</div></div>
+    </div>
+
+    <section class="card" id="chartCard">
+      <div class="chartHead">
+        <div>
+          <h3>Daily profit</h3>
+          <div class="sub" id="chartSub">Real money, per trading day (8am to 8am Central)</div>
+        </div>
+        <div class="spacer"></div>
+        <div class="seg" id="unitSeg"><button data-u="$">$</button><button data-u="%">%</button></div>
+        <button class="icon" id="setBtn" title="Chart settings" aria-label="Chart settings">⚙︎</button>
+        <button class="icon" id="fsBtn" title="Full screen" aria-label="Full screen">⛶</button>
+      </div>
+      <div class="plot" id="plot">
+        <canvas id="cv"></canvas>
+        <div id="empty" class="hide"></div>
+        <div id="tip" class="hide"></div>
+      </div>
+      <div class="pan hide" id="pan"><span id="panFrom"></span><input type="range" id="panR" min="0" max="0" value="0" aria-label="Scroll through days"><span id="panTo"></span></div>
+      <div class="legend"><span><span class="sw" style="background:var(--up)"></span>Profit</span><span><span class="sw" style="background:var(--down)"></span>Loss</span><span id="lgLine" class="hide"><span class="sw" style="background:var(--accent);height:2px;vertical-align:3px"></span>Running total</span><span id="lgToday"><span class="sw" style="background:repeating-linear-gradient(45deg,#8a94a6 0 2px,transparent 2px 4px)"></span>Today so far</span></div>
+    </section>
+
+    <section class="card">
+      <div class="row"><h3>Market connections</h3><div class="spacer"></div><span class="hint" id="hAsOf"></span><button class="icon" id="hRefresh">Refresh</button></div>
+      <div class="health" id="health"></div>
+      <p class="hint" id="hNote" style="margin:10px 0 0"></p>
+    </section>
+  </section>
+</main>
+
+<dialog id="setDlg">
+  <h3 style="margin:0 0 14px;font-size:13px">Chart settings</h3>
+  <label class="field"><span>Days on screen before the chart starts scrolling</span><input id="pWin" type="number" min="7" max="2000" step="1"></label>
+  <label class="field"><span>Show values in</span><select id="pUnit"><option value="$">Dollars</option><option value="%">Percent of the day's starting balance</option></select></label>
+  <label class="field"><span>Start the chart on (blank = first tracked day)</span><input id="pFrom" type="date"></label>
+  <label style="margin-bottom:8px"><input id="pLine" type="checkbox"> Running total line</label><br>
+  <label style="margin-bottom:14px"><input id="pToday" type="checkbox"> Show today's bar while the day is in progress</label>
+  <div class="row" style="justify-content:space-between"><button id="pReset" type="button">Defaults</button><span class="row"><button id="pCancel" type="button">Cancel</button><button class="primary" id="pSave" type="button">Save</button></span></div>
+</dialog>
+<div id="toast"></div>
+
+<script>
+  (function () {
+    var s = document.createElement('script');
+    s.src = 'apcrypto.js?v=' + Math.floor(Date.now() / 60000).toString(36);
+    s.onload = function () { window.startProfitsPage(); };
+    document.body.appendChild(s);
+  })();
+
+  window.startProfitsPage = function () {
+    'use strict';
+    const $ = (id) => document.getElementById(id);
+    const LS = 'btcpw.autopilot';                 // shared with the autopilot page: log in once
+    const PREF = 'btcpw.profits.prefs';
+    const DEF = { win: 500, unit: '$', from: '', line: false, today: true };
+    const ls = { get(k) { try { return JSON.parse(localStorage.getItem(k) || 'null'); } catch (e) { return null; } }, set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) {} }, del(k) { try { localStorage.removeItem(k); } catch (e) {} } };
+    let prefs = Object.assign({}, DEF, ls.get(PREF) || {});
+    const money = (x, d = 2) => x == null || !isFinite(x) ? '—' : (x < 0 ? '−$' : '$') + Math.abs(x).toLocaleString('en-US', { minimumFractionDigits: d, maximumFractionDigits: d });
+    const signed = (x) => x == null || !isFinite(x) ? '—' : (x > 0 ? '+' : '') + money(x);
+    const pctS = (x) => x == null || !isFinite(x) ? '—' : (x > 0 ? '+' : x < 0 ? '−' : '') + Math.abs(x).toLocaleString('en-US', { maximumFractionDigits: Math.abs(x) >= 100 ? 0 : 1, minimumFractionDigits: Math.abs(x) >= 100 ? 0 : 1 }) + '%';
+    const cls = (x) => x > 0 ? 'up' : x < 0 ? 'down' : '';
+    const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+    const ago = (ms) => { const s = Math.max(0, (Date.now() - ms) / 1000); return s < 90 ? Math.round(s) + ' s ago' : s < 5400 ? Math.round(s / 60) + ' min ago' : Math.round(s / 3600) + ' h ago'; };
+    // trading days run 8am to 8am Central and are labelled by the date they start
+    const pday = (ms) => new Date(ms - 8 * 3600000).toLocaleDateString('en-CA', { timeZone: 'America/Chicago' });
+    const addDays = (d, k) => { const t = new Date(d + 'T12:00:00Z'); t.setUTCDate(t.getUTCDate() + k); return t.toISOString().slice(0, 10); };
+    const dLabel = (d, o) => new Date(d + 'T12:00:00Z').toLocaleDateString('en-US', Object.assign({ timeZone: 'UTC' }, o || { month: 'short', day: 'numeric' }));
+    function toast(msg, kind) { const t = $('toast'); t.textContent = msg; t.className = kind || ''; t.style.display = 'block'; clearTimeout(toast.h); toast.h = setTimeout(() => { t.style.display = 'none'; }, 3500); }
+
+    let sess = null, st = null, led = null, pollTimer = null, fastUntil = 0, lastOk = 0, ledAsked = 0, refreshAsked = 0;
+
+    // ---------------- ledger copy kept in this browser (so history loads instantly next time)
+    const ledKey = () => 'btcpw.profits.ledger.' + sess.topic;
+    function ledLoad() { led = ls.get(ledKey()) || { start: null, days: {} }; }
+    function ledSave() { ls.set(ledKey(), led); }
+    function mergeChunk(m) {
+      if (!led.start || m.start < led.start) led.start = m.start;
+      m.rows.forEach((r, k) => { led.days[addDays(m.d0, k)] = r; });
+    }
+    function mergeStatus(s) {
+      if (!s || !s.led) return;
+      const [start, d, pnl, sb, n, w] = s.led;
+      if (!led.start || start < led.start) led.start = start;
+      led.days[d] = [pnl, sb, n, w];
+    }
+    function missingHistory() {
+      if (!led.start) return false;
+      const today = pday(Date.now());
+      for (let d = led.start; d < today; d = addDays(d, 1)) if (!led.days[d]) return true;
+      return false;
+    }
+
+    // ---------------- talking to the bot (through ntfy, encrypted)
+    async function openSession(server, topic, bits) {
+      sess = { server: server.replace(/\/$/, ''), topic, K: await APCrypto.keysFromBits(bits), T: APCrypto.topics(topic) };
+      ledLoad();
+    }
+    async function fetchMsgs(since) {
+      const r = await fetch(`${sess.server}/${sess.T.status}/json?poll=1&since=${since || '12h'}`, { cache: 'no-store' });
+      if (!r.ok) throw new Error('ntfy HTTP ' + r.status);
+      lastOk = Date.now();
+      const lines = (await r.text()).trim().split('\n').filter(Boolean).map((l) => { try { return JSON.parse(l); } catch (e) { return null; } }).filter((m) => m && m.event === 'message');
+      let s = null, chunks = 0;
+      for (const l of lines) {
+        const m = await APCrypto.open(sess.K, l.message);
+        if (!m) continue;
+        if (m.kind === 'ledger') { mergeChunk(m); chunks++; }
+        else if (!m.kind && (!s || m.ts > s.ts)) s = m;
+      }
+      if (s && (!st || s.ts >= st.ts)) { st = s; mergeStatus(s); }
+      if (chunks || s) ledSave();
+      return { s, sawAny: lines.length > 0 };
+    }
+    async function send(cmd, args) {
+      if (!sess) return;
+      try {
+        const c = await APCrypto.signCommand(sess.K, cmd, args || {});
+        const r = await fetch(`${sess.server}/${sess.T.command}`, { method: 'POST', body: c.text });
+        if (!r.ok) throw new Error('ntfy HTTP ' + r.status);
+        fastUntil = Date.now() + 25000; schedule();
+      } catch (e) { toast('Could not reach the bot: ' + e.message, 'err'); }
+    }
+    function askRefresh(force) { if (!st || (!force && Date.now() - st.ts < 90000) || Date.now() - refreshAsked < 60000) return false; refreshAsked = Date.now(); send('refresh'); return true; }
+    function askLedger() { if (Date.now() - ledAsked < 5 * 60000) return; ledAsked = Date.now(); send('ledger'); }
+    function schedule() { clearTimeout(pollTimer); pollTimer = setTimeout(poll, Date.now() < fastUntil ? 2000 : 15000); }
+    async function poll() {
+      if (!sess) return;
+      try { await fetchMsgs(st ? Math.floor(st.ts / 1000) - 5 : '12h'); } catch (e) { /* offline for a moment */ }
+      render(); schedule();
+    }
+    document.addEventListener('visibilitychange', () => { if (!document.hidden && sess) { askRefresh(); poll(); } });
+
+    // ---------------- login (shared with the autopilot page)
+    $('loginForm').addEventListener('submit', async (ev) => {
+      ev.preventDefault();
+      const topic = $('inTopic').value.trim(), pass = $('inPass').value, server = $('inServer').value.trim() || 'https://ntfy.sh';
+      $('loginErr').textContent = ''; $('loginBtn').disabled = true; $('loginBtn').textContent = 'Unlocking…';
+      try {
+        const bits = await APCrypto.deriveBits(pass, topic);
+        await openSession(server, topic, bits);
+        const { s, sawAny } = await fetchMsgs('12h');
+        if (!s) { sess = null; $('loginErr').textContent = sawAny ? 'Wrong password for this topic.' : 'No word from the bot on this topic in the last 12 hours. Is the laptop on?'; return; }
+        if ($('inRemember').checked) ls.set(LS, { server, topic, bits: APCrypto.b64u(bits) }); else ls.del(LS);
+        $('inPass').value = ''; showDash();
+      } catch (e) { $('loginErr').textContent = 'Could not connect: ' + e.message; sess = null; }
+      finally { $('loginBtn').disabled = false; $('loginBtn').textContent = 'Log in'; }
+    });
+    $('logout').onclick = () => { ls.del(LS); sess = null; st = null; clearTimeout(pollTimer); $('dash').classList.add('hide'); $('logout').classList.add('hide'); $('login').classList.remove('hide'); };
+    function showDash() {
+      $('login').classList.add('hide'); $('dash').classList.remove('hide'); $('logout').classList.remove('hide');
+      render(); schedule(); askRefresh();
+      if (missingHistory()) askLedger();
+    }
+
+    // ---------------- series
+    function series() {
+      const today = pday(Date.now());
+      if (!led.start) return [];
+      let from = led.start;
+      if (prefs.from && prefs.from > from && prefs.from <= today) from = prefs.from;
+      const out = []; let prevEnd = null;
+      for (let d = led.start; d <= today; d = addDays(d, 1)) {
+        const r = led.days[d] || [0, null, 0, 0];
+        let sb = r[1] != null ? r[1] : prevEnd;
+        const pct = sb > 0 ? r[0] / sb * 100 : null;
+        if (sb != null) prevEnd = sb + r[0];
+        if (d >= from) out.push({ d, pnl: r[0], sb, pct, n: r[2], w: r[3], today: d === today });
+      }
+      return out;
+    }
+    function periodTile(id, rows, label) {
+      const pnl = rows.reduce((a, r) => a + r.pnl, 0), sb = rows.length ? rows[0].sb : null;
+      $(id).textContent = rows.length ? signed(pnl) : '—'; $(id).className = 'v num ' + cls(pnl);
+      const days = rows.filter((r) => r.n > 0), up = days.filter((r) => r.pnl > 0).length;
+      $(id + 'S').textContent = rows.length ? `${sb > 0 ? pctS(pnl / sb * 100) + ' · ' : ''}${days.length ? `${up} of ${days.length} days up` : 'no trades yet'}${label ? ' · ' + label : ''}` : '';
+    }
+    function renderTiles(S) {
+      const t = S.length ? S[S.length - 1] : null;
+      $('tToday').textContent = t ? signed(t.pnl) : '—'; $('tToday').className = 'v num ' + cls(t && t.pnl);
+      $('tTodayS').textContent = t ? `${t.pct != null ? pctS(t.pct) + ' · ' : ''}${t.n} trade${t.n === 1 ? '' : 's'}${t.n ? ', ' + t.w + ' won' : ''} since 8am` : 'since 8am';
+      periodTile('t7', S.slice(-7)); periodTile('t30', S.slice(-30));
+      periodTile('tAll', S, led.start ? 'since ' + dLabel(led.start) : '');
+      const b = st && st.bal && st.bal.live;
+      $('tBal').textContent = b ? money(b.buyingPower) : '—';
+      $('tBalS').textContent = st && st.ap && st.ap.mode !== 'live' ? 'autopilot is in practice mode' : 'Polymarket US buying power';
+    }
+
+    // ---------------- chart (canvas)
+    const cv = $('cv'), plot = $('plot');
+    let G = null, view = { off: null };     // geometry of the last draw, and scroll position (null = follow the newest day)
+    const niceStep = (x) => { if (!(x > 0)) return 1; const e = Math.pow(10, Math.floor(Math.log10(x))), f = x / e; return (f <= 1 ? 1 : f <= 2 ? 2 : f <= 2.5 ? 2.5 : f <= 5 ? 5 : 10) * e; };
+    const axisFmt = (v, unit, step) => {
+      const dec = step % 1 && v % 1 ? (step < 1 ? 2 : 1) : 0;
+      if (unit === '%') return (v > 0 ? '+' : v < 0 ? '−' : '') + Math.abs(v).toFixed(Math.min(dec, 1)) + '%';
+      const a = Math.abs(v), s = v < 0 ? '−$' : '$';
+      return a >= 10000 ? s + (a / 1000).toFixed(a % 1000 ? 1 : 0) + 'k' : a >= 1000 ? s + a.toLocaleString('en-US', { maximumFractionDigits: 0 }) : s + a.toFixed(dec);
+    };
+    function draw() {
+      const all = series().filter((r) => prefs.today || !r.today);
+      const total = all.length, win = Math.max(7, Math.min(2000, prefs.win | 0 || 500));
+      const maxOff = Math.max(0, total - win);
+      const off = view.off == null || view.off > maxOff ? maxOff : view.off;
+      const S = all.slice(off, off + win);
+      // scroll bar once there are more days than fit
+      $('pan').classList.toggle('hide', total <= win);
+      if (total > win) { const r = $('panR'); r.max = maxOff; r.value = off; $('panFrom').textContent = dLabel(S[0].d); $('panTo').textContent = dLabel(S[S.length - 1].d); }
+      $('lgLine').classList.toggle('hide', !prefs.line); $('lgToday').classList.toggle('hide', !prefs.today);
+      const dpr = window.devicePixelRatio || 1, W = plot.clientWidth, H = plot.clientHeight;
+      cv.width = Math.round(W * dpr); cv.height = Math.round(H * dpr);
+      const c = cv.getContext('2d'); c.setTransform(dpr, 0, 0, dpr, 0, 0); c.clearRect(0, 0, W, H);
+      const unit = prefs.unit, val = (r) => unit === '%' ? (r.pct == null ? 0 : r.pct) : r.pnl;
+      $('empty').classList.toggle('hide', S.some((r) => r.n > 0));
+      if (!S.some((r) => r.n > 0)) $('empty').innerHTML = '<span></span>';
+      if (!S.some((r) => r.n > 0)) $('empty').firstChild.textContent = led.start ? `Tracking since ${dLabel(led.start, { weekday: 'short', month: 'short', day: 'numeric' })}. One bar per trading day (8am to 8am Central) once real trades settle.` : 'Waiting for the first results from your bot…';
+      // y scale: always includes $0, so a run of profitable days starts the axis at exactly $0
+      let hi = 0, lo = 0; for (const r of S) { hi = Math.max(hi, val(r)); lo = Math.min(lo, val(r)); }
+      if (hi === 0 && lo === 0) hi = unit === '%' ? 5 : 10;
+      const step = niceStep((hi - lo) / 4.5), top = Math.ceil(hi / step) * step, bot = Math.floor(lo / step) * step;
+      c.font = '11px system-ui, -apple-system, Segoe UI, Roboto, sans-serif';
+      let labW = 0; for (let v = bot; v <= top + step / 2; v += step) labW = Math.max(labW, c.measureText(axisFmt(v, unit, step)).width);
+      // running total on its own scale at the right
+      let cum = null, cHi = 0, cLo = 0, cStep = 1, cTop = 0, cBot = 0, rW = 0;
+      if (prefs.line && S.length) {
+        let acc = all.slice(0, off).reduce((a, r) => a + (unit === '%' ? 0 : r.pnl), 0); cum = [];
+        let comp = 1;
+        for (const r of all.slice(0, off)) if (unit === '%' && r.pct != null) comp *= 1 + r.pct / 100;
+        for (const r of S) { if (unit === '%') { if (r.pct != null) comp *= 1 + r.pct / 100; cum.push((comp - 1) * 100); } else { acc += r.pnl; cum.push(acc); } }
+        for (const v of cum) { cHi = Math.max(cHi, v); cLo = Math.min(cLo, v); }
+        if (cHi === 0 && cLo === 0) cHi = 1;
+        cStep = niceStep((cHi - cLo) / 4.5); cTop = Math.ceil(cHi / cStep) * cStep; cBot = Math.floor(cLo / cStep) * cStep;
+        for (let v = cBot; v <= cTop + cStep / 2; v += cStep) rW = Math.max(rW, c.measureText(axisFmt(v, unit, cStep)).width);
+      }
+      const L = Math.ceil(labW) + 14, R = cum ? Math.ceil(rW) + 14 : 8, T = 10, B = 26;
+      const pw = Math.max(10, W - L - R), ph = Math.max(10, H - T - B);
+      const Y = (v) => T + (top - v) / (top - bot) * ph;
+      // grid + left axis
+      c.textAlign = 'right'; c.textBaseline = 'middle';
+      for (let v = bot; v <= top + step / 2; v += step) {
+        const y = Math.round(Y(v)) + .5;
+        c.strokeStyle = Math.abs(v) < step / 1e6 ? '#3a465a' : '#1b2230'; c.lineWidth = 1;
+        c.beginPath(); c.moveTo(L, y); c.lineTo(L + pw, y); c.stroke();
+        c.fillStyle = '#7d8899'; c.fillText(axisFmt(Math.abs(v) < step / 1e6 ? 0 : v, unit, step), L - 8, y);
+      }
+      // bars: they get thinner as days are added, up to the window size, then the chart scrolls
+      const slots = Math.max(S.length, 10), bw = pw / slots;
+      const bar = bw >= 7 ? bw * 0.72 : bw >= 3 ? bw * 0.84 : Math.max(1, bw);
+      const y0 = Y(0);
+      S.forEach((r, i) => {
+        const v = val(r); if (!v) return;
+        const x = L + i * bw + (bw - bar) / 2, y = Y(v), h = Math.max(1, Math.abs(y - y0));
+        const yt = v > 0 ? y0 - h : y0, col = v > 0 ? '#16c784' : '#ea3943';
+        c.globalAlpha = r.today ? 0.45 : 1;
+        c.fillStyle = col;
+        const rad = Math.min(3, bar / 3, h / 2);
+        c.beginPath();
+        if (rad >= 1 && c.roundRect) c.roundRect(x, yt, bar, h, v > 0 ? [rad, rad, 0, 0] : [0, 0, rad, rad]); else c.rect(x, yt, bar, h);
+        c.fill();
+        if (r.today) { c.globalAlpha = 1; c.strokeStyle = col; c.setLineDash([3, 2]); c.lineWidth = 1; c.strokeRect(x + .5, yt + .5, bar - 1, h - 1); c.setLineDash([]); }
+        c.globalAlpha = 1;
+      });
+      // running total line
+      if (cum) {
+        const CY = (v) => T + (cTop - v) / (cTop - cBot) * ph;
+        c.textAlign = 'left';
+        for (let v = cBot; v <= cTop + cStep / 2; v += cStep) { c.fillStyle = 'rgba(90,169,255,.75)'; c.fillText(axisFmt(Math.abs(v) < cStep / 1e6 ? 0 : v, unit, cStep), L + pw + 6, CY(v)); }
+        c.strokeStyle = '#5aa9ff'; c.lineWidth = 1.75; c.lineJoin = 'round'; c.beginPath();
+        cum.forEach((v, i) => { const x = L + i * bw + bw / 2, y = CY(v); if (i) c.lineTo(x, y); else c.moveTo(x, y); });
+        c.stroke();
+      }
+      // date labels, spaced so they never collide
+      c.fillStyle = '#7d8899'; c.textAlign = 'center'; c.textBaseline = 'alphabetic';
+      const span = S.length ? (new Date(S[S.length - 1].d) - new Date(S[0].d)) / 86400000 : 0;
+      const fmt = span > 300 ? { month: 'short', year: '2-digit' } : { month: 'short', day: 'numeric' };
+      const every = Math.max(1, Math.ceil(64 / bw));
+      let lastX = -1e9;
+      S.forEach((r, i) => {
+        if ((S.length - 1 - i) % every) return;
+        const x = L + i * bw + bw / 2, t = dLabel(r.d, fmt), w = c.measureText(t).width;
+        if (x - w / 2 < lastX + 10 || x + w / 2 > W) return;
+        c.fillText(t, Math.max(L + w / 2, x), H - 8); lastX = x + w / 2;
+      });
+      G = { S, L, pw, bw, T, ph, off, maxOff, total };
+      $('chartSub').textContent = `Real money, per trading day (8am to 8am Central)${led.start ? ' · since ' + dLabel(led.start, { month: 'short', day: 'numeric', year: 'numeric' }) : ''}`;
+    }
+    // tooltip
+    function tipAt(clientX, clientY) {
+      if (!G || !G.S.length) return hideTip();
+      const b = plot.getBoundingClientRect(), x = clientX - b.left;
+      const i = Math.floor((x - G.L) / G.bw);
+      if (i < 0 || i >= G.S.length) return hideTip();
+      const r = G.S[i], tip = $('tip');
+      const range = `${dLabel(r.d, { weekday: 'short', month: 'short', day: 'numeric' })}, 8am → ${dLabel(addDays(r.d, 1), { weekday: 'short' })} 8am`;
+      tip.innerHTML = `<div class="muted">${esc(range)}${r.today ? ' · so far' : ''}</div><b class="num ${cls(r.pnl)}">${esc(signed(r.pnl))}</b> <span class="num ${cls(r.pct)}">${esc(pctS(r.pct))}</span><div class="muted">${r.n ? `${r.n} trade${r.n === 1 ? '' : 's'}, ${r.w} won` : 'no trades'}${r.sb != null ? ' · started at ' + esc(money(r.sb)) : ''}</div>`;
+      tip.classList.remove('hide');
+      const tw = tip.offsetWidth, th = tip.offsetHeight, cx = G.L + i * G.bw + G.bw / 2;
+      tip.style.left = Math.max(4, Math.min(b.width - tw - 4, cx - tw / 2)) + 'px';
+      tip.style.top = Math.max(4, (clientY - b.top) - th - 14) + 'px';
+    }
+    function hideTip() { $('tip').classList.add('hide'); }
+    let drag = null;
+    plot.addEventListener('pointermove', (e) => {
+      if (drag && G && G.total > G.S.length) {
+        const k = Math.round((drag.x - e.clientX) / G.bw); const o = Math.max(0, Math.min(G.maxOff, drag.off + k));
+        if (o !== G.off) { view.off = o >= G.maxOff ? null : o; draw(); }
+        return;
+      }
+      tipAt(e.clientX, e.clientY);
+    });
+    plot.addEventListener('pointerdown', (e) => { if (G && G.total > G.S.length && e.pointerType === 'mouse') { drag = { x: e.clientX, off: G.off }; hideTip(); } else tipAt(e.clientX, e.clientY); });
+    window.addEventListener('pointerup', () => { drag = null; });
+    plot.addEventListener('pointerleave', () => { if (!drag) hideTip(); });
+    plot.addEventListener('wheel', (e) => {
+      if (!G || G.total <= G.S.length || Math.abs(e.deltaX) < Math.abs(e.deltaY)) return;
+      e.preventDefault(); const o = Math.max(0, Math.min(G.maxOff, G.off + Math.round(e.deltaX / Math.max(2, G.bw))));
+      view.off = o >= G.maxOff ? null : o; draw();
+    }, { passive: false });
+    $('panR').addEventListener('input', (e) => { const o = +e.target.value; view.off = o >= +e.target.max ? null : o; draw(); });
+    new ResizeObserver(() => { if (!$('dash').classList.contains('hide')) draw(); }).observe(plot);
+
+    // units, settings, full screen
+    function renderUnit() { for (const b of $('unitSeg').children) b.classList.toggle('on', b.dataset.u === prefs.unit); }
+    $('unitSeg').addEventListener('click', (e) => { const u = e.target.dataset && e.target.dataset.u; if (!u) return; prefs.unit = u; ls.set(PREF, prefs); renderUnit(); draw(); });
+    $('setBtn').onclick = () => {
+      $('pWin').value = prefs.win; $('pUnit').value = prefs.unit; $('pFrom').value = prefs.from || ''; $('pLine').checked = !!prefs.line; $('pToday').checked = !!prefs.today;
+      if (led && led.start) $('pFrom').min = led.start;
+      $('setDlg').showModal();
+    };
+    $('pCancel').onclick = () => $('setDlg').close();
+    $('pReset').onclick = () => { $('pWin').value = DEF.win; $('pUnit').value = DEF.unit; $('pFrom').value = ''; $('pLine').checked = DEF.line; $('pToday').checked = DEF.today; };
+    $('pSave').onclick = () => {
+      const w = Math.round(+$('pWin').value);
+      if (!(w >= 7 && w <= 2000)) return toast('Days on screen: 7 to 2,000', 'err');
+      prefs = { win: w, unit: $('pUnit').value, from: $('pFrom').value || '', line: $('pLine').checked, today: $('pToday').checked };
+      ls.set(PREF, prefs); view.off = null; $('setDlg').close(); renderUnit(); draw();
+    };
+    const card = $('chartCard');
+    const isFs = () => document.fullscreenElement === card || card.classList.contains('fs');
+    $('fsBtn').onclick = async () => {
+      if (isFs()) { if (document.fullscreenElement) await document.exitFullscreen().catch(() => {}); card.classList.remove('fs'); }
+      else if (card.requestFullscreen && document.fullscreenEnabled) { await card.requestFullscreen().catch(() => card.classList.add('fs')); }
+      else card.classList.add('fs');
+      fsLabel(); setTimeout(draw, 60);
+    };
+    function fsLabel() { const on = isFs(); $('fsBtn').textContent = on ? '✕' : '⛶'; $('fsBtn').title = on ? 'Exit full screen' : 'Full screen'; }
+    document.addEventListener('fullscreenchange', () => { fsLabel(); setTimeout(draw, 60); });
+    document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && card.classList.contains('fs')) { card.classList.remove('fs'); fsLabel(); setTimeout(draw, 60); } });
+
+    // ---------------- market connection health (as of the bot's last status)
+    function renderHealth() {
+      const h = st && st.h, rows = [];
+      const sAge = st ? (Date.now() - st.ts) / 1000 : Infinity;
+      const add = (lvl, name, detail) => rows.push(`<div class="hrow"><span class="dot ${lvl}"></span><div style="min-width:0"><div class="n">${esc(name)}</div><div class="d">${esc(detail)}</div></div></div>`);
+      add(sAge < 25 * 60 ? 'g' : sAge < 75 * 60 ? 'a' : 'r', 'Laptop bot', st ? `last heard ${ago(st.ts)}` : 'not heard from yet');
+      if (h) {
+        add(h.c != null && h.c <= 10 ? (h.w ? 'g' : 'a') : h.c != null && h.c <= 60 ? 'a' : 'r', 'Bitcoin price · Coinbase', h.c == null ? 'no price yet' : `${h.c}s old · ${h.w ? 'live feed' : 'backup price (live feed reconnecting)'}`);
+        add(h.p != null && h.p <= 20 ? 'g' : h.p != null && h.p <= 120 ? 'a' : 'r', 'Odds · polymarket.com', h.p == null ? 'no odds yet' : `last update ${h.p}s before the status`);
+        add(h.u ? 'g' : 'a', 'Prices · Polymarket US', h.u ? 'live price stream' : 'polling every 2 s (stream reconnecting)');
+        add(!h.k ? 'r' : h.a != null && h.a <= 180 ? 'g' : 'a', 'Account · Polymarket US', !h.k ? 'no API key on the laptop' : h.a == null ? 'balance not checked yet' : `balance checked ${h.a}s before the status`);
+      }
+      add(Date.now() - lastOk < 60000 ? 'g' : 'r', 'Message relay · ntfy', Date.now() - lastOk < 60000 ? 'this page is connected' : 'this page can\'t reach ntfy right now');
+      $('health').innerHTML = rows.join('');
+      $('hAsOf').textContent = st ? 'as of ' + new Date(st.ts).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) : '';
+      $('hNote').textContent = !h ? 'Update the bot (rerun the installer) to see the market feeds here.' : 'The bot reports these with each status update (at least hourly, or when you open this page).';
+    }
+    $('hRefresh').onclick = () => { if (askRefresh(true)) toast('Asking the bot for a fresh status…'); else toast('Asked a moment ago, give it a few seconds'); };
+
+    function render() {
+      if (!sess || !led) return;
+      renderTiles(series()); renderUnit(); draw(); renderHealth();
+    }
+    setInterval(() => { if (sess) renderHealth(); }, 30000);
+
+    // ---------------- start: reuse the autopilot page's saved login
+    const saved = ls.get(LS);
+    if (saved && saved.topic && saved.bits) {
+      $('inTopic').value = saved.topic; $('inServer').value = saved.server || 'https://ntfy.sh';
+      openSession(saved.server || 'https://ntfy.sh', saved.topic, APCrypto.unb64u(saved.bits))
+        .then(() => fetchMsgs('12h'))
+        .then(({ s }) => { if (s || st) showDash(); else $('loginErr').textContent = 'No recent word from the bot. Log in again once it is running.'; })
+        .catch((e) => { $('loginErr').textContent = 'Could not connect: ' + e.message; });
+    }
+  };
+</script>
+</body>
+</html>
