@@ -40,7 +40,7 @@ mkdir -p "$DIR/tools"; chmod 700 "$DIR"
 TMP=$(mktemp -d); trap 'rm -rf "$TMP"' EXIT
 curl -fsSL https://github.com/arrakistacos/btc-patterns/archive/refs/heads/main.tar.gz | tar -xz -C "$TMP"
 SRC="$TMP/btc-patterns-main"
-for f in engine.js signal.js apcrypto.js tools/signal-bot.mjs tools/autopilot.mjs tools/pi-launcher.mjs tools/pi-unlock.mjs; do install -m 644 "$SRC/$f" "$DIR/$f"; done
+for f in engine.js signal.js apcrypto.js tools/signal-bot.mjs tools/autopilot.mjs tools/pi-launcher.mjs tools/pi-unlock.mjs tools/pi-led.mjs; do install -m 644 "$SRC/$f" "$DIR/$f"; done
 
 # 3) State carried over from the laptop (first move only; copied to ~/btc-incoming-*.json just before this runs):
 #    trades, ledger, settings, scoreboard
@@ -81,6 +81,7 @@ Environment=BANKROLL=$BANKROLL
 Environment=TZ_NAME=America/Chicago
 Environment=LOG_FILE=$DIR/signal-bot.log
 Environment=UNLOCK_SOCKET=/run/btc-bot/unlock.sock
+Environment=LED_FILE=/run/btc-bot/led.json
 ExecStart=$NODE tools/pi-launcher.mjs
 Restart=always
 RestartSec=10
@@ -96,8 +97,32 @@ ReadWritePaths=$DIR
 [Install]
 WantedBy=multi-user.target
 UNIT
+# 6) The robot face: chart and health on the Sense HAT's LED matrix (tools/pi-led.mjs). It only reads the bot's
+#    status file and asks the launcher whether it is locked; it waits quietly if no Sense HAT is fitted.
+sudo tee /etc/systemd/system/btc-led.service >/dev/null <<UNIT
+[Unit]
+Description=BTC bot LED face (Sense HAT)
+After=btc-bot.service
+
+[Service]
+User=$USER_NAME
+WorkingDirectory=$DIR
+Environment=LED_FILE=/run/btc-bot/led.json
+Environment=UNLOCK_SOCKET=/run/btc-bot/unlock.sock
+ExecStart=$NODE tools/pi-led.mjs
+Restart=always
+RestartSec=5
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ReadWritePaths=$DIR
+
+[Install]
+WantedBy=multi-user.target
+UNIT
 sudo systemctl daemon-reload
-sudo systemctl enable btc-bot >/dev/null 2>&1
+sudo systemctl enable btc-bot btc-led >/dev/null 2>&1
+sudo systemctl restart btc-led
 sudo systemctl restart btc-bot
 sleep 2
 if systemctl is-active --quiet btc-bot; then say 'btc-bot service is running (locked until the laptop unlocks it).'; else echo 'ERROR: the btc-bot service did not start:'; sudo systemctl status btc-bot --no-pager | tail -15; exit 1; fi

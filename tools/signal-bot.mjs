@@ -13,6 +13,7 @@
  *   NTFY_TOPIC   required (except --dry). Pick something long and random: anyone who knows it can read it.
  *   NTFY_SERVER  default https://ntfy.sh
  *   NTFY_TOKEN   optional access token for a protected topic
+ *   LED_FILE     optional: write a small status file every second for tools/pi-led.mjs (the Sense HAT face)
  *   HC_PING_KEY  optional Healthchecks.io project ping key: pings check HC_SLUG (default btc-bot) every minute,
  *                or /fail when there are no prices. HC_PING_URL instead = one check's full ping URL.
  *   TARGET       confidence target, 60–95 (default 80)
@@ -117,6 +118,7 @@ const budget = {
   exhausted() { if (!LIMITED) return; bud.tokens = 0; bud.at = Date.now(); budSave(); },
 };
 
+let pushStat = { ok: null, at: 0 };   // last phone alert: did it go through (for the Pi's LED face)
 async function push({ title, body, priority = 5, tags = 'rotating_light', click }, attempt = 0) {
   if (DRY) { log(`[dry] PUSH p${priority}: ${title} — ${body}`); return true; }
   const headers = { Title: title, Priority: String(priority), Tags: tags };
@@ -126,6 +128,7 @@ async function push({ title, body, priority = 5, tags = 'rotating_light', click 
     try {
       budget.take();
       const r = await fetch(`${NTFY_SERVER}/${encodeURIComponent(NTFY_TOPIC)}`, { method: 'POST', headers, body });
+      pushStat = { ok: r.ok, at: Date.now() };
       if (r.ok) return true;
       log('push failed: HTTP', r.status);
       if (r.status === 429) {
@@ -134,7 +137,7 @@ async function push({ title, body, priority = 5, tags = 'rotating_light', click 
         if (priority >= 4 && attempt < 2) { log(`ntfy daily limit reached; will retry "${title}" in ${attempt ? 6 : 3} min`); setTimeout(() => push({ title, body, priority, tags, click }, attempt + 1), (attempt ? 6 : 3) * 60000); }
         return false;
       }
-    } catch (e) { log('push failed:', e.message); }
+    } catch (e) { log('push failed:', e.message); pushStat = { ok: false, at: Date.now() }; }
     await sleep(1000 * (a + 1));
   }
   return false;
@@ -488,5 +491,22 @@ setInterval(() => {
 // Healthchecks.io: your phone hears about it if this bot, its computer or its internet goes quiet
 const HC_URL = process.env.HC_PING_URL || (process.env.HC_PING_KEY ? `https://hc-ping.com/${encodeURIComponent(process.env.HC_PING_KEY.trim())}/${encodeURIComponent(process.env.HC_SLUG || 'btc-bot')}` : '');
 const HB = createHeartbeat({ url: DRY ? '' : HC_URL, every: +process.env.HC_EVERY_S || 60, health, state: () => AP.state(), up: () => nowS() - botStartS, host: hostname(), log, noPriceS: NO_PRICE_S });
+// The Pi's LED face (tools/pi-led.mjs) reads this: the last 24 candles, the price to beat and health. No secrets.
+const LED_FILE = DRY ? '' : process.env.LED_FILE || '';
+if (LED_FILE) {
+  const { writeFileSync, renameSync } = await import('node:fs');
+  setInterval(() => {
+    try {
+      const t = nowS(), Ws = bucket(t), info = AP.ledInfo(), left = budget.left();
+      const st = {
+        v: 1, ts: Date.now(), price: C.length ? C[C.length - 1].c : null, Ws, ptb: ptb.Ws === Ws ? ptb.K : null,
+        cs: C.slice(-24).map((k) => [k.t, k.o, k.h, k.l, k.c]), h: health(), us: { k: info.k, u: info.u }, ap: info.ap, pnl: info.pnl, last: info.last,
+        ntfy: { ok: pushStat.ok, at: pushStat.at, left: isFinite(left) ? Math.floor(left) : null },
+        hc: Object.assign({ on: HB.on }, HB.last()),
+      };
+      writeFileSync(LED_FILE + '.tmp', JSON.stringify(st)); renameSync(LED_FILE + '.tmp', LED_FILE);
+    } catch (e) { if (!globalThis.__ledWarned) { globalThis.__ledWarned = 1; log('LED status file:', e.message); } }
+  }, 1000).unref();
+}
 if (HB.on) { log(`healthchecks: pinging ${process.env.HC_PING_URL ? 'your check' : 'check "' + (process.env.HC_SLUG || 'btc-bot') + '"'} every ${Math.max(10, +process.env.HC_EVERY_S || 60)} s`); HB.start(); }
 if (!DRY && !ARGS.has('--quiet-start')) push({ title: 'Signal bot running', body: `Alerts when BUY fires with MODEL >= ${MIN_MODEL}% and POLYMARKET >= ${MIN_MARKET}%.`, priority: 2, tags: 'robot', click: SITE });

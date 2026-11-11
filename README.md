@@ -213,6 +213,12 @@ irm https://raw.githubusercontent.com/arrakistacos/btc-patterns/main/tools/insta
 - `-Status` shows whether the Pi bot is running or locked, `-Unlock` unlocks it now, and `-Back` (as administrator) parks the Pi bot and turns the laptop bot back on. While the Pi runs the bot, `install-windows.ps1` refuses to start the laptop bot.
 - Pi log: `ssh picactus@192.168.1.118 tail -f btc-bot/signal-bot.log`; service: `sudo systemctl status btc-bot`.
 
+### Robot-head case and LED face (Sense HAT)
+
+`hardware/bot-head/` holds a 3D-printable robot-head case for a Pi 5 with a Sense HAT (no GPIO riser): `bot-head.scad` (OpenSCAD, every dimension a parameter) and ready STLs (`face`, `back`, `base`, and `coupon`, a 10-minute test piece of the mouth). The HAT's 8x8 LED matrix is the mouth and shines through 0.6 mm of white PETG; the right eye is a hole over the joystick.
+
+`tools/pi-led.mjs` (service `btc-led`, installed by `pi-setup.sh`) draws on the matrix: the top row is 8 health lights (bot, Bitcoin price, Polymarket odds, Polymarket US, autopilot, phone alerts, Healthchecks, the Pi's temperature/power) that form a dim green line when all is well; below it the last 8 five-minute candles, the right one being the window traded now. Joystick: press scrolls the price and today's profit, up/down changes brightness, left/right switches between 40 minutes and 2 hours. The bot writes the data to `/run/btc-bot/led.json` (memory, no secrets) once a second when `LED_FILE` is set. `LED_ROTATE` (default 90) turns the picture if the HAT is mounted another way; it dims at night (`LED_NIGHT`, default 22-7 Central).
+
 ### Healthchecks.io: an alert when the bot goes quiet
 
 ntfy alerts come from the bot itself, so they can't tell you when the bot, its computer, its Wi-Fi or its power is gone. Healthchecks.io can: the bot pings it every minute, and Healthchecks alerts your phone when the pings stop.

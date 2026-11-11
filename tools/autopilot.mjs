@@ -90,7 +90,7 @@ export function estimateLag(ring) {
 //   url    https://hc-ping.com/<project ping key>/<check slug>   (or a check's own ping URL)
 //   health () => ({ c: s since last Bitcoin price, p: s since last Polymarket odds })   up: s since the bot started
 export function createHeartbeat({ url, every = 60, health, state = () => ({}), up, host = '', log = () => {}, noPriceS = 180, noOddsS = 300, fetchFn = fetch }) {
-  let warnedAt = 0, timer = null, lastBad = null;
+  let warnedAt = 0, timer = null, lastBad = null, last = { ok: null, at: 0, healthy: null };
   function status() {
     const h = health() || {}, s = state() || {}, u = up(), bad = [];
     const cAge = h.c == null ? u : h.c, pAge = h.p == null ? u : h.p;
@@ -105,16 +105,18 @@ export function createHeartbeat({ url, every = 60, health, state = () => ({}), u
     const st = status(), k = kind || (st.ok ? '' : 'fail');
     try {
       const r = await fetchFn(url.replace(/\/$/, '') + (k ? '/' + k : ''), { method: 'POST', body: st.body, signal: AbortSignal.timeout(10000) });
+      last = { ok: r.ok, at: Date.now(), healthy: st.ok };
       if (!r.ok && Date.now() - warnedAt > 3600000) { warnedAt = Date.now(); log(`healthchecks ping HTTP ${r.status}${r.status === 404 ? ' (no check with that name: create it on Healthchecks.io)' : ''}`); }
       if (st.ok !== lastBad) { if (lastBad !== null) log(st.ok ? 'healthchecks: healthy again' : `healthchecks: reporting a problem (${st.body})`); lastBad = st.ok; }
       return r.status;
     } catch (e) {
+      last = { ok: false, at: Date.now(), healthy: st.ok };
       if (Date.now() - warnedAt > 3600000) { warnedAt = Date.now(); log('healthchecks ping failed:', e.message); }
       return null;
     }
   }
   return {
-    on: !!url, status, ping,
+    on: !!url, status, ping, last: () => last,
     start() { if (!url || timer) return; ping(); timer = setInterval(() => ping(), Math.max(10, every) * 1000); timer.unref?.(); },
     stop() { clearInterval(timer); timer = null; },
   };
@@ -1088,5 +1090,17 @@ export function createAutopilot(o) {
 
   function start() { listen(); publishSoon(5000, true); }
   process.on('exit', () => { sbSave(true); lagFlush(true); });
-  return { ledgerChunks, onSignal, observe, observeLate, settleLate, observeLag, settleLag, lagEstimate, lagFlush, tick, start, check, settle, sbSettle, scoreboard, publishScore, minModel, minMarket, target, state: () => S, hasKey: () => !!KEY, flush: publish };
+  // for the Pi's LED face: key/stream, autopilot state, today's profit, the latest real trade
+  function ledInfo() {
+    let lt = null;
+    for (let i = S.trades.length - 1; i >= 0 && !lt; i--) { const t = S.trades[i]; if (t.mode === 'live' && (t.status === 'filled' || t.status === 'partial')) lt = t; }
+    const today = S.ledger && S.ledger.days ? S.ledger.days[pday(Date.now())] : null;
+    return {
+      k: KEY ? 1 : 0, u: US.up ? 1 : 0,
+      ap: { on: !!S.enabled, mode: S.mode, halted: S.halted ? String(S.halted.reason || 'halted') : null },
+      pnl: today ? today[0] : 0,
+      last: lt ? { id: lt.id, ts: lt.ts, side: lt.side, result: lt.result == null ? null : !!lt.result } : null,
+    };
+  }
+  return { ledInfo, ledgerChunks, onSignal, observe, observeLate, settleLate, observeLag, settleLag, lagEstimate, lagFlush, tick, start, check, settle, sbSettle, scoreboard, publishScore, minModel, minMarket, target, state: () => S, hasKey: () => !!KEY, flush: publish };
 }
