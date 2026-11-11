@@ -130,7 +130,7 @@
           <div class="sub" id="chartSub">Real money, per trading day (8am to 8am Central, dated by the day it ends)</div>
         </div>
         <div class="spacer"></div>
-        <div class="seg" id="unitSeg"><button data-u="$">$</button><button data-u="%">%</button></div>
+        <div class="seg" id="unitSeg"><button data-u="bal">Balance</button><button data-u="$">$</button><button data-u="%">%</button></div>
         <button class="icon" id="setBtn" title="Chart settings" aria-label="Chart settings">⚙︎</button>
         <button class="icon" id="fsBtn" title="Full screen" aria-label="Full screen">⛶</button>
       </div>
@@ -141,7 +141,7 @@
         <div id="tip" class="hide"></div>
       </div>
       <div class="pan hide" id="pan"><span id="panFrom"></span><input type="range" id="panR" min="0" max="0" value="0" aria-label="Scroll through days"><span id="panTo"></span></div>
-      <div class="legend"><span><span class="sw" style="background:var(--up)"></span>Profit</span><span><span class="sw" style="background:var(--down)"></span>Loss</span><span id="lgLine" class="hide"><span class="sw" style="background:var(--accent);height:2px;vertical-align:3px"></span>Running total</span><span id="lgToday"><span class="sw" style="background:repeating-linear-gradient(45deg,#8a94a6 0 2px,transparent 2px 4px)"></span>In progress</span></div>
+      <div class="legend"><span id="lgBal"><span class="sw" style="background:#3d7bd9"></span>Balance</span><span><span class="sw" style="background:var(--up)"></span>Profit</span><span><span class="sw" style="background:var(--down)"></span>Loss</span><span id="lgLine" class="hide"><span class="sw" style="background:#e3c770;height:2px;vertical-align:3px"></span>Running total profit</span><span id="lgToday"><span class="sw" style="background:rgba(61,123,217,.45);outline:1px dashed #7d8899;outline-offset:-1px"></span>In progress (since 8am)</span></div>
     </section>
 
     <section class="card">
@@ -155,7 +155,7 @@
 <dialog id="setDlg">
   <h3 style="margin:0 0 14px;font-size:13px">Chart settings</h3>
   <label class="field"><span>Days on screen before the chart starts scrolling</span><input id="pWin" type="number" min="7" max="2000" step="1"></label>
-  <label class="field"><span>Show values in</span><select id="pUnit"><option value="$">Dollars</option><option value="%">Percent of the day's starting balance</option></select></label>
+  <label class="field"><span>Show values in</span><select id="pUnit"><option value="bal">Balance, with each day's profit or loss on top</option><option value="$">Profit in dollars</option><option value="%">Profit as % of the day's starting balance</option></select></label>
   <label class="field"><span>Chart starts on (blank = first tracked day). An earlier date asks the bot to rebuild from its trade records.</span><input id="pFrom" type="date"></label>
   <label style="margin-bottom:8px"><input id="pLine" type="checkbox"> Running total line</label><br>
   <label style="margin-bottom:14px"><input id="pToday" type="checkbox"> Show the in-progress bar (since 8am)</label>
@@ -176,9 +176,10 @@
     const $ = (id) => document.getElementById(id);
     const LS = 'btcpw.autopilot';                 // shared with the autopilot page: log in once
     const PREF = 'btcpw.profits.prefs';
-    const DEF = { win: 500, unit: '$', from: '', line: false, today: true };
+    const DEF = { win: 500, unit: 'bal', from: '', line: false, today: true, v: 2 };
     const ls = { get(k) { try { return JSON.parse(localStorage.getItem(k) || 'null'); } catch (e) { return null; } }, set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) {} }, del(k) { try { localStorage.removeItem(k); } catch (e) {} } };
     let prefs = Object.assign({}, DEF, ls.get(PREF) || {});
+    if (prefs.v !== 2) { prefs.unit = 'bal'; prefs.v = 2; }   // the balance view became the default
     const money = (x, d = 2) => x == null || !isFinite(x) ? '—' : (x < 0 ? '−$' : '$') + Math.abs(x).toLocaleString('en-US', { minimumFractionDigits: d, maximumFractionDigits: d });
     const signed = (x) => x == null || !isFinite(x) ? '—' : (x > 0 ? '+' : '') + money(x);
     const pctS = (x) => x == null || !isFinite(x) ? '—' : (x > 0 ? '+' : x < 0 ? '−' : '') + Math.abs(x).toLocaleString('en-US', { maximumFractionDigits: Math.abs(x) >= 100 ? 0 : 1, minimumFractionDigits: Math.abs(x) >= 100 ? 0 : 1 }) + '%';
@@ -338,16 +339,19 @@
       // scroll bar once there are more days than fit
       $('pan').classList.toggle('hide', total <= win);
       if (total > win) { const r = $('panR'); r.max = maxOff; r.value = off; $('panFrom').textContent = dLabel(S[0].d); $('panTo').textContent = dLabel(S[S.length - 1].d); }
-      $('lgLine').classList.toggle('hide', !prefs.line); $('lgToday').classList.toggle('hide', !prefs.today);
+      $('lgLine').classList.toggle('hide', !prefs.line); $('lgToday').classList.toggle('hide', !prefs.today); $('lgBal').classList.toggle('hide', prefs.unit !== 'bal');
       const dpr = window.devicePixelRatio || 1, W = plot.clientWidth, H = plot.clientHeight;
       cv.width = Math.round(W * dpr); cv.height = Math.round(H * dpr);
       const c = cv.getContext('2d'); c.setTransform(dpr, 0, 0, dpr, 0, 0); c.clearRect(0, 0, W, H);
-      const unit = prefs.unit, val = (r) => unit === '%' ? (r.pct == null ? 0 : r.pct) : r.pnl;
-      $('empty').classList.toggle('hide', S.some((r) => r.n > 0));
-      if (!S.some((r) => r.n > 0)) $('empty').innerHTML = '<span></span>';
-      if (!S.some((r) => r.n > 0)) $('empty').firstChild.textContent = led.start ? `Tracking since ${dLabel(led.start, { weekday: 'short', month: 'short', day: 'numeric' })}. One bar per trading day (8am to 8am Central, dated by the day it ends) once real trades settle.` : 'Waiting for the first results from your bot…';
+      const unit = prefs.unit, BAL = unit === 'bal', val = (r) => unit === '%' ? (r.pct == null ? 0 : r.pct) : r.pnl;
+      const hasData = BAL ? S.some((r) => r.sb != null) : S.some((r) => r.n > 0);
+      $('empty').classList.toggle('hide', hasData);
+      if (!hasData) $('empty').innerHTML = '<span></span>';
+      if (!hasData) $('empty').firstChild.textContent = led.start ? `Tracking since ${dLabel(led.start, { weekday: 'short', month: 'short', day: 'numeric' })}. One bar per trading day (8am to 8am Central, dated by the day it ends) once real trades settle.` : 'Waiting for the first results from your bot…';
       // y scale: always includes $0, so a run of profitable days starts the axis at exactly $0
-      let hi = 0, lo = 0; for (const r of S) { hi = Math.max(hi, val(r)); lo = Math.min(lo, val(r)); }
+      let hi = 0, lo = 0;
+      if (BAL) { for (const r of S) if (r.sb != null) hi = Math.max(hi, r.sb, r.sb + r.pnl); }   // balances: axis from $0 up
+      else for (const r of S) { hi = Math.max(hi, val(r)); lo = Math.min(lo, val(r)); }
       if (hi === 0 && lo === 0) hi = unit === '%' ? 5 : 10;
       const step = niceStep((hi - lo) / 4.5), top = Math.ceil(hi / step) * step, bot = Math.floor(lo / step) * step;
       c.font = '11px system-ui, -apple-system, Segoe UI, Roboto, sans-serif';
@@ -379,7 +383,26 @@
       const slots = Math.max(S.length, 10), bw = pw / slots;
       const bar = bw >= 7 ? bw * 0.72 : bw >= 3 ? bw * 0.84 : Math.max(1, bw);
       const y0 = Y(0);
-      S.forEach((r, i) => {
+      const rbar = (x, y, w, h, rTop, rBot) => {   // rectangle with optional rounded top / bottom corners
+        const rad = Math.min(3, w / 3, h / 2); c.beginPath();
+        if (rad >= 1 && c.roundRect) c.roundRect(x, y, w, h, [rTop ? rad : 0, rTop ? rad : 0, rBot ? rad : 0, rBot ? rad : 0]); else c.rect(x, y, w, h);
+        c.fill();
+      };
+      if (BAL) S.forEach((r, i) => {
+        // blue = balance kept; green on top = the day's profit; red on top = the part of the starting balance that was lost
+        if (r.sb == null) return;
+        const end = r.sb + r.pnl, base = Math.min(r.sb, end), x = L + i * bw + (bw - bar) / 2;
+        c.globalAlpha = r.today ? 0.45 : 1;
+        const yb = Y(base), hb = Math.max(1, y0 - yb), hasTop = Math.abs(r.pnl) > 0;
+        c.fillStyle = '#3d7bd9'; rbar(x, yb, bar, hb, !hasTop, false);
+        if (hasTop) {
+          const yt = Y(Math.max(r.sb, end)), ht = Math.max(1, yb - yt);
+          c.fillStyle = r.pnl > 0 ? '#16c784' : '#ea3943'; rbar(x, yt, bar, ht, true, false);
+          if (r.today) { c.globalAlpha = 1; c.strokeStyle = c.fillStyle; c.setLineDash([3, 2]); c.lineWidth = 1; c.strokeRect(x + .5, yt + .5, bar - 1, Math.max(1, ht - 1)); c.setLineDash([]); }
+        }
+        c.globalAlpha = 1;
+      });
+      else S.forEach((r, i) => {
         const v = val(r); if (!v) return;
         const x = L + i * bw + (bw - bar) / 2, y = Y(v), h = Math.max(1, Math.abs(y - y0));
         const yt = v > 0 ? y0 - h : y0, col = v > 0 ? '#16c784' : '#ea3943';
@@ -396,8 +419,8 @@
       if (cum) {
         const CY = (v) => T + (cTop - v) / (cTop - cBot) * ph;
         c.textAlign = 'left';
-        for (let v = cBot; v <= cTop + cStep / 2; v += cStep) { c.fillStyle = 'rgba(90,169,255,.75)'; c.fillText(axisFmt(Math.abs(v) < cStep / 1e6 ? 0 : v, unit, cStep), L + pw + 6, CY(v)); }
-        c.strokeStyle = '#5aa9ff'; c.lineWidth = 1.75; c.lineJoin = 'round'; c.beginPath();
+        for (let v = cBot; v <= cTop + cStep / 2; v += cStep) { c.fillStyle = 'rgba(227,199,112,.8)'; c.fillText(axisFmt(Math.abs(v) < cStep / 1e6 ? 0 : v, unit, cStep), L + pw + 6, CY(v)); }
+        c.strokeStyle = '#e3c770'; c.lineWidth = 1.75; c.lineJoin = 'round'; c.beginPath();
         cum.forEach((v, i) => { const x = L + i * bw + bw / 2, y = CY(v); if (i) c.lineTo(x, y); else c.moveTo(x, y); });
         c.stroke();
       }
@@ -424,7 +447,7 @@
       if (i < 0 || i >= G.S.length) return hideTip();
       const r = G.S[i], tip = $('tip');
       const range = `${dLabel(r.d, { weekday: 'short', month: 'short', day: 'numeric' })} · ${dLabel(addDays(r.d, -1), { weekday: 'short' })} 8am → ${dLabel(r.d, { weekday: 'short' })} 8am`;
-      tip.innerHTML = `<div class="muted">${esc(range)}${r.today ? ' · in progress' : ''}</div><b class="num ${cls(r.pnl)}">${esc(signed(r.pnl))}</b> <span class="num ${cls(r.pct)}">${esc(pctS(r.pct))}</span><div class="muted">${r.n ? `${r.n} trade${r.n === 1 ? '' : 's'}, ${r.w} won` : 'no trades'}${r.sb != null ? ' · started at ' + esc(money(r.sb)) : ''}</div>`;
+      tip.innerHTML = `<div class="muted">${esc(range)}${r.today ? ' · in progress' : ''}</div><b class="num ${cls(r.pnl)}">${esc(signed(r.pnl))}</b> <span class="num ${cls(r.pct)}">${esc(pctS(r.pct))}</span>${r.sb != null ? `<div class="num">${esc(money(r.sb))} → <b>${esc(money(r.sb + r.pnl))}</b></div>` : ''}<div class="muted">${r.n ? `${r.n} trade${r.n === 1 ? '' : 's'}, ${r.w} won` : 'no trades'}</div>`;
       tip.classList.remove('hide');
       const tw = tip.offsetWidth, th = tip.offsetHeight, cx = G.L + i * G.bw + G.bw / 2;
       tip.style.left = Math.max(4, Math.min(b.width - tw - 4, cx - tw / 2)) + 'px';
@@ -464,7 +487,7 @@
     $('pSave').onclick = () => {
       const w = Math.round(+$('pWin').value);
       if (!(w >= 7 && w <= 2000)) return toast('Days on screen: 7 to 2,000', 'err');
-      prefs = { win: w, unit: $('pUnit').value, from: $('pFrom').value || '', line: $('pLine').checked, today: $('pToday').checked };
+      prefs = { win: w, unit: $('pUnit').value, from: $('pFrom').value || '', line: $('pLine').checked, today: $('pToday').checked, v: 2 };
       ls.set(PREF, prefs); view.off = null; $('setDlg').close(); renderUnit(); draw();
       if (prefs.from && led.start && prefs.from < led.start) {
         if (!st || Date.now() - st.ts > 75 * 60000) return toast('The bot seems offline; it will rebuild once you save again while it is running', 'err');
