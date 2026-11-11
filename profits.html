@@ -70,6 +70,11 @@
   #chartCard:fullscreen, #chartCard.fs { position: fixed; inset: 0; z-index: 50; border-radius: 0; border: 0; padding: max(14px, env(safe-area-inset-top)) max(16px, env(safe-area-inset-right)) max(14px, env(safe-area-inset-bottom)) max(16px, env(safe-area-inset-left)); background: var(--bg); }
   #chartCard:fullscreen .plot, #chartCard.fs .plot { flex: 1; height: auto; min-height: 200px; }
 
+  .hstrip { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 14px; font-size: 12px; color: var(--muted); }
+  .hstrip .hi { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
+  .hstrip .hi .dot { transform: none; width: 7px; height: 7px; }
+  .hstrip .why.a { color: var(--amber); } .hstrip .why.r { color: #ff8a92; }
+  .hstrip .asof { margin-left: auto; }
   /* health */
   .health { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 8px 18px; margin-top: 10px; }
   .hrow { display: flex; gap: 10px; align-items: baseline; padding: 6px 0; border-bottom: 1px solid #1a212d; min-width: 0; }
@@ -128,6 +133,7 @@
         <button class="icon" id="setBtn" title="Chart settings" aria-label="Chart settings">⚙︎</button>
         <button class="icon" id="fsBtn" title="Full screen" aria-label="Full screen">⛶</button>
       </div>
+      <div class="hstrip" id="hstrip"></div>
       <div class="plot" id="plot">
         <canvas id="cv"></canvas>
         <div id="empty" class="hide"></div>
@@ -149,7 +155,7 @@
   <h3 style="margin:0 0 14px;font-size:13px">Chart settings</h3>
   <label class="field"><span>Days on screen before the chart starts scrolling</span><input id="pWin" type="number" min="7" max="2000" step="1"></label>
   <label class="field"><span>Show values in</span><select id="pUnit"><option value="$">Dollars</option><option value="%">Percent of the day's starting balance</option></select></label>
-  <label class="field"><span>Start the chart on (blank = first tracked day)</span><input id="pFrom" type="date"></label>
+  <label class="field"><span>Chart starts on (blank = first tracked day). An earlier date asks the bot to rebuild from its trade records.</span><input id="pFrom" type="date"></label>
   <label style="margin-bottom:8px"><input id="pLine" type="checkbox"> Running total line</label><br>
   <label style="margin-bottom:14px"><input id="pToday" type="checkbox"> Show today's bar while the day is in progress</label>
   <div class="row" style="justify-content:space-between"><button id="pReset" type="button">Defaults</button><span class="row"><button id="pCancel" type="button">Cancel</button><button class="primary" id="pSave" type="button">Save</button></span></div>
@@ -190,14 +196,19 @@
     const ledKey = () => 'btcpw.profits.ledger.' + sess.topic;
     function ledLoad() { led = ls.get(ledKey()) || { start: null, days: {} }; }
     function ledSave() { ls.set(ledKey(), led); }
+    function setStart(start) {   // the bot decides where tracking starts (it can rebuild from an earlier date)
+      if (led.start === start) return;
+      led.start = start;
+      for (const d of Object.keys(led.days)) if (d < start) delete led.days[d];
+    }
     function mergeChunk(m) {
-      if (!led.start || m.start < led.start) led.start = m.start;
+      setStart(m.start);
       m.rows.forEach((r, k) => { led.days[addDays(m.d0, k)] = r; });
     }
     function mergeStatus(s) {
       if (!s || !s.led) return;
       const [start, d, pnl, sb, n, w] = s.led;
-      if (!led.start || start < led.start) led.start = start;
+      setStart(start);
       led.days[d] = [pnl, sb, n, w];
     }
     function missingHistory() {
@@ -439,7 +450,7 @@
     $('unitSeg').addEventListener('click', (e) => { const u = e.target.dataset && e.target.dataset.u; if (!u) return; prefs.unit = u; ls.set(PREF, prefs); renderUnit(); draw(); });
     $('setBtn').onclick = () => {
       $('pWin').value = prefs.win; $('pUnit').value = prefs.unit; $('pFrom').value = prefs.from || ''; $('pLine').checked = !!prefs.line; $('pToday').checked = !!prefs.today;
-      if (led && led.start) $('pFrom').min = led.start;
+      $('pFrom').max = pday(Date.now());
       $('setDlg').showModal();
     };
     $('pCancel').onclick = () => $('setDlg').close();
@@ -449,6 +460,11 @@
       if (!(w >= 7 && w <= 2000)) return toast('Days on screen: 7 to 2,000', 'err');
       prefs = { win: w, unit: $('pUnit').value, from: $('pFrom').value || '', line: $('pLine').checked, today: $('pToday').checked };
       ls.set(PREF, prefs); view.off = null; $('setDlg').close(); renderUnit(); draw();
+      if (prefs.from && led.start && prefs.from < led.start) {
+        if (!st || Date.now() - st.ts > 75 * 60000) return toast('The bot seems offline; it will rebuild once you save again while it is running', 'err');
+        send('ledgerFrom', { d: prefs.from }); ledAsked = Date.now();
+        toast(`Asking the bot to rebuild from ${dLabel(prefs.from, { month: 'short', day: 'numeric', year: 'numeric' })}…`);
+      }
     };
     const card = $('chartCard');
     const isFs = () => document.fullscreenElement === card || card.classList.contains('fs');
@@ -463,20 +479,27 @@
     document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && card.classList.contains('fs')) { card.classList.remove('fs'); fsLabel(); setTimeout(draw, 60); } });
 
     // ---------------- market connection health (as of the bot's last status)
-    function renderHealth() {
-      const h = st && st.h, rows = [];
+    function healthItems() {
+      const h = st && st.h, items = [];
       const sAge = st ? (Date.now() - st.ts) / 1000 : Infinity;
-      const add = (lvl, name, detail) => rows.push(`<div class="hrow"><span class="dot ${lvl}"></span><div style="min-width:0"><div class="n">${esc(name)}</div><div class="d">${esc(detail)}</div></div></div>`);
-      add(sAge < 25 * 60 ? 'g' : sAge < 75 * 60 ? 'a' : 'r', 'Laptop bot', st ? `last heard ${ago(st.ts)}` : 'not heard from yet');
+      const add = (lvl, name, short, detail, why) => items.push({ lvl, name, short, detail, why });
+      add(sAge < 25 * 60 ? 'g' : sAge < 75 * 60 ? 'a' : 'r', 'Laptop bot', 'Bot', st ? `last heard ${ago(st.ts)}` : 'not heard from yet', sAge < 25 * 60 ? '' : st ? ago(st.ts) : 'silent');
       if (h) {
-        add(h.c != null && h.c <= 10 ? (h.w ? 'g' : 'a') : h.c != null && h.c <= 60 ? 'a' : 'r', 'Bitcoin price · Coinbase', h.c == null ? 'no price yet' : `${h.c}s old · ${h.w ? 'live feed' : 'backup price (live feed reconnecting)'}`);
-        add(h.p != null && h.p <= 20 ? 'g' : h.p != null && h.p <= 120 ? 'a' : 'r', 'Odds · polymarket.com', h.p == null ? 'no odds yet' : `last update ${h.p}s before the status`);
-        add(h.u ? 'g' : 'a', 'Prices · Polymarket US', h.u ? 'live price stream' : 'polling every 2 s (stream reconnecting)');
-        add(!h.k ? 'r' : h.a != null && h.a <= 180 ? 'g' : 'a', 'Account · Polymarket US', !h.k ? 'no API key on the laptop' : h.a == null ? 'balance not checked yet' : `balance checked ${h.a}s before the status`);
+        add(h.c != null && h.c <= 10 ? (h.w ? 'g' : 'a') : h.c != null && h.c <= 60 ? 'a' : 'r', 'Bitcoin price · Coinbase', 'Coinbase', h.c == null ? 'no price yet' : `${h.c}s old · ${h.w ? 'live feed' : 'backup price (live feed reconnecting)'}`, h.c == null ? 'no price' : h.c > 10 ? h.c + 's old' : h.w ? '' : 'backup price');
+        add(h.p != null && h.p <= 20 ? 'g' : h.p != null && h.p <= 120 ? 'a' : 'r', 'Odds · polymarket.com', 'Polymarket', h.p == null ? 'no odds yet' : `last update ${h.p}s before the status`, h.p == null ? 'no odds' : h.p > 20 ? h.p + 's old' : '');
+        add(h.u ? 'g' : 'a', 'Prices · Polymarket US', 'Polymarket US', h.u ? 'live price stream' : 'polling every 2 s (stream reconnecting)', h.u ? '' : 'polling');
+        add(!h.k ? 'r' : h.a != null && h.a <= 180 ? 'g' : 'a', 'Account · Polymarket US', 'Account', !h.k ? 'no API key on the laptop' : h.a == null ? 'balance not checked yet' : `balance checked ${h.a}s before the status`, !h.k ? 'no key' : h.a == null ? 'not checked' : h.a > 180 ? 'stale' : '');
       }
-      add(Date.now() - lastOk < 60000 ? 'g' : 'r', 'Message relay · ntfy', Date.now() - lastOk < 60000 ? 'this page is connected' : 'this page can\'t reach ntfy right now');
-      $('health').innerHTML = rows.join('');
-      $('hAsOf').textContent = st ? 'as of ' + new Date(st.ts).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) : '';
+      const net = Date.now() - lastOk < 60000;
+      add(net ? 'g' : 'r', 'Message relay · ntfy', 'ntfy', net ? 'this page is connected' : 'this page can\'t reach ntfy right now', net ? '' : 'offline');
+      return { items, h };
+    }
+    function renderHealth() {
+      const { items, h } = healthItems();
+      $('health').innerHTML = items.map((x) => `<div class="hrow"><span class="dot ${x.lvl}"></span><div style="min-width:0"><div class="n">${esc(x.name)}</div><div class="d">${esc(x.detail)}</div></div></div>`).join('');
+      const asof = st ? new Date(st.ts).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) : '';
+      $('hstrip').innerHTML = items.map((x) => `<span class="hi" title="${esc(x.name + ': ' + x.detail)}"><span class="dot ${x.lvl}"></span>${esc(x.short)}${x.why ? ` <span class="why ${x.lvl}">${esc(x.why)}</span>` : ''}</span>`).join('') + (asof ? `<span class="asof">as of ${esc(asof)}</span>` : '');
+      $('hAsOf').textContent = asof ? 'as of ' + asof : '';
       $('hNote').textContent = !h ? 'Update the bot (rerun the installer) to see the market feeds here.' : 'The bot reports these with each status update (at least hourly, or when you open this page).';
     }
     $('hRefresh').onclick = () => { if (askRefresh(true)) toast('Asking the bot for a fresh status…'); else toast('Asked a moment ago, give it a few seconds'); };

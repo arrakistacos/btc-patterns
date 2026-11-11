@@ -857,6 +857,27 @@ export function createAutopilot(o) {
     for (let i = 0; i < rows.length; i += N) out.push({ v: 1, kind: 'ledger', ts: Date.now(), start: S.ledger.start, d0: addDays(S.ledger.start, i), i: out.length, of, rows: rows.slice(i, i + N) });
     return out;
   }
+  // Track from an earlier (or later) date: rebuild the ledger from the real trades the bot still keeps.
+  // Days recorded earlier keep their 8am starting balance; others use the balance before that day's first trade.
+  function ledgerRebuild(from) {
+    const today = pday(Date.now());
+    if (!/^\d{4}-\d\d-\d\d$/.test(from) || from > today) return { ok: false, msg: 'Pick a date up to today' };
+    const old = S.ledger.days, days = {}, firstBal = {};
+    const live = S.trades.filter((t) => t.mode === 'live');
+    const oldest = live.length ? pday(live[0].ts) : today;
+    for (const t of live) {
+      if (t.result == null || t.pnl == null) continue;
+      const d = pday(t.ts); if (d < from) continue;
+      const r = days[d] || (days[d] = [0, null, 0, 0]);
+      r[0] = r2(r[0] + t.pnl); r[2]++; if (t.result) r[3]++;
+      if (firstBal[d] == null && t.balBefore != null) firstBal[d] = t.balBefore;
+    }
+    for (const d of Object.keys(days)) days[d][1] = old[d] && old[d][1] != null ? old[d][1] : firstBal[d] != null ? firstBal[d] : null;
+    for (const [d, r] of Object.entries(old)) if (d >= from && !days[d] && (d < oldest || r[2] === 0)) days[d] = r;   // days the trade list no longer covers, and quiet days
+    S.ledger = { start: from, days };
+    save(); ledPubAt = 0; publishLedger(); publishSoon(1500, true);
+    return { ok: true, msg: from < oldest ? `Tracking from ${from}; trades before ${oldest} are no longer on the laptop, so those days show $0` : `Tracking from ${from}` };
+  }
   function publishLedger() {
     if (Date.now() - ledPubAt < 5 * 60000) return;
     ledPubAt = Date.now();
@@ -917,6 +938,7 @@ export function createAutopilot(o) {
       }
       case 'refresh': if (S.mode === 'live' && KEY) await refreshLive().catch(() => {}); break;
       case 'ledger': publishLedger(); break;
+      case 'ledgerFrom': { const r = ledgerRebuild(String(a.d || '')); ok = r.ok; msg = r.msg; log('profits ledger: ' + r.msg); break; }
       case 'score': if (Date.now() - sbPubAt > 5 * 60000) { sbPubAt = Date.now(); sbChanged = false; setTimeout(() => publish(scoreboard(), true), 2500); } break;
       default: ok = false; msg = 'Unknown command';
     }
