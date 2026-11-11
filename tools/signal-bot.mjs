@@ -150,9 +150,11 @@ if (!DRY && !CHECK_AP) {
   const { writeFileSync } = await import('node:fs');
   const LOCK = resolve(ROOT, 'bot.lock');
   const readLock = () => { try { return JSON.parse(readFileSync(LOCK, 'utf8')); } catch { return null; } };
+  // a lock left by a copy that was just stopped (e.g. by the installer) doesn't count: check the process is still alive
+  const alive = (pid) => { try { process.kill(pid, 0); return true; } catch (e) { return e.code === 'EPERM'; } };
   const other = readLock();
-  if (other && other.pid !== process.pid && Date.now() - other.at < 60000) {
-    log(`another copy of the bot is already running (pid ${other.pid}, topic ${String(other.topic || '').slice(0, 4)}…); this copy will exit. If you just reinstalled, restart the laptop to clear the old one.`);
+  if (other && other.pid !== process.pid && Date.now() - other.at < 60000 && alive(other.pid)) {
+    log(`another copy of the bot is already running (pid ${other.pid}, topic ${String(other.topic || '').slice(0, 4)}…); this copy will exit. To stop the other one, run the installer again (it stops every copy first).`);
     await sleep(60000);   // keeps a restart loop from spinning
     process.exit(0);
   }
@@ -161,7 +163,7 @@ if (!DRY && !CHECK_AP) {
   touch(); setInterval(() => {
     // if two started at once, the older one keeps running
     const l = readLock();
-    if (l && l.pid !== process.pid && Date.now() - l.at < 60000 && (l.started || 0) <= started) { log(`another copy is running (pid ${l.pid}); exiting`); process.exit(0); }
+    if (l && l.pid !== process.pid && Date.now() - l.at < 60000 && (l.started || 0) <= started && alive(l.pid)) { log(`another copy is running (pid ${l.pid}); exiting`); process.exit(0); }
     touch();
   }, 20000);
 }
