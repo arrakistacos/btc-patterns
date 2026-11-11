@@ -4,9 +4,10 @@
 //   top row      8 health lights, a steady dim line when all is well (it also marks the top of the chart)
 //                1 bot  2 Bitcoin price  3 Polymarket odds  4 Polymarket US  5 autopilot  6 phone alerts
 //                7 Healthchecks  8 the Pi itself (temperature, power)
-//   rows 2-8     the last 8 five-minute candles, the right-hand one is the window being traded now
-//                (green/red = above/below its price to beat, gently pulsing)
-//   joystick     press: scroll price and today's profit · up/down: brightness · left/right: 40 min / 2 h chart
+//   rows 2-8     the Profits page chart, one column per day (midnight to midnight, Central), today on the right
+//                and gently pulsing. Balance view: a blue bar from $0 up to the balance, the day's profit
+//                stacked on top in green or the part lost in red. Profit view: green bars up, red bars down.
+//   joystick     press: scroll today's profit and the balance · up/down: brightness · left/right: balance / profit
 //
 // It reads what the bot writes every second (LED_FILE, in the bot's private run folder: memory, not the SD card)
 // and asks the bot's launcher whether it is running or locked, so it still shows "locked" or "down" when the bot
@@ -21,6 +22,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 export const C = {
   off: [0, 0, 0], green: [0, 255, 40], red: [255, 16, 8], amber: [255, 120, 0], blue: [24, 64, 255],
   purple: [170, 40, 255], cyan: [0, 190, 255], white: [255, 255, 255], gold: [255, 190, 0], grey: [110, 110, 110],
+  bal: [20, 70, 235],   // the Profits page's balance blue
 };
 const mul = (c, k) => c.map((v) => v * k);
 
@@ -57,34 +59,42 @@ export function healthLights(st) {
   return L;
 }
 
-// ---------------------------------------------------------------- chart
-// 7 rows x 8 columns. candles: [[t,o,h,l,c], ...] oldest first, the last one is the current window.
-export function chartGrid(cs, ptb, group = 1) {
-  if (!cs || !cs.length) return null;
-  let k = cs;
-  if (group > 1) {
-    // merge into 'group'-candle columns aligned so the current window stays in the last column on its own
-    const cur = cs[cs.length - 1], rest = cs.slice(0, -1), out = [];
-    for (let i = rest.length; i > 0; i -= group) {
-      const g = rest.slice(Math.max(0, i - group), i);
-      out.unshift([g[0][0], g[0][1], Math.max(...g.map((x) => x[2])), Math.min(...g.map((x) => x[3])), g[g.length - 1][4]]);
-    }
-    k = [...out, cur];
+// ---------------------------------------------------------------- profits chart
+// days: [[date, pnl, startBalance|null, trades], ...] oldest first, today last (the bot's daily ledger).
+// Returns 8 columns (or fewer, right-aligned), each a list of [row, colour] with row 0 = top of the 7 chart rows,
+// drawn like the Profits page. Every profit or loss shows as at least one pixel, so a small day is still visible.
+export function profitGrid(days, view = 'bal') {
+  const D = (days || []).slice(-8), R = 7, out = [];
+  const off = 8 - D.length;
+  if (view === 'bal') {
+    let hi = 0;
+    for (const [, pnl, sb] of D) if (sb != null) hi = Math.max(hi, sb, sb + pnl);
+    if (!(hi > 0)) return out;
+    D.forEach(([, pnl, sb], i) => {
+      if (sb == null) return;
+      const top = Math.max(sb, sb + pnl);
+      const H = Math.max(1, Math.min(R, Math.round(top / hi * R)));
+      const cap = pnl ? Math.max(1, Math.min(H, Math.round(Math.abs(pnl) / hi * R))) : 0;
+      const px = [];
+      for (let k = 0; k < H; k++) px.push([R - 1 - k, k >= H - cap ? (pnl > 0 ? C.green : C.red) : C.bal]);
+      out.push({ col: off + i, px, today: i === D.length - 1 });
+    });
+    return out;
   }
-  k = k.slice(-8);
-  let hi = Math.max(...k.map((x) => x[2])), lo = Math.min(...k.map((x) => x[3]));
-  if (ptb != null) { hi = Math.max(hi, ptb); lo = Math.min(lo, ptb); }
-  const minSpan = 20 * group;   // don't blow a quiet $5 wiggle up to full height
-  if (hi - lo < minSpan) { const m = (hi + lo) / 2; hi = m + minSpan / 2; lo = m - minSpan / 2; }
-  const row = (p) => Math.max(0, Math.min(6, Math.round((hi - p) / (hi - lo) * 6)));
-  const cols = [];
-  const off = 8 - k.length;
-  k.forEach((x, i) => {
-    const [, o, h, l, c] = x, last = i === k.length - 1;
-    const base = last && ptb != null ? ptb : o;
-    cols.push({ col: off + i, wick: [row(h), row(l)], body: [row(Math.max(o, c)), row(Math.min(o, c))], up: c >= base, last });
+  // profit view: bars up from a zero line for profit, down for loss
+  let hi = 0, lo = 0;
+  for (const [, pnl, , n] of D) if (n) { hi = Math.max(hi, pnl); lo = Math.min(lo, pnl); }
+  if (hi === 0 && lo === 0) hi = 1;
+  let z = Math.round(hi / (hi - lo) * R);                       // rows above the zero line
+  if (hi > 0) z = Math.max(1, z); if (lo < 0) z = Math.min(R - 1, z);
+  D.forEach(([, pnl, , n], i) => {
+    const px = [];
+    if (!n || !pnl) { if (n) px.push([Math.min(R - 1, z), C.grey]); }
+    else if (pnl > 0) { const h = Math.max(1, Math.min(z, Math.round(pnl / (hi - lo) * R))); for (let k = 0; k < h; k++) px.push([z - 1 - k, C.green]); }
+    else { const h = Math.max(1, Math.min(R - z, Math.round(-pnl / (hi - lo) * R))); for (let k = 0; k < h; k++) px.push([z + k, C.red]); }
+    out.push({ col: off + i, px, today: i === D.length - 1 });
   });
-  return cols;
+  return out;
 }
 
 // ---------------------------------------------------------------- tiny font (3x5) for the scrolling text
@@ -119,7 +129,7 @@ const ICON = {
 };
 
 // ---------------------------------------------------------------- whole frame
-// st: { now, bot, data, tempC, throttled }   ui: { group, text: {cols, x, colour}, flash: {colour, k} }
+// st: { now, bot, data, tempC, throttled }   ui: { view: 'bal'|'pnl', text: {cols, x0, colour}, flash: {colour, k} }
 // returns 64 [r,g,b] in screen order (row 0 at the top, left to right), before brightness
 export function frame(st, ui = {}) {
   const px = Array.from({ length: 64 }, () => [0, 0, 0]);
@@ -140,15 +150,8 @@ export function frame(st, ui = {}) {
     ic.forEach((r, y) => [...r].forEach((b, x) => { if (b === '1') set(x, y + 1, col); }));
     return px;
   }
-  const grid = chartGrid(d.cs, d.ptb, ui.group || 1);
-  if (grid) {
-    const pulse = 0.7 + 0.3 * Math.sin(st.now / 1000 * Math.PI);
-    for (const g of grid) {
-      const base = g.up ? C.green : C.red, k = g.last ? pulse : 1;
-      for (let y = g.wick[0]; y <= g.wick[1]; y++) set(g.col, y + 1, mul(base, 0.18 * k));
-      for (let y = g.body[0]; y <= g.body[1]; y++) set(g.col, y + 1, mul(base, k));
-    }
-  }
+  const pulse = 0.55 + 0.45 * (0.5 + 0.5 * Math.sin(st.now / 1000 * Math.PI));   // today: still in progress
+  for (const g of profitGrid(d.days, ui.view || 'bal')) for (const [y, c] of g.px) set(g.col, y + 1, g.today ? mul(c, pulse) : c);
   if (ui.flash && ui.flash.k > 0) for (let y = 1; y < 8; y++) for (let x = 0; x < 8; x++) {
     const p = px[y * 8 + x], f = ui.flash.k;
     px[y * 8 + x] = p.map((v, i) => v * (1 - f) + ui.flash.colour[i] * f);
@@ -214,9 +217,9 @@ async function main() {
   const LEVELS = [0.06, 0.12, 0.25, 0.45, 0.7, 1];
   const NIGHT = (process.env.LED_NIGHT || '22-7').split('-').map(Number);   // dimmer from 10 pm to 7 am (Central)
   const log = (...a) => console.log(new Date().toISOString().slice(11, 19), ...a);
-  let ui = { level: 3, group: 1 };
+  let ui = { level: 3, view: 'bal' };
   try { ui = Object.assign(ui, JSON.parse(fs.readFileSync(SETTINGS, 'utf8'))); } catch { /* defaults */ }
-  const saveUi = () => { try { fs.writeFileSync(SETTINGS, JSON.stringify({ level: ui.level, group: ui.group })); } catch { /* read-only */ } };
+  const saveUi = () => { try { fs.writeFileSync(SETTINGS, JSON.stringify({ level: ui.level, view: ui.view })); } catch { /* read-only */ } };
 
   let dev = findSense();
   while (!dev.fb) {
@@ -264,9 +267,9 @@ async function main() {
         if (dir === 'press') {
           const d = st.data;
           if (st.bot !== 'running') scroll(st.bot === 'locked' ? 'LOCKED' : st.bot === 'parked' ? 'PARKED' : 'DOWN', C.white);
-          else scroll(`${priceText(d && d.price)}  ${money((d && d.pnl) || 0)}`, d && d.pnl < 0 ? C.red : C.green);
+          else scroll(`${money((d && d.pnl) || 0)}  ${d && d.bal != null ? '$' + Math.round(d.bal) : ''}`, d && d.pnl < 0 ? C.red : C.green);
         } else if (dir === 'up' || dir === 'down') { ui.level = Math.max(0, Math.min(LEVELS.length - 1, ui.level + (dir === 'up' ? 1 : -1))); saveUi(); }
-        else { ui.group = ui.group === 1 ? 3 : 1; saveUi(); }
+        else { ui.view = ui.view === 'pnl' ? 'bal' : 'pnl'; saveUi(); }
       }
     });
     s.on('error', (e) => log('joystick:', e.message));
@@ -277,7 +280,7 @@ async function main() {
     const hour = +new Intl.DateTimeFormat('en-US', { timeZone: 'America/Chicago', hour: 'numeric', hourCycle: 'h23' }).format(st.now);
     const night = NIGHT[0] > NIGHT[1] ? hour >= NIGHT[0] || hour < NIGHT[1] : hour >= NIGHT[0] && hour < NIGHT[1];
     const bright = LEVELS[ui.level] * (night ? 0.5 : 1);
-    const u = { group: ui.group };
+    const u = { view: ui.view };
     if (text) { const x0 = Math.floor((st.now - text.at) / 110); if (x0 > text.cols.length - 8) text = null; else u.text = { cols: text.cols, x0, colour: text.colour }; }
     if (flash) { const t = (st.now - flash.at) / 1500; if (t >= 1) flash = null; else u.flash = { colour: flash.colour, k: Math.max(0, Math.sin(t * Math.PI * 3)) * 0.8 }; }
     try { fs.writeSync(fd, rgb565(toNative(frame(st, u), ROT), bright), 0, 128, 0); } catch (e) { log('matrix write failed:', e.message); }

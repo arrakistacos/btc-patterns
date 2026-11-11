@@ -491,7 +491,7 @@ setInterval(() => {
 // Healthchecks.io: your phone hears about it if this bot, its computer or its internet goes quiet
 const HC_URL = process.env.HC_PING_URL || (process.env.HC_PING_KEY ? `https://hc-ping.com/${encodeURIComponent(process.env.HC_PING_KEY.trim())}/${encodeURIComponent(process.env.HC_SLUG || 'btc-bot')}` : '');
 const HB = createHeartbeat({ url: DRY ? '' : HC_URL, every: +process.env.HC_EVERY_S || 60, health, state: () => AP.state(), up: () => nowS() - botStartS, host: hostname(), log, noPriceS: NO_PRICE_S });
-// The Pi's LED face (tools/pi-led.mjs) reads this: the last 24 candles, the price to beat and health. No secrets.
+// The Pi's LED face (tools/pi-led.mjs) reads this: the daily profits ledger, the balance and health. No secrets.
 const LED_FILE = DRY ? '' : process.env.LED_FILE || '';
 if (LED_FILE) {
   const { writeFileSync, renameSync } = await import('node:fs');
@@ -499,8 +499,8 @@ if (LED_FILE) {
     try {
       const t = nowS(), Ws = bucket(t), info = AP.ledInfo(), left = budget.left();
       const st = {
-        v: 1, ts: Date.now(), price: C.length ? C[C.length - 1].c : null, Ws, ptb: ptb.Ws === Ws ? ptb.K : null,
-        cs: C.slice(-24).map((k) => [k.t, k.o, k.h, k.l, k.c]), h: health(), us: { k: info.k, u: info.u }, ap: info.ap, pnl: info.pnl, last: info.last,
+        v: 2, ts: Date.now(), price: C.length ? C[C.length - 1].c : null, Ws, ptb: ptb.Ws === Ws ? ptb.K : null,
+        days: info.days, bal: info.bal, h: health(), us: { k: info.k, u: info.u }, ap: info.ap, pnl: info.pnl, last: info.last,
         ntfy: { ok: pushStat.ok, at: pushStat.at, left: isFinite(left) ? Math.floor(left) : null },
         hc: Object.assign({ on: HB.on }, HB.last()),
       };

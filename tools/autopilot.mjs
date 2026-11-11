@@ -1094,8 +1094,12 @@ export function createAutopilot(o) {
   function ledInfo() {
     let lt = null;
     for (let i = S.trades.length - 1; i >= 0 && !lt; i--) { const t = S.trades[i]; if (t.mode === 'live' && (t.status === 'filled' || t.status === 'partial')) lt = t; }
-    const today = S.ledger && S.ledger.days ? S.ledger.days[pday(Date.now())] : null;
+    const L = S.ledger && S.ledger.days ? S.ledger.days : {}, t = pday(Date.now()), today = L[t];
+    // the last 14 days of the Profits page's ledger: [date, pnl, startBalance, trades]
+    const days = [];
+    for (let d = addDays(t, -13); d <= t; d = addDays(d, 1)) if (!S.ledger || !S.ledger.start || d >= S.ledger.start) { const r = L[d]; days.push([d, r ? r[0] : 0, r ? r[1] : null, r ? r[2] : 0]); }
     return {
+      days, bal: S.liveBal ? S.liveBal.buyingPower : null,
       k: KEY ? 1 : 0, u: US.up ? 1 : 0,
       ap: { on: !!S.enabled, mode: S.mode, halted: S.halted ? String(S.halted.reason || 'halted') : null },
       pnl: today ? today[0] : 0,
