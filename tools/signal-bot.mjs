@@ -223,17 +223,37 @@ function onTrade(price, size, ts) {
   if (!last || t > last.t) upsert({ t, o: last ? last.c : price, h: Math.max(price, last ? last.c : price), l: Math.min(price, last ? last.c : price), c: price, v: size });
   else if (t === last.t) { last.h = Math.max(last.h, price); last.l = Math.min(last.l, price); last.c = price; last.v += size; }
 }
+// Coinbase live trades. A connection that never opens never reports "closed", so the watchdog below replaces a
+// silent connection outright instead of waiting for it to close (that wait once left the bot without a price
+// for hours). While the live feed is down, the price comes from Coinbase's REST ticker every 2 s.
+let cbBorn = 0, cbFails = 0, cbTries = 0; const botStartS = nowS();
+// test hooks (unset in normal use): send the first CB_TEST_TRIES connections to CB_TEST_WS, and the REST price to CB_TEST_REST
+const CB_TEST_WS = process.env.CB_TEST_WS, CB_TEST_TRIES = +process.env.CB_TEST_TRIES || Infinity, CB_REST = process.env.CB_TEST_REST || 'https://api.exchange.coinbase.com/products/BTC-USD/ticker';
+const NO_PRICE_S = +process.env.NO_PRICE_ALERT_S || 180;
 function connectCoinbase() {
-  const ws = new WebSocket('wss://ws-feed.exchange.coinbase.com');
-  cbWs = ws;
-  ws.onopen = () => { ws.send(JSON.stringify({ type: 'subscribe', product_ids: ['BTC-USD'], channels: ['ticker', 'heartbeat'] })); log('coinbase connected'); };
+  if (cbWs) { const old = cbWs; cbWs = null; old.onopen = old.onmessage = old.onclose = old.onerror = null; try { old.close(); } catch { /* ignore */ } }
+  const ws = new WebSocket(CB_TEST_WS && cbTries++ < CB_TEST_TRIES ? CB_TEST_WS : 'wss://ws-feed.exchange.coinbase.com');
+  cbWs = ws; cbBorn = nowS();
+  ws.onopen = () => { if (cbWs !== ws) return; ws.send(JSON.stringify({ type: 'subscribe', product_ids: ['BTC-USD'], channels: ['ticker', 'heartbeat'] })); log('coinbase connected'); };
   ws.onmessage = (e) => {
-    lastCbMsg = nowS();
+    if (cbWs !== ws) return;
+    lastCbMsg = nowS(); cbFails = 0;
     const m = JSON.parse(e.data);
     if (m.type === 'ticker' && m.price) onTrade(+m.price, +(m.last_size || 0), m.time ? Date.parse(m.time) / 1000 : nowS());
   };
-  ws.onclose = () => { if (cbWs === ws) { log('coinbase closed — reconnecting'); setTimeout(connectCoinbase, 2000); } };
+  ws.onclose = () => { if (cbWs === ws) { cbWs = null; cbFails++; log('coinbase closed — reconnecting'); setTimeout(connectCoinbase, Math.min(60000, 2000 * cbFails)); } };
   ws.onerror = () => {};
+}
+let cbPollBusy = false, cbPollLast = 0, cbPollNoted = false;
+async function pollCoinbase() {
+  if (cbPollBusy) return; cbPollBusy = true;
+  try {
+    const ctl = new AbortController(); const to = setTimeout(() => ctl.abort(), 4000);
+    const j = await (await fetch(CB_REST, { signal: ctl.signal, headers: { 'User-Agent': 'btc-patterns-bot' } })).json();
+    clearTimeout(to);
+    const ts = j.time ? Date.parse(j.time) / 1000 : nowS();
+    if (+j.price > 0 && ts > cbPollLast) { cbPollLast = ts; onTrade(+j.price, 0, ts); if (!cbPollNoted) { cbPollNoted = true; log('coinbase live feed down — using the REST price every 2 s until it reconnects'); } }
+  } catch { /* try again in 2 s */ } finally { cbPollBusy = false; }
 }
 function twAvg(from, to) {
   let sum = 0, dur = 0, prev = null;
@@ -363,7 +383,7 @@ function evaluate() {
   if (healthy && mk != null && pm.bid != null && pm.ask != null && pm.t === Ws && C.length && e >= 5)
     AP.observeLag({ Ws, e, btc: C[C.length - 1].c, com: () => (pm.t === Ws && pm.bid != null && pm.ask != null ? { bid: pm.bid, ask: pm.ask } : null) });
   if (closed.length < 60 || !C.length) why = 'loading candles';
-  else if (!healthy) why = `feeds stale (coinbase ${cbAge.toFixed(1)}s, polymarket ${isFinite(pmAge) ? pmAge.toFixed(1) + 's' : '—'})`;
+  else if (!healthy) why = `feeds stale (coinbase ${lastTrade ? cbAge.toFixed(1) + "s" : "—"}, polymarket ${isFinite(pmAge) ? pmAge.toFixed(1) + 's' : '—'})`;
   else if (mk == null || pm.bid == null || pm.ask == null) why = 'waiting for odds';
   else if (e < Signal.START_SEC || e > Signal.END_SEC) why = e < Signal.START_SEC ? 'too early' : 'too late';
   else if (ptb.Ws !== Ws || ptb.K == null) why = 'waiting for the official price to beat' + (ptb.err ? ` (${ptb.err})` : '');
@@ -435,5 +455,22 @@ AP.start();
 setInterval(evaluate, 1000);
 setInterval(async () => { try { const rows = []; const end = bucket(nowS()) + W; const r = await getJSON(`https://api.exchange.coinbase.com/products/BTC-USD/candles?granularity=300&start=${iso(end - 36 * W)}&end=${iso(end)}`); for (const x of r) rows.push({ t: x[0], l: +x[1], h: +x[2], o: +x[3], c: +x[4], v: +x[5] }); rows.sort((a, b) => a.t - b.t); for (const k of rows) { const cur = C.find((c) => c.t === k.t); if (!cur || k.t + W <= nowS()) upsert(k); } } catch (e) { log('resync:', e.message); } }, 60000);
 setInterval(loadTuning, 30 * 60 * 1000);
-setInterval(() => { if (nowS() - lastCbMsg > 20 && cbWs) { log('coinbase silent — reconnecting'); try { cbWs.close(); } catch { /* ignore */ } } }, 5000);
+setInterval(() => {
+  const silent = nowS() - Math.max(lastCbMsg, botStartS);
+  // replace a silent connection (give each new one 15 s, longer after repeated failures)
+  if (silent > 20 && nowS() - cbBorn > Math.min(120, 15 + 5 * cbFails)) { cbFails++; log(`coinbase silent ${Math.round(silent)}s — opening a new connection`); connectCoinbase(); }
+  if (silent <= 10) cbPollNoted = false;
+}, 5000);
+setInterval(() => { if (nowS() - lastCbMsg > 10) pollCoinbase(); }, 2000);
+// tell the phone if the bot has had no Bitcoin price at all for 3 minutes, and again when it's back
+let noPriceSince = 0, noPriceTold = false;
+setInterval(() => {
+  const age = nowS() - (lastTrade || botStartS);
+  if (age > NO_PRICE_S) {
+    if (!noPriceSince) noPriceSince = nowS() - age;
+    if (!noPriceTold) { noPriceTold = true; push({ title: 'BOT HAS NO BITCOIN PRICE', body: `No price from Coinbase for ${Math.max(1, Math.round(age / 60))} min, so the bot can't trade. It keeps retrying; check the laptop's internet if this lasts.`, priority: 4, tags: 'warning' }); }
+  } else if (noPriceTold && age < 30) {
+    noPriceTold = false; push({ title: 'Bitcoin price is back', body: `Price feed restored after ${Math.max(1, Math.round((nowS() - noPriceSince) / 60))} min. Trading resumes normally.`, priority: 3, tags: 'white_check_mark' }); noPriceSince = 0;
+  }
+}, 5000);
 if (!DRY && !ARGS.has('--quiet-start')) push({ title: 'Signal bot running', body: `Alerts when BUY fires with MODEL >= ${MIN_MODEL}% and POLYMARKET >= ${MIN_MARKET}%.`, priority: 2, tags: 'robot', click: SITE });
