@@ -17,7 +17,7 @@ const SOCK = process.env.UNLOCK_SOCKET || '/run/btc-bot/unlock.sock';
 const PARK = resolve(ROOT, 'parked');                 // present = moved back to the laptop: stay locked, no alerts
 const LOG = process.env.LOG_FILE || '';
 const NTFY = (process.env.NTFY_SERVER || 'https://ntfy.sh').replace(/\/$/, ''), TOPIC = process.env.NTFY_TOPIC || '';
-const ALLOWED = ['PM_KEY_ID', 'PM_SECRET_KEY', 'AUTOPILOT_PASSWORD', 'NTFY_TOKEN'];
+const ALLOWED = ['PM_KEY_ID', 'PM_SECRET_KEY', 'AUTOPILOT_PASSWORD', 'NTFY_TOKEN', 'HC_PING_KEY', 'HC_PING_URL', 'HC_SLUG'];
 
 if (LOG && existsSync(LOG) && statSync(LOG).size > 5 * 1024 * 1024) { try { renameSync(LOG, LOG + '.old'); } catch { /* keep going */ } }
 const stamp = () => new Date().toLocaleTimeString('en-GB', { timeZone: 'UTC', hour12: false });

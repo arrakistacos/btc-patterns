@@ -212,3 +212,12 @@ irm https://raw.githubusercontent.com/arrakistacos/btc-patterns/main/tools/insta
 - The laptop gets a restricted SSH key (`~/.ssh/btc_pi_unlock`) that can only run `status`, `unlock` or `park`, and a scheduled task ("BTC Pattern Watch Pi unlock") that unlocks the Pi every 5 minutes if it has restarted, even when nobody is logged in.
 - `-Status` shows whether the Pi bot is running or locked, `-Unlock` unlocks it now, and `-Back` (as administrator) parks the Pi bot and turns the laptop bot back on. While the Pi runs the bot, `install-windows.ps1` refuses to start the laptop bot.
 - Pi log: `ssh picactus@192.168.1.118 tail -f btc-bot/signal-bot.log`; service: `sudo systemctl status btc-bot`.
+
+### Healthchecks.io: an alert when the bot goes quiet
+
+ntfy alerts come from the bot itself, so they can't tell you when the bot, its computer, its Wi-Fi or its power is gone. Healthchecks.io can: the bot pings it every minute, and Healthchecks alerts your phone when the pings stop.
+
+1. On Healthchecks.io, add a check named exactly **`btc-bot`** with **Schedule → Simple**, period **1 minute**, grace **10 minutes** (long enough for the Pi to restart and be unlocked by the laptop's 5-minute task). Use the project's existing email or phone integration.
+2. Copy the project's **ping key** (Project Settings → Ping key) into the laptop's `polymarket.env` as a new line `HC_PING_KEY=...`. On the Pi the key arrives with the unlock, like the other secrets, and is never stored there; a laptop bot reads it from the same file. `HC_SLUG` changes the check name; `HC_PING_URL` uses one check's full ping URL instead.
+
+The ping message names the computer and says how old the Bitcoin price and Polymarket odds are. If the bot is up but has had no Bitcoin price for 3 minutes or no Polymarket odds for 5, it pings `/fail`, so the check goes down right away. A locked Pi bot doesn't ping (it has no key until it is unlocked), so a Pi that rebooted while the laptop was off shows up as down too. `signal-bot.mjs --test` also sends a test ping.

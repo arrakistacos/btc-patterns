@@ -85,6 +85,41 @@ export function estimateLag(ring) {
   return { lag: best[0], corr: Math.round(best[1] * 100) / 100, n: best[2], by80, gap: ring.length ? Math.round(gs / ring.length * 1000) / 10 : null, samples: ring.length };
 }
 
+// Healthchecks.io heartbeat (optional): a ping every minute while the bot is healthy, so Healthchecks tells your
+// phone if the bot, its computer or its internet goes quiet. /fail when it is up but has no prices to trade on.
+//   url    https://hc-ping.com/<project ping key>/<check slug>   (or a check's own ping URL)
+//   health () => ({ c: s since last Bitcoin price, p: s since last Polymarket odds })   up: s since the bot started
+export function createHeartbeat({ url, every = 60, health, state = () => ({}), up, host = '', log = () => {}, noPriceS = 180, noOddsS = 300, fetchFn = fetch }) {
+  let warnedAt = 0, timer = null, lastBad = null;
+  function status() {
+    const h = health() || {}, s = state() || {}, u = up(), bad = [];
+    const cAge = h.c == null ? u : h.c, pAge = h.p == null ? u : h.p;
+    if (cAge > noPriceS) bad.push(`no Bitcoin price for ${Math.round(cAge / 60)} min`);
+    if (pAge > noOddsS) bad.push(`no Polymarket odds for ${Math.round(pAge / 60)} min`);
+    const ap = s.enabled ? `autopilot ${s.mode}${s.halted ? ' HALTED: ' + s.halted.reason : ''}` : 'autopilot off';
+    const body = `${host ? host + ' · ' : ''}${bad.length ? bad.join('; ') : 'ok'} · price ${h.c ?? '—'}s old · odds ${h.p ?? '—'}s old · ${ap}`;
+    return { ok: !bad.length, body };
+  }
+  async function ping(kind) {
+    if (!url) return null;
+    const st = status(), k = kind || (st.ok ? '' : 'fail');
+    try {
+      const r = await fetchFn(url.replace(/\/$/, '') + (k ? '/' + k : ''), { method: 'POST', body: st.body, signal: AbortSignal.timeout(10000) });
+      if (!r.ok && Date.now() - warnedAt > 3600000) { warnedAt = Date.now(); log(`healthchecks ping HTTP ${r.status}${r.status === 404 ? ' (no check with that name: create it on Healthchecks.io)' : ''}`); }
+      if (st.ok !== lastBad) { if (lastBad !== null) log(st.ok ? 'healthchecks: healthy again' : `healthchecks: reporting a problem (${st.body})`); lastBad = st.ok; }
+      return r.status;
+    } catch (e) {
+      if (Date.now() - warnedAt > 3600000) { warnedAt = Date.now(); log('healthchecks ping failed:', e.message); }
+      return null;
+    }
+  }
+  return {
+    on: !!url, status, ping,
+    start() { if (!url || timer) return; ping(); timer = setInterval(() => ping(), Math.max(10, every) * 1000); timer.unref?.(); },
+    stop() { clearInterval(timer); timer = null; },
+  };
+}
+
 export function createAutopilot(o) {
   const { dir, log, push, Signal, APC, tzName = 'America/Chicago' } = o;
   const env = o.env || process.env;

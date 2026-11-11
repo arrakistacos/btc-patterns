@@ -13,6 +13,8 @@
  *   NTFY_TOPIC   required (except --dry). Pick something long and random: anyone who knows it can read it.
  *   NTFY_SERVER  default https://ntfy.sh
  *   NTFY_TOKEN   optional access token for a protected topic
+ *   HC_PING_KEY  optional Healthchecks.io project ping key: pings check HC_SLUG (default btc-bot) every minute,
+ *                or /fail when there are no prices. HC_PING_URL instead = one check's full ping URL.
  *   TARGET       confidence target, 60–95 (default 80)
  *   BANKROLL     optional; adds the exact $ amount and share count to each alert
  *   MAX_PER_WINDOW  alerts per 5-minute window (default 1)
@@ -34,7 +36,8 @@ import { existsSync, readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { createAutopilot } from './autopilot.mjs';
+import { createAutopilot, createHeartbeat } from './autopilot.mjs';
+import { hostname } from 'node:os';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(HERE, '..');
@@ -140,6 +143,11 @@ async function push({ title, body, priority = 5, tags = 'rotating_light', click 
 if (TEST) {
   const ok = await push({ title: 'BTC Pattern Watch test', body: `If you can hear this, alerts work. Target ${TARGET}%.`, click: SITE });
   console.log(ok ? 'Test push sent.' : 'Test push FAILED — check NTFY_TOPIC / network.');
+  const hcUrl = process.env.HC_PING_URL || (process.env.HC_PING_KEY ? `https://hc-ping.com/${encodeURIComponent(process.env.HC_PING_KEY.trim())}/${encodeURIComponent(process.env.HC_SLUG || 'btc-bot')}` : '');
+  if (hcUrl) {
+    const code = await fetch(hcUrl + '/log', { method: 'POST', body: 'test from ' + hostname(), signal: AbortSignal.timeout(10000) }).then((r) => r.status, () => 0);
+    console.log(code === 200 ? 'Healthchecks.io test ping sent.' : `Healthchecks.io test ping FAILED (${code === 404 ? 'no check named ' + (process.env.HC_SLUG || 'btc-bot') : code || 'network'}).`);
+  }
   process.exit(ok ? 0 : 1);
 }
 
@@ -477,4 +485,8 @@ setInterval(() => {
     noPriceTold = false; push({ title: 'Bitcoin price is back', body: `Price feed restored after ${Math.max(1, Math.round((nowS() - noPriceSince) / 60))} min. Trading resumes normally.`, priority: 3, tags: 'white_check_mark' }); noPriceSince = 0;
   }
 }, 5000);
+// Healthchecks.io: your phone hears about it if this bot, its computer or its internet goes quiet
+const HC_URL = process.env.HC_PING_URL || (process.env.HC_PING_KEY ? `https://hc-ping.com/${encodeURIComponent(process.env.HC_PING_KEY.trim())}/${encodeURIComponent(process.env.HC_SLUG || 'btc-bot')}` : '');
+const HB = createHeartbeat({ url: DRY ? '' : HC_URL, every: +process.env.HC_EVERY_S || 60, health, state: () => AP.state(), up: () => nowS() - botStartS, host: hostname(), log, noPriceS: NO_PRICE_S });
+if (HB.on) { log(`healthchecks: pinging ${process.env.HC_PING_URL ? 'your check' : 'check "' + (process.env.HC_SLUG || 'btc-bot') + '"'} every ${Math.max(10, +process.env.HC_EVERY_S || 60)} s`); HB.start(); }
 if (!DRY && !ARGS.has('--quiet-start')) push({ title: 'Signal bot running', body: `Alerts when BUY fires with MODEL >= ${MIN_MODEL}% and POLYMARKET >= ${MIN_MARKET}%.`, priority: 2, tags: 'robot', click: SITE });
