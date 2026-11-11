@@ -32,7 +32,8 @@ const DEFAULTS = {
   mainOn: true,                          // regular BUY-signal bets use real money in Live (off = practice only, coin flips still real)
   lateAntic: false,                      // Anticipation mode: real coin-flip size steps down after each loss…
   anticStart: 20, anticStep: 5, anticFloor: 10,
-  anticBlockReset: true,                 // each new 8-hour block starts at the bottom of the ladder until a real loss in that block   // …anticStart % right after a loss, minus anticStep per coin flip since, never below anticFloor
+  anticBlockReset: true,
+  lateMaxLosses: 2,                      // stop real coin flips for the rest of the 8-hour block after this many real losses in it (0 = never)                 // each new 8-hour block starts at the bottom of the ladder until a real loss in that block   // …anticStart % right after a loss, minus anticStep per coin flip since, never below anticFloor
   lateHours: [true, true, true],         // real coin flips allowed in each 8-hour block, Central time: 12am-8am, 8am-4pm, 4pm-12am
   lateFavOnly: true,                     // real coin-flip money only when the model backs Polymarket's favorite
   lateMinReal: 65,                       // …and only when the model gives that side at least this % (60 = no extra filter)
@@ -408,6 +409,17 @@ export function createAutopilot(o) {
   }
   // What the page shows: the ladder for the next real coin flip. If the current block is switched off, that flip
   // happens in the next ticked block, which (with the per-block reset) starts at the bottom.
+  // real-money coin-flip losses so far in the current 8-hour block
+  function blockLosses(at = Date.now()) {
+    const from = blockStartMs(at); let n = 0;
+    for (let i = S.late.trades.length - 1; i >= 0; i--) {
+      const t = S.late.trades[i];
+      if ((t.ts || t.Ws * 1000) < from) break;
+      if (t.real && t.status === 'filled' && t.result === 0) n++;
+    }
+    return n;
+  }
+  const capHit = () => S.lateMaxLosses > 0 && blockLosses() >= S.lateMaxLosses;
   function anticView() {
     const hrs = Array.isArray(S.lateHours) ? S.lateHours : [true, true, true], cur = blockOf(Date.now());
     if (hrs[cur] !== false) return { since: anticSince(), next: anticPct() };
@@ -451,7 +463,7 @@ export function createAutopilot(o) {
         rec.fav = rec.quoted >= 0.5 ? 1 : 0;
         rec.blk = blockOf(Date.now());
         const hoursOk = !Array.isArray(S.lateHours) || S.lateHours[rec.blk] !== false;
-        const why = rec.pat === 'against' ? 'pattern' : S.lateFavOnly && !rec.fav ? 'underdog' : q * 100 < (S.lateMinReal || 60) - 1e-9 ? 'conf' : !hoursOk ? 'hours' : null;
+        const why = rec.pat === 'against' ? 'pattern' : S.lateFavOnly && !rec.fav ? 'underdog' : q * 100 < (S.lateMinReal || 60) - 1e-9 ? 'conf' : !hoursOk ? 'hours' : capHit() ? 'maxloss' : null;
         const real = eligible && !why;
         if (eligible && why) { rec.realSkip = why; if (why === 'pattern') rec.patSkip = 1; }
         if (real) {
@@ -496,7 +508,7 @@ export function createAutopilot(o) {
     if (S.late.trades.length > 300) S.late.trades.splice(0, S.late.trades.length - 300);
     if (rec.status === 'filled') { S.late.stats.n++; S.late.stats.staked = r2(S.late.stats.staked + rec.cost); }
     if (rec.status === 'nofill') S.late.stats.nofill++;
-    log(`late coin-flip ${rec.real ? 'REAL' : 'test'}${rec.realSkip ? ` (real skipped: ${{ pattern: 'chart pattern against', underdog: 'model backs the underdog', conf: 'model below ' + S.lateMinReal + '%', hours: BLOCKS[rec.blk] + ' is switched off' }[rec.realSkip]})` : ''}: ${rec.status} ${rec.side}${rec.px ? ' @ ' + cents(rec.px) : ''} (Polymarket showed ${cents(rec.quoted)}, model ${Math.round(q * 100)}%, ${rec.left}s left)${rec.msg ? ' - ' + rec.msg : ''}`);
+    log(`late coin-flip ${rec.real ? 'REAL' : 'test'}${rec.realSkip ? ` (real skipped: ${{ pattern: 'chart pattern against', underdog: 'model backs the underdog', conf: 'model below ' + S.lateMinReal + '%', hours: BLOCKS[rec.blk] + ' is switched off', maxloss: `${S.lateMaxLosses} real losses already this block` }[rec.realSkip]})` : ''}: ${rec.status} ${rec.side}${rec.px ? ' @ ' + cents(rec.px) : ''} (Polymarket showed ${cents(rec.quoted)}, model ${Math.round(q * 100)}%, ${rec.left}s left)${rec.msg ? ' - ' + rec.msg : ''}`);
     save(); publishSoon();
   }
   async function settleLate() {
@@ -511,6 +523,16 @@ export function createAutopilot(o) {
       t.result = won ? 1 : 0; t.pnl = r2((won ? t.qty : 0) - t.cost);
       const st = S.late.stats; st.pnl = r2(st.pnl + t.pnl); if (won) st.w++; else st.l++;
       if (t.real) { const rs = S.late.real || (S.late.real = zeroStats()); rs.n++; rs.staked = r2(rs.staked + t.cost); rs.pnl = r2(rs.pnl + t.pnl); if (won) rs.w++; else rs.l++; }
+      // loss cap: one notice when this block's real losses reach the limit (only for a flip from the current block)
+      if (t.real && !won && S.lateMaxLosses > 0 && (t.ts || t.Ws * 1000) >= blockStartMs(Date.now())) {
+        const bs = blockStartMs(Date.now()), nL = blockLosses();
+        if (nL >= S.lateMaxLosses && S.late.capNotified !== bs) {
+          S.late.capNotified = bs;
+          const nb = (blockOf(Date.now()) + 1) % 3;
+          log(`late coin-flip: ${nL} real losses this block, no more real coin flips until ${BLOCKS[nb].split('-')[0]}`);
+          push({ title: 'COIN FLIPS STOPPED FOR THIS BLOCK', body: `${nL} real coin-flip losses since ${BLOCKS[blockOf(Date.now())].split('-')[0]}. Real coin flips resume at the next time block (${BLOCKS[nb].split('-')[0]}); flips until then are practice.`, priority: 4, tags: ['stop_sign'] });
+        }
+      }
       if (t.fav != null) {   // favorite vs underdog
         const bf = S.late.byFav || (S.late.byFav = {}); const k = t.fav ? 'fav' : 'dog'; const z = bf[k] || (bf[k] = { n: 0, w: 0, staked: 0, pnl: 0 });
         z.n++; if (won) z.w++; z.staked = r2(z.staked + t.cost); z.pnl = r2(z.pnl + t.pnl);
@@ -758,10 +780,10 @@ export function createAutopilot(o) {
     const snap = {
       v: 1, ts: Date.now(), ver: AUTOPILOT_VERSION, since: STARTED, why: botWhy, note: lastNote, keys: !!KEY,
       msgs: o.budget && isFinite(o.budget.left()) ? Math.floor(o.budget.left()) : null,   // ntfy messages left (free ntfy.sh)
-      ap: { enabled: S.enabled, mode: S.mode, mainOn: S.mainOn !== false, betPct: S.betPct, dailyStopPct: S.dailyStopPct, lossStreak: S.lossStreak, cooldownMin: S.cooldownMin, goal: S.goal, lateLive: S.lateLive, lateBet: S.lateBet, lateBetPct: S.lateBetPct, lateFavOnly: S.lateFavOnly, lateMinReal: S.lateMinReal, lateHours: S.lateHours, lateAntic: S.lateAntic, anticBlockReset: S.anticBlockReset !== false, anticStart: S.anticStart, anticStep: S.anticStep, anticFloor: S.anticFloor, streak: S.streak[S.mode] || 0, notifyFills: S.notifyFills, notifyResults: S.notifyResults, minModel: minModel(o.defMinModel), minMarket: minMarket(o.defMinMarket), target: target(o.defTarget), halted: S.halted },
+      ap: { enabled: S.enabled, mode: S.mode, mainOn: S.mainOn !== false, betPct: S.betPct, dailyStopPct: S.dailyStopPct, lossStreak: S.lossStreak, cooldownMin: S.cooldownMin, goal: S.goal, lateLive: S.lateLive, lateBet: S.lateBet, lateBetPct: S.lateBetPct, lateFavOnly: S.lateFavOnly, lateMinReal: S.lateMinReal, lateHours: S.lateHours, lateAntic: S.lateAntic, lateMaxLosses: S.lateMaxLosses, anticBlockReset: S.anticBlockReset !== false, anticStart: S.anticStart, anticStep: S.anticStep, anticFloor: S.anticFloor, streak: S.streak[S.mode] || 0, notifyFills: S.notifyFills, notifyResults: S.notifyResults, minModel: minModel(o.defMinModel), minMarket: minMarket(o.defMinMarket), target: target(o.defTarget), halted: S.halted },
       bal: { live: S.liveBal, practice: S.practice }, stats: S.stats, days, acks: acks.slice(-5),
       trades: S.trades.slice(-12).map(tr),
-      late: { since: S.late.since, antic: anticView(), stats: S.late.stats, real: S.late.real || null, byPat: S.late.byPat || null, byFav: S.late.byFav || null, byBlock: lateByBlock(), trades: S.late.trades.slice(-6).map((t) => [t.ts, t.Ws, t.side, t.status, t.px || 0, t.quoted, Math.round(t.q * 100), t.result, t.pnl, t.left, t.msg || '', t.real ? 1 : 0, t.pat === 'against' ? (t.patSkip ? 2 : 1) : t.pat === 'with' ? 3 : 0, t.realSkip === 'underdog' ? 1 : t.realSkip === 'conf' ? 2 : t.realSkip === 'hours' ? 3 : 0, t.fav != null ? t.fav : (t.quoted >= 0.5 ? 1 : 0)]) },
+      late: { since: S.late.since, antic: anticView(), blockLosses: blockLosses(), capHit: capHit() ? 1 : 0, stats: S.late.stats, real: S.late.real || null, byPat: S.late.byPat || null, byFav: S.late.byFav || null, byBlock: lateByBlock(), trades: S.late.trades.slice(-6).map((t) => [t.ts, t.Ws, t.side, t.status, t.px || 0, t.quoted, Math.round(t.q * 100), t.result, t.pnl, t.left, t.msg || '', t.real ? 1 : 0, t.pat === 'against' ? (t.patSkip ? 2 : 1) : t.pat === 'with' ? 3 : 0, t.realSkip === 'underdog' ? 1 : t.realSkip === 'conf' ? 2 : t.realSkip === 'hours' ? 3 : t.realSkip === 'maxloss' ? 4 : 0, t.fav != null ? t.fav : (t.quoted >= 0.5 ? 1 : 0)]) },
       lag: { since: S.lagt.since, stats: S.lagt.stats, byGap: S.lagt.byGap, est: S.lagt.est, src: US.up ? 's' : 'p', trades: S.lagt.trades.slice(-4).map((t) => [t.ts, t.Ws, t.side, t.status, t.px || 0, t.seen, t.com, t.result, t.pnl, t.left, t.msg || '']) },
     };
     while (JSON.stringify(snap).length > 2900 && snap.trades.length > 3) snap.trades.shift();   // ntfy messages are capped at 4 KB
@@ -824,7 +846,7 @@ export function createAutopilot(o) {
         break;
       case 'set': {
         const num = (v, lo, hi) => (typeof v === 'number' && isFinite(v) && v >= lo && v <= hi ? v : undefined);
-        const upd = { betPct: num(a.betPct, 1, 100), dailyStopPct: num(a.dailyStopPct, 0, 100), lossStreak: num(a.lossStreak, 0, 10), cooldownMin: num(a.cooldownMin, 5, 1440), goal: num(a.goal, 0, 1e7), lateBet: num(a.lateBet, 1, 1000), lateBetPct: num(a.lateBetPct, 0, 100), lateMinReal: num(a.lateMinReal, 50, 99), anticStart: num(a.anticStart, 1, 50), anticStep: num(a.anticStep, 0, 50), anticFloor: num(a.anticFloor, 1, 50), minModel: a.minModel === null ? null : num(a.minModel, 50, 99), minMarket: a.minMarket === null ? null : num(a.minMarket, 50, 99) };
+        const upd = { betPct: num(a.betPct, 1, 100), dailyStopPct: num(a.dailyStopPct, 0, 100), lossStreak: num(a.lossStreak, 0, 10), cooldownMin: num(a.cooldownMin, 5, 1440), goal: num(a.goal, 0, 1e7), lateBet: num(a.lateBet, 1, 1000), lateBetPct: num(a.lateBetPct, 0, 100), lateMinReal: num(a.lateMinReal, 50, 99), anticStart: num(a.anticStart, 1, 50), anticStep: num(a.anticStep, 0, 50), anticFloor: num(a.anticFloor, 1, 50), lateMaxLosses: num(a.lateMaxLosses, 0, 20), minModel: a.minModel === null ? null : num(a.minModel, 50, 99), minMarket: a.minMarket === null ? null : num(a.minMarket, 50, 99) };
         for (const [k, v] of Object.entries(upd)) if (v !== undefined && k in a) S[k] = v;
         for (const k of ['notifyFills', 'notifyResults', 'lateFavOnly', 'mainOn', 'lateAntic', 'anticBlockReset']) if (typeof a[k] === 'boolean') S[k] = a[k];
         if (Array.isArray(a.lateHours) && a.lateHours.length === 3 && a.lateHours.every((x) => typeof x === 'boolean')) S.lateHours = a.lateHours.slice();

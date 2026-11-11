@@ -165,6 +165,12 @@
         <label class="nw"><input type="checkbox" id="lh1"> 8am–4pm</label>
         <label class="nw"><input type="checkbox" id="lh2"> 4pm–12am</label>
       </div>
+      <div class="row" style="margin:10px 0 4px">
+        <span>Stop real coin flips for the rest of the block after</span>
+        <input id="lateCap" type="number" min="0" max="20" step="1" style="width:56px">
+        <span>real losses (0 = never)</span>
+      </div>
+      <p class="hint" id="capLine" style="margin:0 0 6px"></p>
       <p class="hint" id="blkLine" style="margin:0 0 8px"></p>
       <div class="row" style="margin-bottom:4px">
         <label><input type="checkbox" id="anOn"> Anticipation mode</label>
@@ -497,6 +503,11 @@
         const why = an.none ? '(no time block is ticked, so no real coin flips)' : an.nextBlock != null ? (apx.anticBlockReset !== false ? `(this block is switched off; the ${bn[an.nextBlock]} block starts at the bottom of the ladder)` : `(this block is switched off; next real flips in the ${bn[an.nextBlock]} block)`) : null;
         $('anLine').innerHTML = `<b style="color:var(--text)">${apx.lateAntic ? 'ON' : 'Off'} · next real coin flip: ${an.next}%${esc(dollars)}</b> ` + esc(why || (an.since == null ? (apx.anticBlockReset !== false ? '(no real loss yet this time block, so it stays at the bottom until one)' : '(no real-money loss on record yet)') : `(${an.since} real coin flip${an.since === 1 ? '' : 's'} since the last real loss)`)) + `<br>Ladder: ${esc(ladder)}<br>Bets big right after a real-money loss and steps down with each real coin flip since, on the idea that a loss is rarely followed by another. Practice, skipped and unfilled flips don't move the ladder. The floor can go as low as 1%.`;
       }
+      {
+        const cap = apx.lateMaxLosses != null ? apx.lateMaxLosses : 2, nb = { 0: '8am', 1: '4pm', 2: '12am' };
+        const curB = Math.floor((+new Date().toLocaleString('en-US', { timeZone: 'America/Chicago', hour: 'numeric', hourCycle: 'h23' }) % 24) / 8);
+        $('capLine').innerHTML = !cap ? 'No loss limit.' : L.capHit ? `<b style="color:#ffb3b8">Stopped for this block: ${L.blockLosses} real losses. Real coin flips resume at ${nb[curB]}.</b>` : `Real losses this block: ${L.blockLosses || 0} of ${cap}.`;
+      }
       if (L.byBlock) {
         const names = ['12am–8am', '8am–4pm', '4pm–12am'], lhx = Array.isArray(apx.lateHours) ? apx.lateHours : [true, true, true];
         $('blkLine').textContent = 'Flips that pass your filters, by block: ' + L.byBlock.map(([n, w, st, pn, fn, fw, fst, fpn], i) => `${names[i]}${lhx[i] === false ? ' (off)' : ''} ${fn ? `${fw}/${fn} won, ${(fpn >= 0 ? '+' : '−')}$${Math.abs(fpn / fst * 100).toFixed(0)} per $100` : 'no flips yet'}`).join(' · ') + '. Flips outside your ticked hours are tracked as practice and don\'t move the anticipation ladder.';
@@ -505,7 +516,7 @@
       $('patLine').textContent = ['Chart pattern ' + (pl('against', 'against the flip') || 'against the flip: no trades yet'), pl('with', 'with it'), pl('none', 'no pattern line')].filter(Boolean).join(' · ');
       const rows = (L.trades || []).slice().reverse().map(([ts, Ws, side, status, px, quoted, q, result, pnl, left, msg, real, pat, skip, fav]) => {
         const wd = new Date(Ws * 1000);
-        const when = `<span class="nw">${wd.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}</span><div class="hint">${left}s left · model ${q}%</div>${skip ? `<div class="hint" style="color:#ffb3b8">real skipped: ${skip === 1 ? 'underdog' : skip === 3 ? 'off hours' : 'below min'}</div>` : ''}`;
+        const when = `<span class="nw">${wd.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}</span><div class="hint">${left}s left · model ${q}%</div>${skip ? `<div class="hint" style="color:#ffb3b8">real skipped: ${skip === 1 ? 'underdog' : skip === 3 ? 'off hours' : skip === 4 ? 'loss cap' : 'below min'}</div>` : ''}`;
         const tags = `${real ? ' <span class="tag l">REAL</span>' : ''}${pat === 1 || pat === 2 ? ` <span class="tag" style="background:rgba(234,57,67,.18);color:#ffb3b8">PATTERN ✗${pat === 2 ? ' · real skipped' : ''}</span>` : pat === 3 ? ' <span class="tag p">PATTERN ✓</span>' : ''}${fav === 0 && skip !== 1 ? ' <span class="tag p">UNDERDOG</span>' : ''}`;
         const sideCell = `<span class="${side === 'UP' ? 'up' : 'down'}" style="font-weight:700">${side}</span>${tags ? `<div style="margin-top:3px">${tags.trim()}</div>` : ''}`;
         if (status !== 'filled') return `<tr><td>${when}</td><td>${sideCell}</td><td colspan="2" class="muted">${esc(msg || status)}</td></tr>`;
@@ -524,6 +535,7 @@
         const pct = ap.lateBetPct > 0; $('lateUnit').value = pct ? 'pct' : 'usd'; $('lateBet').value = pct ? ap.lateBetPct : (ap.lateBet || 5);
         $('lateFav').checked = ap.lateFavOnly !== false; $('lateMin').value = ap.lateMinReal || 60;
         const lh = Array.isArray(ap.lateHours) ? ap.lateHours : [true, true, true]; for (let i = 0; i < 3; i++) $('lh' + i).checked = lh[i] !== false;
+        $('lateCap').value = ap.lateMaxLosses != null ? ap.lateMaxLosses : 2;
         $('anOn').checked = !!ap.lateAntic; $('anBlock').checked = ap.anticBlockReset !== false; $('anStart').value = ap.anticStart || 20; $('anStep').value = ap.anticStep != null ? ap.anticStep : 5; $('anFloor').value = ap.anticFloor || 10;
       }
       $('lateBody').innerHTML = rows.length ? rows.join('') : '<tr><td colspan="4" class="muted">No late coin-flip trades yet.</td></tr>';
@@ -578,14 +590,15 @@
     $('lateBet').addEventListener('input', () => { lateDirty = true; });
     $('lateUnit').addEventListener('change', () => { lateDirty = true; });
     $('lateFav').addEventListener('change', () => { lateDirty = true; });
-    for (const id of ['lh0', 'lh1', 'lh2', 'anBlock', 'anOn', 'anStart', 'anStep', 'anFloor']) $(id).addEventListener(id === 'anOn' ? 'change' : 'input', () => { lateDirty = true; });
+    for (const id of ['lateCap', 'lh0', 'lh1', 'lh2', 'anBlock', 'anOn', 'anStart', 'anStep', 'anFloor']) $(id).addEventListener(id === 'anOn' ? 'change' : 'input', () => { lateDirty = true; });
     $('lateMin').addEventListener('input', () => { lateDirty = true; });
     $('lateSave').onclick = () => {
       const bet = +$('lateBet').value, on = $('lateLive').checked, pct = $('lateUnit').value === 'pct';
       if (pct ? !(bet >= 1 && bet <= 100) : !(bet >= 1 && bet <= 1000)) return toast(pct ? 'Percent must be 1–100' : 'Bet must be $1–$1000', 'err');
       const minR = +$('lateMin').value;
       if (!(minR >= 60 && minR <= 95)) return toast('Minimum model % must be 60–95', 'err');
-      const args = Object.assign(pct ? { lateLive: on, lateBetPct: bet } : { lateLive: on, lateBet: bet, lateBetPct: 0 }, { lateFavOnly: $('lateFav').checked, lateMinReal: minR, lateHours: [0, 1, 2].map((i) => $('lh' + i).checked), lateAntic: $('anOn').checked, anticBlockReset: $('anBlock').checked, anticStart: +$('anStart').value, anticStep: +$('anStep').value, anticFloor: +$('anFloor').value });
+      const args = Object.assign(pct ? { lateLive: on, lateBetPct: bet } : { lateLive: on, lateBet: bet, lateBetPct: 0 }, { lateFavOnly: $('lateFav').checked, lateMinReal: minR, lateHours: [0, 1, 2].map((i) => $('lh' + i).checked), lateMaxLosses: +$('lateCap').value, lateAntic: $('anOn').checked, anticBlockReset: $('anBlock').checked, anticStart: +$('anStart').value, anticStep: +$('anStep').value, anticFloor: +$('anFloor').value });
+      if (!(args.lateMaxLosses >= 0 && args.lateMaxLosses <= 20 && Number.isInteger(args.lateMaxLosses))) return toast('Loss limit: a whole number 0–20 (0 = never)', 'err');
       if (args.lateAntic && !(args.anticStart >= 1 && args.anticStart <= 50 && args.anticFloor >= 1 && args.anticFloor <= args.anticStart && args.anticStep >= 0 && args.anticStep <= 50)) return toast('Anticipation: start 1–50%, floor 1% up to the start, step 0–50', 'err');
       const amount = pct ? `${bet}% of your buying power` : `$${bet}`;
       const go = () => { lateDirty = false; send('set', args, on ? 'Turning on real late coin-flip trades' : 'Saving'); };
