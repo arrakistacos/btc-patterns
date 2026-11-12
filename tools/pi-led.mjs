@@ -129,9 +129,10 @@ export function textStrip(parts) {
 export function summaryParts(d) {
   if (!d) return [['?', C.white]];
   const parts = [];
-  if (d.bal != null) parts.push(['$' + d.bal.toFixed(2) + '  ', C.white]);
+  // no "$": at 3x5 pixels it reads as noise; the sign is enough
+  if (d.bal != null) parts.push([d.bal.toFixed(2) + '  ', C.white]);
   const t = d.tot != null ? d.tot : d.pnl || 0;
-  parts.push([money(t), t < 0 ? C.red : C.green]);
+  parts.push([(t < 0 ? '-' : '+') + Math.abs(t).toFixed(2), t < 0 ? C.red : C.green]);
   return parts;
 }
 export const money = (v) => (v < 0 ? '-' : '+') + '$' + Math.abs(v).toFixed(2);
