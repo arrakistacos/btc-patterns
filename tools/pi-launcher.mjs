@@ -8,6 +8,7 @@
 // Socket commands, one JSON line each:  {cmd:'status'}  {cmd:'unlock', env:{...}}  {cmd:'park'}
 //   park = stop trading and stay locked quietly (used when the bot moves back to the laptop).
 import net from 'node:net';
+import { execFileSync } from 'node:child_process';
 import { appendFileSync, chmodSync, existsSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -46,6 +47,11 @@ async function nag() {
 setTimeout(nag, 3 * 60000).unref();
 setInterval(nag, 6 * 3600000).unref();
 
+function clockSynced() {
+  if (existsSync('/run/systemd/timesync/synchronized')) return true;
+  try { return execFileSync('timedatectl', ['show', '-p', 'NTPSynchronized', '--value'], { timeout: 3000 }).toString().trim() === 'yes'; }
+  catch { return true; }   // can't tell (not systemd): don't block
+}
 function validSecret(s) {
   try { const n = Buffer.from(String(s).trim(), 'base64').length; return n === 32 || n === 64; } catch { return false; }
 }
@@ -71,8 +77,16 @@ async function handle(msg, reply) {
     process.env.AUTOPILOT_ENV = '/dev/null/none';                            // the bot must not look for polymarket.env
     if (existsSync(PARK)) { try { unlinkSync(PARK); } catch { /* fine */ } }
     state = 'running';
-    log('unlocked by the laptop: starting the bot');
     reply({ ok: true, state });
+    // The Pi has no clock battery: after a power cut it boots with an old time until it reaches a time server, and
+    // Polymarket refuses requests stamped with the wrong time. Wait for the clock (up to 15 minutes) before trading.
+    if (!clockSynced()) {
+      log('unlocked by the laptop: waiting for the clock to sync before starting the bot');
+      const t0 = Date.now();
+      while (!clockSynced() && Date.now() - t0 < 15 * 60000) await new Promise((r) => setTimeout(r, 2000));
+      log(clockSynced() ? 'clock synced' : 'clock still not synced after 15 minutes; starting anyway');
+    }
+    log('unlocked by the laptop: starting the bot');
     try { await import('./signal-bot.mjs'); }
     catch (e) { log('the bot failed to start:', (e && e.stack) || e); process.exit(1); }
     return;

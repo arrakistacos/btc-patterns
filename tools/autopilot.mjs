@@ -231,7 +231,21 @@ export function createAutopilot(o) {
     if (!r.ok) throw new ApiError(r.status, text, path);
     return JSON.parse(text);
   }
-  const isAuthError = (e) => e && (e.status === 401 || e.status === 403);
+  // "API key timestamp expired" is this computer's clock being off (e.g. a Pi just booted without a clock battery),
+  // not a bad key: never halt for it, just skip and say so
+  const isClockError = (e) => e && e.status === 401 && /timestamp/i.test(e.message || '');
+  let clockWarnAt = 0;
+  const isAuthError = (e) => {
+    if (isClockError(e)) {
+      if (Date.now() - clockWarnAt > 6 * 3600000) {
+        clockWarnAt = Date.now();
+        log('Polymarket says this computer\'s clock is off (' + e.message.slice(0, 80).trim() + '); not trading until it is right');
+        Promise.resolve(push({ title: 'Bot clock is off', body: 'Polymarket refused a request because this computer\'s clock is wrong. The bot keeps running and trades again once the clock is right (it syncs from the internet).', priority: 4, tags: 'clock', click: o.site + 'autopilot.html' })).catch(() => {});
+      }
+      return false;
+    }
+    return e && (e.status === 401 || e.status === 403);
+  };
   const isMoneyError = (e) => /insufficient|buying power|balance|funds/i.test((e && (e.text || e.message)) || '');
 
   async function refreshLive() {
