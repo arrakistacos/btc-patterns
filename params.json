@@ -1,5 +1,5 @@
 {
- "generated": "2026-11-12T02:18:50.018Z",
+ "generated": "2026-11-12T17:38:27.754Z",
  "window": {
   "mode": "end60",
   "volBars": 24,
@@ -13,7 +13,7 @@
   "volBars": 12,
   "volScale": 1,
   "beta": 0,
-  "gamma": -0.15,
+  "gamma": 0,
   "velBars": 3
  },
  "outcomes": "polymarket.us",
