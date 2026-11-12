@@ -500,7 +500,7 @@ if (LED_FILE) {
       const t = nowS(), Ws = bucket(t), info = AP.ledInfo(), left = budget.left();
       const st = {
         v: 2, ts: Date.now(), price: C.length ? C[C.length - 1].c : null, Ws, ptb: ptb.Ws === Ws ? ptb.K : null,
-        days: info.days, bal: info.bal, h: health(), us: { k: info.k, u: info.u }, ap: info.ap, pnl: info.pnl, last: info.last,
+        days: info.days, from: info.from, tot: info.tot, bal: info.bal, h: health(), us: { k: info.k, u: info.u }, ap: info.ap, pnl: info.pnl, last: info.last,
         ntfy: { ok: pushStat.ok, at: pushStat.at, left: isFinite(left) ? Math.floor(left) : null },
         hc: Object.assign({ on: HB.on }, HB.last()),
       };
