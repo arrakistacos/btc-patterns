@@ -874,6 +874,7 @@ export function createAutopilot(o) {
 
   // ------------------------------------------------------------ remote link (ntfy)
   let K = null, lastPublish = 0, pubTimer = null, botWhy = '', acks = [];
+  const SNAP_MAX = 2900;
   const PASSWORD = env.AUTOPILOT_PASSWORD || '';
   const ready = (async () => { if (PASSWORD && o.topic) K = await APC.keys(PASSWORD, o.topic); })();
   function snapshot() {
@@ -890,9 +891,22 @@ export function createAutopilot(o) {
       h: Object.assign({ u: US.up ? 1 : 0, a: S.liveBal ? Math.round((Date.now() - S.liveBal.at) / 1000) : null, k: KEY ? 1 : 0 }, o.health ? o.health() : {}),
       lag: { since: S.lagt.since, stats: S.lagt.stats, byGap: S.lagt.byGap, est: S.lagt.est, src: US.up ? 's' : 'p', trades: S.lagt.trades.slice(-4).map((t) => [t.ts, t.Ws, t.side, t.status, t.px || 0, t.seen, t.com, t.result, t.pnl, t.left, t.msg || '']) },
     };
-    while (JSON.stringify(snap).length > 2900 && snap.trades.length > 3) snap.trades.shift();   // ntfy messages are capped at 4 KB
-    while (JSON.stringify(snap).length > 2900 && snap.late.trades.length > 2) snap.late.trades.shift();
-    while (JSON.stringify(snap).length > 2900 && snap.lag.trades.length > 1) snap.lag.trades.shift();
+    // ntfy turns a message over 4 KB into a file the pages can't read, so the sealed status must stay under it:
+    // 2,900 characters of JSON seals to about 3,950 bytes. Trim the least useful parts first, step by step.
+    const fits = () => JSON.stringify(snap).length <= SNAP_MAX;
+    if (snap.ap.halted && snap.ap.halted.detail) snap.ap.halted = Object.assign({}, snap.ap.halted, { detail: String(snap.ap.halted.detail).trim().slice(0, 90) });
+    while (!fits() && snap.trades.length > 3) snap.trades.shift();
+    while (!fits() && snap.late.trades.length > 2) snap.late.trades.shift();
+    while (!fits() && snap.lag.trades.length > 1) snap.lag.trades.shift();
+    const steps = [
+      () => { snap.lag.trades = []; }, () => { snap.lag.byGap = {}; }, () => { snap.days = snap.days.slice(-7); },
+      () => { snap.late.trades = snap.late.trades.slice(-1); }, () => { snap.trades = snap.trades.slice(-1); },
+      () => { snap.late.byPat = null; snap.late.byFav = null; }, () => { snap.days = snap.days.slice(-2); },
+      () => { snap.lag = { since: snap.lag.since, est: snap.lag.est, src: snap.lag.src, trades: [] }; },
+      () => { if (snap.ap.halted) snap.ap.halted = { reason: snap.ap.halted.reason, kind: snap.ap.halted.kind, at: snap.ap.halted.at, detail: '' }; },
+      () => { snap.late.byBlock = null; snap.note = ''; snap.why = ''; },
+    ];
+    for (const step of steps) { if (fits()) break; step(); }
     return snap;
   }
   // Status updates share ntfy's daily message allowance with BUY alerts, so they are sparing: at most one every
@@ -910,7 +924,9 @@ export function createAutopilot(o) {
     lastPublish = Date.now();
     try {
       if (o.budget) o.budget.take();
-      const r = await fetch(`${NTFY}/${T.status}`, { method: 'POST', headers: Object.assign({ Priority: '1' }, NTFY_AUTH), body: await APC.seal(K, payload || snapshot()) });
+      const body = await APC.seal(K, payload || snapshot());
+      if (body.length > 4000) log(`autopilot: status message is ${body.length} bytes, over ntfy's 4 KB limit; the pages may not see it`);
+      const r = await fetch(`${NTFY}/${T.status}`, { method: 'POST', headers: Object.assign({ Priority: '1' }, NTFY_AUTH), body });
       if (r.status === 429 && o.budget) o.budget.exhausted();
       if (!r.ok) log('autopilot: status publish HTTP', r.status);
     } catch (e) { log('autopilot: status publish failed:', e.message); }
@@ -1133,5 +1149,5 @@ export function createAutopilot(o) {
       last: lt ? { id: lt.id, ts: lt.ts, side: lt.side, result: lt.result == null ? null : !!lt.result } : null,
     };
   }
-  return { ledInfo, ledgerChunks, onSignal, observe, observeLate, settleLate, observeLag, settleLag, lagEstimate, lagFlush, tick, start, check, settle, sbSettle, scoreboard, publishScore, minModel, minMarket, target, state: () => S, hasKey: () => !!KEY, flush: publish };
+  return { ledInfo, ledgerChunks, onSignal, observe, observeLate, settleLate, observeLag, settleLag, lagEstimate, lagFlush, tick, start, check, settle, sbSettle, scoreboard, publishScore, minModel, minMarket, target, state: () => S, hasKey: () => !!KEY, flush: publish, snapshot };
 }
