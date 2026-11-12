@@ -60,6 +60,12 @@ const ARGS = new Set(process.argv.slice(2));
 const DRY = ARGS.has('--dry');
 const TEST = ARGS.has('--test');
 const CHECK_AP = ARGS.has('--check-autopilot');
+// The bot moved to the Raspberry Pi (tools/install-pi.ps1 leaves pi-host.txt here): never run a second copy on this
+// computer, or both would trade the same money. install-pi.ps1 -Back removes the file to move it back.
+if (existsSync(resolve(ROOT, 'pi-host.txt')) && !DRY && !TEST && !ARGS.has('--even-though-on-pi')) {
+  console.log(`The bot runs on the Raspberry Pi now (${readFileSync(resolve(ROOT, 'pi-host.txt'), 'utf8').trim()}), so this copy will not start. To move it back to this computer: install-pi.ps1 -Back`);
+  process.exit(0);
+}
 const NTFY_SERVER = (process.env.NTFY_SERVER || 'https://ntfy.sh').replace(/\/$/, '');
 const NTFY_TOPIC = process.env.NTFY_TOPIC || '';
 const NTFY_TOKEN = process.env.NTFY_TOKEN || '';
