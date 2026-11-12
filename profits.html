@@ -191,7 +191,7 @@
     const dLabel = (d, o) => new Date(d + 'T12:00:00Z').toLocaleDateString('en-US', Object.assign({ timeZone: 'UTC' }, o || { month: 'short', day: 'numeric' }));
     function toast(msg, kind) { const t = $('toast'); t.textContent = msg; t.className = kind || ''; t.style.display = 'block'; clearTimeout(toast.h); toast.h = setTimeout(() => { t.style.display = 'none'; }, 3500); }
 
-    let sess = null, st = null, led = null, pollTimer = null, fastUntil = 0, lastOk = 0, ledAsked = 0, refreshAsked = 0;
+    let sess = null, st = null, led = null, pollTimer = null, fastUntil = 0, lastOk = 0, ledAsked = 0, refreshAsked = 0, cfAsked = 0;
 
     // ---------------- ledger copy kept in this browser (so history loads instantly next time)
     const ledKey = () => 'btcpw.profits.ledger3.' + sess.topic;   // v3: calendar days
@@ -236,7 +236,7 @@
         if (m.kind === 'ledger') { mergeChunk(m); chunks++; }
         else if (!m.kind && (!s || m.ts > s.ts)) s = m;
       }
-      if (s && (!st || s.ts >= st.ts)) { st = s; mergeStatus(s); }
+      if (s && (!st || s.ts >= st.ts)) { st = s; mergeStatus(s); syncFrom(); }
       if (chunks || s) ledSave();
       return { s, sawAny: lines.length > 0 };
     }
@@ -248,6 +248,13 @@
         if (!r.ok) throw new Error('ntfy HTTP ' + r.status);
         fastUntil = Date.now() + 25000; schedule();
       } catch (e) { toast('Could not reach the bot: ' + e.message, 'err'); }
+    }
+    // The bot's LED face draws this chart too: keep its start date the same as this page's "Chart starts on"
+    function syncFrom(force) {
+      if (!st || st.cf === undefined || Date.now() - st.ts > 75 * 60000) return;
+      const want = prefs.from || '';
+      if (st.cf === want || (!force && Date.now() - cfAsked < 120000)) return;
+      cfAsked = Date.now(); send('chartFrom', { d: want });
     }
     function askRefresh(force) { if (!st || (!force && Date.now() - st.ts < 90000) || Date.now() - refreshAsked < 60000) return false; refreshAsked = Date.now(); send('refresh'); return true; }
     function askLedger() { if (Date.now() - ledAsked < 5 * 60000) return; ledAsked = Date.now(); send('ledger'); }
@@ -482,7 +489,7 @@
       const w = Math.round(+$('pWin').value);
       if (!(w >= 7 && w <= 2000)) return toast('Days on screen: 7 to 2,000', 'err');
       prefs = { win: w, unit: $('pUnit').value, from: $('pFrom').value || '', line: $('pLine').checked, today: $('pToday').checked, v: 2 };
-      ls.set(PREF, prefs); view.off = null; $('setDlg').close(); renderUnit(); draw();
+      ls.set(PREF, prefs); view.off = null; $('setDlg').close(); renderUnit(); draw(); syncFrom(true);
       if (prefs.from && led.start && prefs.from < led.start) {
         if (!st || Date.now() - st.ts > 75 * 60000) return toast('The bot seems offline; it will rebuild once you save again while it is running', 'err');
         send('ledgerFrom', { d: prefs.from }); ledAsked = Date.now();

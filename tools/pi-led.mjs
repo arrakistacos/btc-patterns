@@ -7,7 +7,8 @@
 //   rows 2-8     the Profits page chart, one column per day (midnight to midnight, Central), today on the right
 //                and gently pulsing. Balance view: a blue bar from $0 up to the balance, the day's profit
 //                stacked on top in green or the part lost in red. Profit view: green bars up, red bars down.
-//   joystick     press: scroll today's profit and the balance · up/down: brightness · left/right: balance / profit
+//   every 5 min  the balance (white) and the total profit since the chart's start date (green/red) scroll by
+//   joystick     press: the same scroll now · up/down: brightness · left/right: balance / profit view
 //
 // It reads what the bot writes every second (LED_FILE, in the bot's private run folder: memory, not the SD card)
 // and asks the bot's launcher whether it is running or locked, so it still shows "locked" or "down" when the bot
@@ -117,6 +118,22 @@ export function textColumns(s) {
   }
   return cols;
 }
+// several coloured pieces of text -> [{px: 5 booleans, c: colour}, ...] with 3 blank columns before and after
+export function textStrip(parts) {
+  const blank = { px: [false, false, false, false, false], c: C.off }, out = [blank, blank, blank, blank, blank, blank, blank, blank];
+  for (const [str, c] of parts) for (const px of textColumns(str)) out.push({ px, c });
+  for (let i = 0; i < 8; i++) out.push(blank);
+  return out;
+}
+// what scrolls every 5 minutes: the balance, then the total profit since the chart's start date
+export function summaryParts(d) {
+  if (!d) return [['?', C.white]];
+  const parts = [];
+  if (d.bal != null) parts.push(['$' + d.bal.toFixed(2) + '  ', C.white]);
+  const t = d.tot != null ? d.tot : d.pnl || 0;
+  parts.push([money(t), t < 0 ? C.red : C.green]);
+  return parts;
+}
 export const money = (v) => (v < 0 ? '-' : '+') + '$' + Math.abs(v).toFixed(2);
 export const priceText = (p) => (p == null ? '?' : Math.round(p).toLocaleString('en-US'));
 
@@ -129,7 +146,7 @@ const ICON = {
 };
 
 // ---------------------------------------------------------------- whole frame
-// st: { now, bot, data, tempC, throttled }   ui: { view: 'bal'|'pnl', text: {cols, x0, colour}, flash: {colour, k} }
+// st: { now, bot, data, tempC, throttled }   ui: { view: 'bal'|'pnl', text: {strip, x0}, flash: {colour, k} }
 // returns 64 [r,g,b] in screen order (row 0 at the top, left to right), before brightness
 export function frame(st, ui = {}) {
   const px = Array.from({ length: 64 }, () => [0, 0, 0]);
@@ -138,8 +155,8 @@ export function frame(st, ui = {}) {
   healthLights(st).forEach(([c, bad], x) => set(x, 0, bad ? (c === C.red && !blinkOn ? mul(c, 0.25) : c) : mul(c, 0.35)));
 
   if (ui.text) {
-    const { cols, x0, colour } = ui.text;
-    for (let x = 0; x < 8; x++) { const col = cols[x + x0]; if (col) col.forEach((on, y) => { if (on) set(x, 2 + y, colour); }); }
+    const { strip, x0 } = ui.text;
+    for (let x = 0; x < 8; x++) { const col = strip[x + x0]; if (col) col.px.forEach((on, y) => { if (on) set(x, 2 + y, col.c); }); }
     return px;
   }
   const d = st.data;
@@ -232,7 +249,8 @@ async function main() {
 
   const st = { now: Date.now(), bot: 'down', data: null, tempC: null, throttled: 0 };
   let text = null, flash = null, lastEv = null;
-  const scroll = (s, colour) => { text = { cols: [...textColumns('   '), ...textColumns(s), ...textColumns('   ')], x0: 0, colour, at: Date.now() }; };
+  const scroll = (parts) => { text = { strip: textStrip(parts), at: Date.now() }; };
+  let lastSlot = null;   // every 5 minutes on the clock (:00, :05, ...) the balance and total profit scroll by
 
   // first: an arrow pointing up for 3 s, to check the rotation
   const arrow = ['00011000', '00111100', '01111110', '11011011', '00011000', '00011000', '00011000', '00011000'];
@@ -266,8 +284,8 @@ async function main() {
         const dir = KEYS[code] === 'press' ? 'press' : joyDir(KEYS[code], ROT);
         if (dir === 'press') {
           const d = st.data;
-          if (st.bot !== 'running') scroll(st.bot === 'locked' ? 'LOCKED' : st.bot === 'parked' ? 'PARKED' : 'DOWN', C.white);
-          else scroll(`${money((d && d.pnl) || 0)}  ${d && d.bal != null ? '$' + Math.round(d.bal) : ''}`, d && d.pnl < 0 ? C.red : C.green);
+          if (st.bot !== 'running') scroll([[st.bot === 'locked' ? 'LOCKED' : st.bot === 'parked' ? 'PARKED' : 'DOWN', C.white]]);
+          else scroll(summaryParts(d));
         } else if (dir === 'up' || dir === 'down') { ui.level = Math.max(0, Math.min(LEVELS.length - 1, ui.level + (dir === 'up' ? 1 : -1))); saveUi(); }
         else { ui.view = ui.view === 'pnl' ? 'bal' : 'pnl'; saveUi(); }
       }
@@ -281,7 +299,9 @@ async function main() {
     const night = NIGHT[0] > NIGHT[1] ? hour >= NIGHT[0] || hour < NIGHT[1] : hour >= NIGHT[0] && hour < NIGHT[1];
     const bright = LEVELS[ui.level] * (night ? 0.5 : 1);
     const u = { view: ui.view };
-    if (text) { const x0 = Math.floor((st.now - text.at) / 110); if (x0 > text.cols.length - 8) text = null; else u.text = { cols: text.cols, x0, colour: text.colour }; }
+    const slot = Math.floor(st.now / 300000);
+    if (slot !== lastSlot && st.bot === 'running' && st.data && st.now - st.data.ts < 15000) { lastSlot = slot; if (!text) scroll(summaryParts(st.data)); }
+    if (text) { const x0 = Math.floor((st.now - text.at) / 110); if (x0 > text.strip.length - 8) text = null; else u.text = { strip: text.strip, x0 }; }
     if (flash) { const t = (st.now - flash.at) / 1500; if (t >= 1) flash = null; else u.flash = { colour: flash.colour, k: Math.max(0, Math.sin(t * Math.PI * 3)) * 0.8 }; }
     try { fs.writeSync(fd, rgb565(toNative(frame(st, u), ROT), bright), 0, 128, 0); } catch (e) { log('matrix write failed:', e.message); }
   }, 50);

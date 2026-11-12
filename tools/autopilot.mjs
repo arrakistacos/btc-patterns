@@ -872,7 +872,7 @@ export function createAutopilot(o) {
       bal: { live: S.liveBal, practice: S.practice }, stats: S.stats, days, acks: acks.slice(-5),
       trades: S.trades.slice(-12).map(tr),
       late: { since: S.late.since, antic: anticView(), blockLosses: blockLosses(), capHit: capHit() ? 1 : 0, stats: S.late.stats, real: S.late.real || null, byPat: S.late.byPat || null, byFav: S.late.byFav || null, byBlock: lateByBlock(), trades: S.late.trades.slice(-6).map((t) => [t.ts, t.Ws, t.side, t.status, t.px || 0, t.quoted, Math.round(t.q * 100), t.result, t.pnl, t.left, t.msg || '', t.real ? 1 : 0, t.pat === 'against' ? (t.patSkip ? 2 : 1) : t.pat === 'with' ? 3 : 0, t.realSkip === 'underdog' ? 1 : t.realSkip === 'conf' ? 2 : t.realSkip === 'hours' ? 3 : t.realSkip === 'maxloss' ? 4 : 0, t.fav != null ? t.fav : (t.quoted >= 0.5 ? 1 : 0)]) },
-      led: (() => { const d = pday(Date.now()); return [S.ledger.start, d, ...ledgerDay(d)]; })(),
+      led: (() => { const d = pday(Date.now()); return [S.ledger.start, d, ...ledgerDay(d)]; })(), cf: S.chartFrom || '',
       h: Object.assign({ u: US.up ? 1 : 0, a: S.liveBal ? Math.round((Date.now() - S.liveBal.at) / 1000) : null, k: KEY ? 1 : 0 }, o.health ? o.health() : {}),
       lag: { since: S.lagt.since, stats: S.lagt.stats, byGap: S.lagt.byGap, est: S.lagt.est, src: US.up ? 's' : 'p', trades: S.lagt.trades.slice(-4).map((t) => [t.ts, t.Ws, t.side, t.status, t.px || 0, t.seen, t.com, t.result, t.pnl, t.left, t.msg || '']) },
     };
@@ -987,6 +987,12 @@ export function createAutopilot(o) {
       }
       case 'refresh': if (S.mode === 'live' && KEY) await refreshLive().catch(() => {}); break;
       case 'ledger': publishLedger(); break;
+      case 'chartFrom': {
+        const d = String(a.d || '');
+        if (d && !/^\d{4}-\d{2}-\d{2}$/.test(d)) { ok = false; msg = 'bad date'; break; }
+        S.chartFrom = d; save(); ok = true; msg = d ? 'chart starts ' + d : 'chart starts at the ledger start';
+        log('profits chart: ' + msg); break;
+      }
       case 'ledgerFrom': { const r = ledgerRebuild(String(a.d || '')); ok = r.ok; msg = r.msg; log('profits ledger: ' + r.msg); break; }
       case 'score': if (Date.now() - sbPubAt > 5 * 60000) { sbPubAt = Date.now(); sbChanged = false; setTimeout(() => publish(scoreboard(), true), 2500); } break;
       default: ok = false; msg = 'Unknown command';
@@ -1094,12 +1100,19 @@ export function createAutopilot(o) {
   function ledInfo() {
     let lt = null;
     for (let i = S.trades.length - 1; i >= 0 && !lt; i--) { const t = S.trades[i]; if (t.mode === 'live' && (t.status === 'filled' || t.status === 'partial')) lt = t; }
+    // the Profits page's chart, built the way profits.html does it: from the page's start date (sent by the page),
+    // a day without trades carries the previous day's closing balance. Last 14 days + the total since the start.
     const L = S.ledger && S.ledger.days ? S.ledger.days : {}, t = pday(Date.now()), today = L[t];
-    // the last 14 days of the Profits page's ledger: [date, pnl, startBalance, trades]
-    const days = [];
-    for (let d = addDays(t, -13); d <= t; d = addDays(d, 1)) if (!S.ledger || !S.ledger.start || d >= S.ledger.start) { const r = L[d]; days.push([d, r ? r[0] : 0, r ? r[1] : null, r ? r[2] : 0]); }
+    const start = S.ledger && S.ledger.start ? S.ledger.start : t;
+    const from = S.chartFrom && S.chartFrom > start && S.chartFrom <= t ? S.chartFrom : start;
+    const days = []; let prevEnd = null, tot = 0;
+    for (let d = start; d <= t; d = addDays(d, 1)) {
+      const r = L[d] || [0, null, 0, 0], sb = r[1] != null ? r[1] : prevEnd;
+      if (sb != null) prevEnd = sb + r[0];
+      if (d >= from) { days.push([d, r[0], sb, r[2]]); tot += r[0]; }
+    }
     return {
-      days, bal: S.liveBal ? S.liveBal.buyingPower : null,
+      days: days.slice(-14), from, tot: Math.round(tot * 100) / 100, bal: S.liveBal ? S.liveBal.buyingPower : null,
       k: KEY ? 1 : 0, u: US.up ? 1 : 0,
       ap: { on: !!S.enabled, mode: S.mode, halted: S.halted ? String(S.halted.reason || 'halted') : null },
       pnl: today ? today[0] : 0,
