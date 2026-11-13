@@ -7,7 +7,8 @@
 //   rows 2-8     the Profits page chart, one column per day (midnight to midnight, Central), today on the right
 //                and gently pulsing. Balance view: a blue bar from $0 up to the balance, the day's profit
 //                stacked on top in green or the part lost in red. Profit view: green bars up, red bars down.
-//   every 5 min  the balance (white) and the total profit since the chart's start date (green/red) scroll by
+//   every minute the balance (white) and the total profit since the chart's start date (green/red) scroll by
+//                (LED_SCROLL_MIN changes how often)
 //   joystick     press: the same scroll now · up/down: brightness · left/right: balance / profit view
 //
 // It reads what the bot writes every second (LED_FILE, in the bot's private run folder: memory, not the SD card)
@@ -251,7 +252,8 @@ async function main() {
   const st = { now: Date.now(), bot: 'down', data: null, tempC: null, throttled: 0 };
   let text = null, flash = null, lastEv = null;
   const scroll = (parts) => { text = { strip: textStrip(parts), at: Date.now() }; };
-  let lastSlot = null;   // every 5 minutes on the clock (:00, :05, ...) the balance and total profit scroll by
+  let lastSlot = null;   // on the minute (every LED_SCROLL_MIN minutes) the balance and total profit scroll by
+  const SCROLL_MS = Math.max(1, +process.env.LED_SCROLL_MIN || 1) * 60000;
 
   // first: an arrow pointing up for 3 s, to check the rotation
   const arrow = ['00011000', '00111100', '01111110', '11011011', '00011000', '00011000', '00011000', '00011000'];
@@ -300,7 +302,7 @@ async function main() {
     const night = NIGHT[0] > NIGHT[1] ? hour >= NIGHT[0] || hour < NIGHT[1] : hour >= NIGHT[0] && hour < NIGHT[1];
     const bright = LEVELS[ui.level] * (night ? 0.5 : 1);
     const u = { view: ui.view };
-    const slot = Math.floor(st.now / 300000);
+    const slot = Math.floor(st.now / SCROLL_MS);
     if (slot !== lastSlot && st.bot === 'running' && st.data && st.now - st.data.ts < 15000) { lastSlot = slot; if (!text) scroll(summaryParts(st.data)); }
     if (text) { const x0 = Math.floor((st.now - text.at) / 110); if (x0 > text.strip.length - 8) text = null; else u.text = { strip: text.strip, x0 }; }
     if (flash) { const t = (st.now - flash.at) / 1500; if (t >= 1) flash = null; else u.flash = { colour: flash.colour, k: Math.max(0, Math.sin(t * Math.PI * 3)) * 0.8 }; }
