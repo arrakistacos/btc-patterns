@@ -1,19 +1,19 @@
 {
- "generated": "2026-11-13T17:15:50.437Z",
+ "generated": "2026-11-14T01:29:11.112Z",
  "window": {
   "mode": "end60",
-  "volBars": 24,
-  "volScale": 0.85,
+  "volBars": 3,
+  "volScale": 1,
   "beta": 0,
   "gamma": -0.15,
   "velBars": 3
  },
  "marketMatch": {
   "mode": "end60",
-  "volBars": 12,
+  "volBars": 6,
   "volScale": 1,
   "beta": 0,
-  "gamma": 0,
+  "gamma": -0.15,
   "velBars": 3
  },
  "outcomes": "polymarket.us",
