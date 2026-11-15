@@ -1,10 +1,10 @@
 {
- "generated": "2026-11-14T15:52:00.861Z",
+ "generated": "2026-11-15T01:06:51.267Z",
  "window": {
   "mode": "end60",
   "volBars": 3,
   "volScale": 1,
-  "beta": 0.5,
+  "beta": 0,
   "gamma": -0.15,
   "velBars": 3
  },
