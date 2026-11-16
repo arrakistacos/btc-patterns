@@ -213,6 +213,10 @@ irm https://raw.githubusercontent.com/arrakistacos/btc-patterns/main/tools/insta
 - `-Status` shows whether the Pi bot is running or locked, `-Unlock` unlocks it now, and `-Back` (as administrator) parks the Pi bot and turns the laptop bot back on. While the Pi runs the bot, `install-windows.ps1` refuses to start the laptop bot.
 - Pi log: `ssh picactus@192.168.1.118 tail -f btc-bot/signal-bot.log`; service: `sudo systemctl status btc-bot`.
 
+### Coin-flip nights (autopilot page)
+
+The autopilot page's "Coin-flip nights" card shows what each night would have done with your current real-money rules (ticked blocks, favorite only, model minimum, no chart pattern against, the anticipation ladder and the loss cap), each night from $100, then every way an average night and a busier night can go with today's win rate and average cost. The maths is `flipstats.js`. The bot keeps 60 days of settled coin flips (`S.flips`, seeded once from `flip-seed.json` if present) and sends them when the page asks (command `flips`, 60 rows a message).
+
 ### Robot-head case and LED face (Sense HAT)
 
 `hardware/bot-head/` holds a 3D-printable robot-head case for a Pi 5 with a Sense HAT (no GPIO riser): `bot-head.scad` (OpenSCAD, every dimension a parameter) and ready STLs (`face`, `back`, `base`, and `coupon`, a 10-minute test piece of the mouth). The HAT's 8x8 LED matrix is the mouth and shines through 0.6 mm of white PETG; the right eye is a hole over the joystick.

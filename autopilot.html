@@ -39,6 +39,8 @@
   #login .field { align-items: stretch; }
   .field > span { font-size: 12px; color: var(--muted); }
   .hint { font-size: 12px; color: var(--muted); }
+  h4.sub { margin: 16px 0 6px; font-size: 13px; font-weight: 600; }
+  .wl { font-family: var(--mono); letter-spacing: .14em; white-space: nowrap; } td.lbl { min-width: 84px; } td.bets { font-size: 12px; white-space: nowrap; } .wl .w { color: var(--up); } .wl .l { color: var(--down); } .wl .x { color: var(--muted); opacity: .55; }
 
   /* login */
   #login { max-width: 440px; margin: 40px auto; }
@@ -189,6 +191,28 @@
       </table></div>
     </div>
 
+    <div class="card" id="nightsCard">
+      <h3>Coin-flip nights <a href="#" id="nightsRefresh" class="hint" style="text-transform:none;letter-spacing:0;font-weight:500">refresh</a></h3>
+      <p class="hint" id="nightsRules" style="margin-top:0">Waiting for the coin-flip history from the bot…</p>
+      <div class="scroll"><table>
+        <thead><tr><th>Night</th><th class="r hidem">Flips</th><th>Results</th><th class="hidem">Bets</th><th class="r">Ended at</th></tr></thead>
+        <tbody id="nightsBody"><tr><td colspan="5" class="muted">—</td></tr></tbody>
+      </table></div>
+      <p class="hint" id="nightsSum"></p>
+      <h4 class="sub" id="typTitle"></h4>
+      <div class="scroll"><table>
+        <thead><tr><th>Losses</th><th>Results</th><th class="hidem">Bets</th><th class="r hidem">Ends at</th><th class="r">Gain</th><th class="r">Chance</th></tr></thead>
+        <tbody id="typBody"></tbody>
+      </table></div>
+      <p class="hint" id="typSum"></p>
+      <h4 class="sub" id="busyTitle"></h4>
+      <div class="scroll"><table>
+        <thead><tr><th>Losses</th><th>Results</th><th class="r hidem">Ends at</th><th class="r">Gain</th><th class="r">Chance</th></tr></thead>
+        <tbody id="busyBody"></tbody>
+      </table></div>
+      <p class="hint" id="busySum" style="margin-bottom:0"></p>
+    </div>
+
     <div class="card">
       <h3>US lag test <span class="tag p" style="text-transform:none;letter-spacing:0">PRACTICE</span></h3>
       <p class="hint" style="margin-top:0">The top Polymarket traders win on speed: they buy before prices catch up with Bitcoin. About once a second the bot records Polymarket US prices next to polymarket.com's (the odds the bot watches) to measure how far US trails. When a side on US is 3¢+ cheaper than .com says it's worth, it paper-buys $10 there (once per window), re-checking the US price a moment later the way a real order would. No real money.</p>
@@ -265,10 +289,13 @@
 
 <script>
   (function () {
-    var s = document.createElement('script');
-    s.src = 'apcrypto.js?v=' + Math.floor(Date.now() / 60000).toString(36);
-    s.onload = function () { window.startAutopilotPage(); };
-    document.body.appendChild(s);
+    var v = Math.floor(Date.now() / 60000).toString(36), left = 2;
+    ['apcrypto.js', 'flipstats.js'].forEach(function (f) {
+      var s = document.createElement('script');
+      s.src = f + '?v=' + v;
+      s.onload = function () { if (--left === 0) window.startAutopilotPage(); };
+      document.body.appendChild(s);
+    });
   })();
 
   window.startAutopilotPage = function () {
@@ -290,6 +317,54 @@
     let pollTimer = null, fastUntil = 0;
     const pending = new Map();   // nonce -> { label, at }
 
+    // ---------------- coin-flip nights (flipstats.js): the bot's archive of settled flips, 60 rows per message
+    const FLS = 'btcpw.flips';
+    let flips = null, flipsAt = 0, flipsAsked = 0; const flipParts = new Map();
+    try { const c = JSON.parse(localStorage.getItem(FLS) || 'null'); if (c && Array.isArray(c.rows)) { flips = c.rows; flipsAt = c.at || 0; } } catch (e) {}
+    function flipChunk(m) {
+      if (!Array.isArray(m.rows) || m.ts <= flipsAt) return false;
+      let g = flipParts.get(m.ts); if (!g) { g = { of: m.of, parts: new Map() }; flipParts.set(m.ts, g); }
+      g.parts.set(m.i, m.rows);
+      if (g.parts.size < g.of) return false;
+      flips = []; for (let i = 0; i < g.of; i++) flips.push(...(g.parts.get(i) || []));
+      flipsAt = m.ts; flipParts.clear();
+      try { localStorage.setItem(FLS, JSON.stringify({ at: flipsAt, rows: flips })); } catch (e) {}
+      return true;
+    }
+    function askFlips(force) {
+      if (!st || (!force && Date.now() - flipsAsked < 10 * 60000) || (!force && flips && Date.now() - flipsAt < 30 * 60000)) return;
+      flipsAsked = Date.now(); send('flips', {}, null, true);
+    }
+    const wlHtml = (res, taken) => '<span class="wl">' + res.map((w, i) => `<span class="${i >= taken ? 'x' : w ? 'w' : 'l'}">${w ? 'W' : 'L'}</span>`).join('') + '</span>';
+    const dollars = (x) => '$' + x.toFixed(2);
+    const betsTxt = (b) => (b.every((x) => /%$/.test(x)) ? b.map((x) => x.slice(0, -1)).join('/') + '%' : b.join('/'));
+    const gain = (x) => `<span class="${x > 0.004 ? 'up' : x < -0.004 ? 'down' : ''}">${x >= 0 ? '+' : '−'}$${Math.abs(x).toFixed(2)}</span>`;
+    const pctTxt = (p) => (p >= 0.1 ? Math.round(p * 100) : p >= 0.01 ? (p * 100).toFixed(1) : (p * 100).toFixed(2)) + '%';
+    function renderNights() {
+      if (!flips || !st || !st.ap || !window.FlipStats) return;
+      const F = window.FlipStats, ap = st.ap;
+      const cfg = F.defaults({ favOnly: ap.lateFavOnly, minReal: ap.lateMinReal || 60, hours: ap.lateHours, antic: ap.lateAntic, start: ap.anticStart, step: ap.anticStep, floor: ap.anticFloor, blockReset: ap.anticBlockReset, maxLosses: ap.lateMaxLosses || 0, betPct: ap.lateBetPct || 0, betUsd: ap.lateBet || 10 });
+      const hours = cfg.hours.map((on, i) => (on ? F.BLOCKS[i] : null)).filter(Boolean);
+      const ladder = cfg.antic ? `${cfg.blockReset ? `${cfg.floor}% until the first loss, then ` : ''}${cfg.start}% stepping down ${cfg.step} to ${cfg.floor}%` : (cfg.betPct > 0 ? `${cfg.betPct}% each` : `$${cfg.betUsd} each`);
+      $('nightsRules').textContent = `What each night would have done with your real-money rules: ${hours.join(' and ') || 'no block ticked'} Central, ${cfg.favOnly ? 'favorite only, ' : ''}model ${cfg.minReal}%+, no chart pattern against, ${ladder}${cfg.maxLosses ? `, stopping after ${cfg.maxLosses} loss${cfg.maxLosses > 1 ? 'es' : ''}` : ''}. Each night starts at $100; practice fills count, so it shows the rules, not the fill rate.`;
+      const ns = F.nights(flips, cfg);
+      if (!ns.length) { $('nightsBody').innerHTML = '<tr><td colspan="5" class="muted">No flips match these rules yet.</td></tr>'; return; }
+      const fmtDay = (n) => new Date(n.day + 'T12:00:00').toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric' }).replace(',', '') + (n.blk ? ' · ' + n.block : '') + (n.bt ? ' <span class="muted">backtest</span>' : '');
+      $('nightsBody').innerHTML = ns.map((n) => `<tr><td class="nw">${fmtDay(n)}</td><td class="r num hidem">${n.n}</td><td>${wlHtml(n.results, n.taken)}${n.taken < n.n ? '<div class="hint">stopped at the loss cap</div>' : ''}</td><td class="num bets hidem">${betsTxt(n.bets)}</td><td class="r num ${n.end >= 100 ? 'up' : 'down'}">${dollars(n.end)}</td></tr>`).join('');
+      const S = F.summary(ns), pays = 1 / S.cost - 1;
+      $('nightsSum').textContent = `That's ${S.flips} flips over ${S.nights} nights, about ${S.perNight.toFixed(1)} per night (anywhere from ${S.min} to ${S.max}). They won ${Math.round(S.win * 100)}% at an average cost of ${(S.cost * 100).toFixed(1)}¢, so a win pays about +${Math.round(pays * 100)}% of the stake.`;
+      const sz = F.sizes(ns);
+      const rowsFor = (o, withBets) => F.grouped(o).map((g) => { const m = g.members[0];
+        return `<tr><td class="lbl">${F.groupLabel(g)}</td><td>${wlHtml(m.taken, m.taken.length)}${m.stopped ? '<div class="hint">stops</div>' : ''}</td>${withBets ? `<td class="num bets hidem">${betsTxt(m.bets)}</td>` : ''}<td class="r num hidem">${dollars(g.end)}</td><td class="r num">${gain(g.end - 100)}</td><td class="r num nw">${pctTxt(g.chance)}${g.members.length > 1 ? ' each' : ''}</td></tr>`; }).join('');
+      const t = F.outcomes(sz.typical, S.win, S.cost, cfg), b = F.outcomes(sz.busy, S.win, S.cost, cfg);
+      const tail = (o) => (o.worse > 0 ? `Three or more losses happen in about ${pctTxt(o.worse)} of these nights. ` : cfg.maxLosses ? `The loss cap stops the night at ${cfg.maxLosses} losses, so nothing worse can happen. ` : '') + `Across all outcomes, the average ${o.n}-flip night ends at ${dollars(o.mean)}.`;
+      $('typTitle').textContent = `Every placement of one and two losses on a ${sz.typical}-flip night (the average)`;
+      $('typBody').innerHTML = rowsFor(t, true); $('typSum').textContent = tail(t);
+      $('busyTitle').textContent = `A busier ${sz.busy}-flip night`;
+      $('busyBody').innerHTML = rowsFor(b, false); $('busySum').textContent = tail(b);
+    }
+    $('nightsRefresh').onclick = (ev) => { ev.preventDefault(); askFlips(true); toast('Asked the bot for its coin-flip history'); };
+
     function toast(msg, kind) {
       const t = $('toast'); t.textContent = msg; t.className = kind || ''; t.style.display = 'block';
       clearTimeout(toast.h); toast.h = setTimeout(() => { t.style.display = 'none'; }, 4000);
@@ -306,13 +381,17 @@
       const r = await fetch(`${sess.server}/${sess.T.status}/json?poll=1&since=${since || '2h'}`, { cache: 'no-store' });
       if (!r.ok) throw new Error('ntfy HTTP ' + r.status);
       const lines = (await r.text()).trim().split('\n').filter(Boolean).map((l) => { try { return JSON.parse(l); } catch (e) { return null; } }).filter((m) => m && m.event === 'message');
-      let sawAny = lines.length > 0, s = null, score = null;
-      // The bot sends two kinds of message: status (no kind) and the settings scoreboard (kind 'score')
-      for (let i = lines.length - 1; i >= 0 && !(s && score); i--) {
+      let sawAny = lines.length > 0, s = null, score = null, gotFlips = false;
+      // The bot's messages: status (no kind), the settings scoreboard ('score'), the coin-flip archive in pieces
+      // ('flips'), and the Profits page's ledger ('ledger', not used here)
+      for (let i = lines.length - 1; i >= 0; i--) {
         const m = await APCrypto.open(sess.K, lines[i].message);
         if (!m) continue;
-        if (m.kind === 'score') { if (!score) score = m; } else if (!s) s = m;
+        if (m.kind === 'score') { if (!score) score = m; }
+        else if (m.kind === 'flips') { if (flipChunk(m)) gotFlips = true; }
+        else if (!m.kind && !s) s = m;
       }
+      if (gotFlips) renderNights();
       if (score && (!sc || score.ts > sc.ts)) { sc = score; renderScore(); }
       return { s, sawAny };
     }
@@ -478,6 +557,7 @@
         $('sFills').checked = ap.notifyFills; $('sResults').checked = ap.notifyResults;
       }
       renderLate(s.late);
+      renderNights(); askFlips();
       renderLag(s.lag);
       renderSeen();
       renderScore();

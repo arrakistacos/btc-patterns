@@ -5,7 +5,8 @@
 //   Ws window start (s) · q model win chance for the side · quoted polymarket.com price for the side when it decided
 //   cost all-in price per contract (price + fee) of its fill · won 1/0 · pat 0 none / 1 chart pattern against / 2 with
 //   real 1 if it was a real-money flip · bt 1 for backtest rows (before the bot kept records)
-// cfg: { favOnly, minReal (%), hours [3 booleans], antic, start, step, floor, blockReset, maxLosses, betPct, tz }
+// cfg: { favOnly, minReal (%), hours [3 booleans], antic, start, step, floor, blockReset, maxLosses, betPct, betUsd, tz }
+//   (ladder off and betPct 0 = a fixed betUsd dollars per flip, like the bot)
 (function (root, factory) {
   if (typeof module === 'object' && module.exports) module.exports = factory();
   else root.FlipStats = factory();
@@ -23,7 +24,7 @@
     return {
       favOnly: c.favOnly !== false, minReal: c.minReal != null ? +c.minReal : 65, hours: Array.isArray(c.hours) ? c.hours : [true, false, false],
       antic: c.antic !== false, start: c.start != null ? +c.start : 15, step: c.step != null ? +c.step : 5, floor: c.floor != null ? +c.floor : 10,
-      blockReset: c.blockReset !== false, maxLosses: c.maxLosses != null ? +c.maxLosses : 2, betPct: c.betPct != null ? +c.betPct : 10, tz: c.tz || TZ,
+      blockReset: c.blockReset !== false, maxLosses: c.maxLosses != null ? +c.maxLosses : 2, betPct: c.betPct != null ? +c.betPct : 10, betUsd: c.betUsd != null ? +c.betUsd : 10, tz: c.tz || TZ,
     };
   }
   // the same filters the bot uses before betting real money
@@ -43,9 +44,9 @@
     const bets = [], taken = [];
     for (const [won, cost] of results) {
       if (c.maxLosses > 0 && losses >= c.maxLosses) break;           // loss cap: no more real flips this block
-      const pct = ladderPct(c, since), stake = b * pct / 100;
+      const usd = !c.antic && !(c.betPct > 0), pct = ladderPct(c, since), stake = usd ? Math.min(b, c.betUsd) : b * pct / 100;
       b += won ? stake * (1 / cost - 1) : -stake;
-      bets.push(pct); taken.push(won);
+      bets.push(usd ? '$' + c.betUsd : pct + '%'); taken.push(won);
       since = won ? (since == null ? null : since + 1) : 0;
       if (!won) losses++;
     }

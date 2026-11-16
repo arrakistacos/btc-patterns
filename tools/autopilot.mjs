@@ -138,6 +138,27 @@ export function createAutopilot(o) {
   try { if (existsSync(STATE_FILE)) S = Object.assign(S, JSON.parse(readFileSync(STATE_FILE, 'utf8'))); } catch (e) { log('autopilot: could not read state, starting fresh:', e.message); }
   S.stats.practice = S.stats.practice || zeroStats(); S.stats.live = S.stats.live || zeroStats();
   S.streak = Object.assign({ practice: 0, live: 0 }, S.streak);
+  // Coin-flip archive for the autopilot page's night tables (flipstats.js): one compact row per settled filled
+  // flip, kept 60 days. [Ws, q, quoted, cost per contract, won, pattern 0/1 against/2 with, real, backtest]
+  const FLIP_DAYS = 60;
+  if (!Array.isArray(S.flips)) S.flips = [];
+  const flipRow = (t) => [t.Ws, Math.round(t.q * 1e4) / 1e4, t.quoted, Math.round(t.cost / t.qty * 1e4) / 1e4, t.result ? 1 : 0, t.pat === 'against' ? 1 : t.pat === 'with' ? 2 : 0, t.real ? 1 : 0, 0];
+  function addFlips(rows) {
+    const have = new Set(S.flips.map((r) => r[0])); let n = 0;
+    for (const r of rows) if (Array.isArray(r) && r.length >= 8 && !have.has(r[0])) { S.flips.push(r); have.add(r[0]); n++; }
+    if (n) {
+      S.flips.sort((a, b) => a[0] - b[0]);
+      const cut = Date.now() / 1000 - FLIP_DAYS * 86400;
+      while (S.flips.length && S.flips[0][0] < cut) S.flips.shift();
+    }
+    return n;
+  }
+  addFlips(((S.late && S.late.trades) || []).filter((t) => t.status === 'filled' && t.result != null && t.qty > 0).map(flipRow));
+  // one-time seed (older nights from before the bot kept this archive), then set aside
+  try {
+    const SEED = join(dir, 'flip-seed.json');
+    if (existsSync(SEED)) { const n = addFlips(JSON.parse(readFileSync(SEED, 'utf8'))); renameSync(SEED, SEED + '.used'); log(`coin-flip archive: added ${n} older flips`); }
+  } catch (e) { log('coin-flip archive seed:', e.message); }
   function save() {
     try { writeFileSync(STATE_FILE + '.tmp', JSON.stringify(S)); renameSync(STATE_FILE + '.tmp', STATE_FILE); }
     catch (e) { log('autopilot: could not save state:', e.message); }
@@ -621,6 +642,7 @@ export function createAutopilot(o) {
       if (s == null) continue;
       const won = (s >= 0.5) === (t.side === 'UP');
       t.result = won ? 1 : 0; t.pnl = r2((won ? t.qty : 0) - t.cost);
+      if (t.qty > 0) addFlips([flipRow(t)]);
       const st = S.late.stats; st.pnl = r2(st.pnl + t.pnl); if (won) st.w++; else st.l++;
       if (t.real) { const rs = S.late.real || (S.late.real = zeroStats()); rs.n++; rs.staked = r2(rs.staked + t.cost); rs.pnl = r2(rs.pnl + t.pnl); if (won) rs.w++; else rs.l++; }
       // loss cap: one notice when this block's real losses reach the limit (only for a flip from the current block)
@@ -957,6 +979,18 @@ export function createAutopilot(o) {
     save(); ledPubAt = 0; publishLedger(); publishSoon(1500, true);
     return { ok: true, msg: from < oldest ? `Tracking from ${from}; trades before ${oldest} are no longer on the laptop, so those days show $0` : `Tracking from ${from}` };
   }
+  // the coin-flip archive for the autopilot page, 60 rows a message (well under ntfy's 4 KB)
+  let flipPubAt = 0;
+  function flipChunks() {
+    const N = 60, of = Math.max(1, Math.ceil(S.flips.length / N)), out = [];
+    for (let i = 0; i < of; i++) out.push({ v: 1, kind: 'flips', ts: Date.now(), i, of, rows: S.flips.slice(i * N, (i + 1) * N) });
+    return out;
+  }
+  function publishFlips() {
+    if (Date.now() - flipPubAt < 60000) return;
+    flipPubAt = Date.now();
+    flipChunks().forEach((c, k) => setTimeout(() => publish(c, true), 2500 + k * 1500));
+  }
   function publishLedger() {
     if (Date.now() - ledPubAt < 5 * 60000) return;
     ledPubAt = Date.now();
@@ -1017,6 +1051,7 @@ export function createAutopilot(o) {
       }
       case 'refresh': if (S.mode === 'live' && KEY) await refreshLive().catch(() => {}); break;
       case 'ledger': publishLedger(); break;
+      case 'flips': publishFlips(); break;
       case 'chartFrom': {
         const d = String(a.d || '');
         if (d && !/^\d{4}-\d{2}-\d{2}$/.test(d)) { ok = false; msg = 'bad date'; break; }
@@ -1149,5 +1184,5 @@ export function createAutopilot(o) {
       last: lt ? { id: lt.id, ts: lt.ts, side: lt.side, result: lt.result == null ? null : !!lt.result } : null,
     };
   }
-  return { ledInfo, ledgerChunks, onSignal, observe, observeLate, settleLate, observeLag, settleLag, lagEstimate, lagFlush, tick, start, check, settle, sbSettle, scoreboard, publishScore, minModel, minMarket, target, state: () => S, hasKey: () => !!KEY, flush: publish, snapshot };
+  return { ledInfo, ledgerChunks, flipChunks, onSignal, observe, observeLate, settleLate, observeLag, settleLag, lagEstimate, lagFlush, tick, start, check, settle, sbSettle, scoreboard, publishScore, minModel, minMarket, target, state: () => S, hasKey: () => !!KEY, flush: publish, snapshot };
 }
