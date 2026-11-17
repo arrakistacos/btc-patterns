@@ -243,6 +243,7 @@
         <label class="field"><span>Bet size, % of balance per BUY alert</span><span class="row"><input id="sBet" type="number" min="1" max="100" step="1"> %</span></label>
         <label class="field"><span>Stop for the day after losing (% of the day's starting balance, 0 = never)</span><span class="row"><input id="sStop" type="number" min="0" max="100" step="5"> %</span></label>
         <label class="field"><span>Goal: notify me and pause when the balance reaches (0 = off)</span><span class="row">$<input id="sGoal" type="number" min="0" step="10"></span><span class="hint">Uses the current mode's balance: practice or your Polymarket US cash.</span></label>
+        <label class="field"><span>Real BUY-alert bets: practice for the rest of the day after this many losses (0 = no cap)</span><span class="row"><input id="sMaxL" type="number" min="0" max="100" step="1"> losses</span><span class="hint" id="sMaxLHint"></span></label>
         <label class="field"><span>Pause after this many losses in a row (0 = never)</span><span class="row"><input id="sStreak" type="number" min="0" max="10" step="1"> losses</span></label>
         <label class="field"><span>…for this long</span><span class="row"><input id="sCool" type="number" min="5" max="1440" step="5"> minutes</span></label>
         <label class="field"><span>Gap target: how sure the gap from the price to beat must be (same as the chart's target)</span><select id="sTarget"></select></label>
@@ -556,6 +557,8 @@
       // settings: don't overwrite what you're editing
       if (first || !document.activeElement || !document.activeElement.closest('.grid2')) {
         $('sMain').value = ap.mainOn === false ? '0' : '1';
+        $('sMaxL').value = ap.mainMaxLosses != null ? ap.mainMaxLosses : 6;
+        $('sMaxLHint').textContent = ap.mainMaxLosses ? `${ap.mainLossToday || 0} so far today. Bets still waiting for a result count too.` : '';
         { const g = ap.mainTally, n = ap.mainGuardN || 0;
           $('sGuard').textContent = !n ? '' : `Safety switch: back to practice if real BUY bets are below ${ap.mainGuardPct}% per $1 after ${n} bets.` +
             (g ? ` So far ${g[0]} bets, ${g[1]} won, ${g[2] >= 0 ? '+' : '−'}$${Math.abs(g[2]).toFixed(2)}${g[3] > 0 ? ` (${(g[2] / g[3] * 100).toFixed(1)}% per $1)` : ''}.` : ' No real BUY bets yet.'); }
@@ -710,7 +713,7 @@
       if (!(goal >= 0)) return toast('Goal must be $0 or more', 'err');
       if (!(streak >= 0 && streak <= 10 && Number.isInteger(streak))) return toast('Losses in a row must be 0–10', 'err');
       if (!(cool >= 5 && cool <= 1440)) return toast('Pause must be 5–1440 minutes', 'err');
-      send('set', { mainOn: $('sMain').value === '1', betPct: bet, dailyStopPct: stop, goal, lossStreak: streak, cooldownMin: cool, minModel: +$('sMinModel').value, minMarket: +$('sMinMarket').value, target: +$('sTarget').value, notifyFills: $('sFills').checked, notifyResults: $('sResults').checked }, 'Saving settings');
+      send('set', { mainOn: $('sMain').value === '1', mainMaxLosses: +$('sMaxL').value, betPct: bet, dailyStopPct: stop, goal, lossStreak: streak, cooldownMin: cool, minModel: +$('sMinModel').value, minMarket: +$('sMinMarket').value, target: +$('sTarget').value, notifyFills: $('sFills').checked, notifyResults: $('sResults').checked }, 'Saving settings');
     };
     $('pReset').onclick = () => { const b = +$('pBal').value; if (!(b >= 10)) return toast('At least $10', 'err'); send('resetPractice', { balance: b }, 'Resetting practice'); };
 
