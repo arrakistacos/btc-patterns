@@ -239,7 +239,7 @@
     <div class="card">
       <h3>Settings</h3>
       <div class="grid2">
-        <label class="field"><span>Regular BUY-alert bets</span><select id="sMain"><option value="1">Real money (when Live)</option><option value="0">Practice only (coin flips only)</option></select><span class="hint">Practice-only BUY bets still show their results here and never block a coin flip.</span></label>
+        <label class="field"><span>Regular BUY-alert bets</span><select id="sMain"><option value="1">Real money (when Live)</option><option value="0">Practice only (coin flips only)</option></select><span class="hint">Practice-only BUY bets still show their results here and never block a coin flip.</span><span class="hint" id="sGuard"></span></label>
         <label class="field"><span>Bet size, % of balance per BUY alert</span><span class="row"><input id="sBet" type="number" min="1" max="100" step="1"> %</span></label>
         <label class="field"><span>Stop for the day after losing (% of the day's starting balance, 0 = never)</span><span class="row"><input id="sStop" type="number" min="0" max="100" step="5"> %</span></label>
         <label class="field"><span>Goal: notify me and pause when the balance reaches (0 = off)</span><span class="row">$<input id="sGoal" type="number" min="0" step="10"></span><span class="hint">Uses the current mode's balance: practice or your Polymarket US cash.</span></label>
@@ -556,6 +556,9 @@
       // settings: don't overwrite what you're editing
       if (first || !document.activeElement || !document.activeElement.closest('.grid2')) {
         $('sMain').value = ap.mainOn === false ? '0' : '1';
+        { const g = ap.mainTally, n = ap.mainGuardN || 0;
+          $('sGuard').textContent = !n ? '' : `Safety switch: back to practice if real BUY bets are below ${ap.mainGuardPct}% per $1 after ${n} bets.` +
+            (g ? ` So far ${g[0]} bets, ${g[1]} won, ${g[2] >= 0 ? '+' : '−'}$${Math.abs(g[2]).toFixed(2)}${g[3] > 0 ? ` (${(g[2] / g[3] * 100).toFixed(1)}% per $1)` : ''}.` : ' No real BUY bets yet.'); }
         $('sBet').value = ap.betPct; $('sStop').value = ap.dailyStopPct;
         $('sGoal').value = ap.goal || 0;
         $('sStreak').value = ap.lossStreak != null ? ap.lossStreak : 2; $('sCool').value = ap.cooldownMin || 60;

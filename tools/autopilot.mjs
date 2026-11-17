@@ -30,6 +30,8 @@ const DEFAULTS = {
   lateLive: false, lateBet: 5,           // late coin-flip: real orders (Live mode only), dollars per trade…
   lateBetPct: 0,                         // …or, when > 0, this % of buying power per trade
   mainOn: true,                          // regular BUY-signal bets use real money in Live (off = practice only, coin flips still real)
+  mainGuardN: 30, mainGuardPct: -3,      // safety switch: after this many real regular bets, back to practice if they're below this % per $1 (0 bets = off)
+  mainTally: null,                       // { since, n, w, cost, pnl } real regular bets since real money was last switched on
   lateAntic: false,                      // Anticipation mode: real coin-flip size steps down after each loss…
   anticStart: 20, anticStep: 5, anticFloor: 10,
   anticBlockReset: true,
@@ -445,6 +447,19 @@ export function createAutopilot(o) {
   }
 
   // ------------------------------------------------------------ settlement
+  // Safety switch for real regular bets: keep a running tally since they were switched on; once there are enough
+  // of them, send them back to practice (coin flips untouched) if they're losing more than the limit per $1.
+  function guardMain(t) {
+    const g = S.mainTally || (S.mainTally = { since: t.ts, n: 0, w: 0, cost: 0, pnl: 0 });
+    g.n++; g.w += t.result ? 1 : 0; g.cost = r2(g.cost + t.cost); g.pnl = r2(g.pnl + t.pnl);
+    if (!(S.mainGuardN > 0) || S.mainOn === false || g.n < S.mainGuardN || !(g.cost > 0)) return;
+    const pct = g.pnl / g.cost * 100;
+    if (pct < S.mainGuardPct) {
+      S.mainOn = false;
+      log(`SAFETY SWITCH: real regular bets back to practice after ${g.n} bets (${g.w} won, ${money(g.pnl)}, ${pct.toFixed(1)}% per $1 < ${S.mainGuardPct}%)`);
+      push({ title: 'Regular bets back to practice', body: `Safety switch: ${g.n} real regular bets, ${g.w} won, ${money(g.pnl)} (${pct.toFixed(1)}% per $1, limit ${S.mainGuardPct}%). Coin flips are unchanged. Switch them back on in Settings to try again.`, priority: 4, tags: 'warning', click: o.site + 'autopilot.html' });
+    }
+  }
   let lastSettleCheck = 0;
   async function settle() {
     const now = Date.now() / 1000;
@@ -464,6 +479,7 @@ export function createAutopilot(o) {
       const day = dayRec(t.mode, t.ts);
       day.pnl = r2(day.pnl + t.pnl); if (won) day.w++;
       if (t.mode === 'live') ledgerAdd(t);
+      if (t.mode === 'live' && t.strategy !== 'late') guardMain(t);
       if (t.mode === 'practice' && won) S.practice.balance = r2(S.practice.balance + t.qty);
       log(`AUTOPILOT ${t.mode} ${t.side} ${won ? 'WON' : 'LOST'} ${money(t.pnl)}`);
       if (S.notifyResults) push({ title: `${t.mode === 'live' ? '' : 'PRACTICE '}${won ? 'WON' : 'LOST'} ${money(t.pnl)}`, body: `${t.side} ${t.qty} @ ${cents(t.px)} · today ${money(day.pnl)}`, priority: won ? 2 : 3, tags: won ? 'white_check_mark' : 'x', click: o.site + 'autopilot.html' });
@@ -918,7 +934,7 @@ export function createAutopilot(o) {
     const snap = {
       v: 1, ts: Date.now(), ver: AUTOPILOT_VERSION, since: STARTED, why: botWhy, note: lastNote, keys: !!KEY,
       msgs: o.budget && isFinite(o.budget.left()) ? Math.floor(o.budget.left()) : null,   // ntfy messages left (free ntfy.sh)
-      ap: { enabled: S.enabled, mode: S.mode, mainOn: S.mainOn !== false, betPct: S.betPct, dailyStopPct: S.dailyStopPct, lossStreak: S.lossStreak, cooldownMin: S.cooldownMin, goal: S.goal, lateLive: S.lateLive, lateBet: S.lateBet, lateBetPct: S.lateBetPct, lateFavOnly: S.lateFavOnly, lateMinReal: S.lateMinReal, lateMinEdge: S.lateMinEdge, lateGapFix: S.lateGapFix !== false, lateHours: S.lateHours, lateAntic: S.lateAntic, lateMaxLosses: S.lateMaxLosses, anticBlockReset: S.anticBlockReset !== false, anticStart: S.anticStart, anticStep: S.anticStep, anticFloor: S.anticFloor, streak: S.streak[S.mode] || 0, notifyFills: S.notifyFills, notifyResults: S.notifyResults, minModel: minModel(o.defMinModel), minMarket: minMarket(o.defMinMarket), target: target(o.defTarget), halted: S.halted },
+      ap: { enabled: S.enabled, mode: S.mode, mainOn: S.mainOn !== false, mainTally: S.mainTally ? [S.mainTally.n, S.mainTally.w, S.mainTally.pnl, S.mainTally.cost] : null, mainGuardN: S.mainGuardN, mainGuardPct: S.mainGuardPct, betPct: S.betPct, dailyStopPct: S.dailyStopPct, lossStreak: S.lossStreak, cooldownMin: S.cooldownMin, goal: S.goal, lateLive: S.lateLive, lateBet: S.lateBet, lateBetPct: S.lateBetPct, lateFavOnly: S.lateFavOnly, lateMinReal: S.lateMinReal, lateMinEdge: S.lateMinEdge, lateGapFix: S.lateGapFix !== false, lateHours: S.lateHours, lateAntic: S.lateAntic, lateMaxLosses: S.lateMaxLosses, anticBlockReset: S.anticBlockReset !== false, anticStart: S.anticStart, anticStep: S.anticStep, anticFloor: S.anticFloor, streak: S.streak[S.mode] || 0, notifyFills: S.notifyFills, notifyResults: S.notifyResults, minModel: minModel(o.defMinModel), minMarket: minMarket(o.defMinMarket), target: target(o.defTarget), halted: S.halted },
       bal: { live: S.liveBal, practice: S.practice }, stats: S.stats, days, acks: acks.slice(-5),
       trades: S.trades.slice(-12).map(tr),
       late: { since: S.late.since, antic: anticView(), blockLosses: blockLosses(), capHit: capHit() ? 1 : 0, stats: S.late.stats, real: S.late.real || null, byPat: S.late.byPat || null, byFav: S.late.byFav || null, byBlock: lateByBlock(), trades: S.late.trades.slice(-6).map((t) => [t.ts, t.Ws, t.side, t.status, t.px || 0, t.quoted, Math.round(t.q * 100), t.result, t.pnl, t.left, t.msg || '', t.real ? 1 : 0, t.pat === 'against' ? (t.patSkip ? 2 : 1) : t.pat === 'with' ? 3 : 0, t.realSkip === 'underdog' ? 1 : t.realSkip === 'conf' ? 2 : t.realSkip === 'hours' ? 3 : t.realSkip === 'maxloss' ? 4 : t.realSkip === 'price' ? 5 : 0, t.fav != null ? t.fav : (t.quoted >= 0.5 ? 1 : 0), t.gap != null ? Math.round(t.gap) : null]) },
@@ -1037,8 +1053,9 @@ export function createAutopilot(o) {
         break;
       case 'set': {
         const num = (v, lo, hi) => (typeof v === 'number' && isFinite(v) && v >= lo && v <= hi ? v : undefined);
-        const upd = { betPct: num(a.betPct, 1, 100), dailyStopPct: num(a.dailyStopPct, 0, 100), lossStreak: num(a.lossStreak, 0, 10), cooldownMin: num(a.cooldownMin, 5, 1440), goal: num(a.goal, 0, 1e7), lateBet: num(a.lateBet, 1, 1000), lateBetPct: num(a.lateBetPct, 0, 100), lateMinReal: num(a.lateMinReal, 50, 99), anticStart: num(a.anticStart, 1, 50), anticStep: num(a.anticStep, 0, 50), anticFloor: num(a.anticFloor, 1, 50), lateMaxLosses: num(a.lateMaxLosses, 0, 20), lateMinEdge: a.lateMinEdge === null ? null : num(a.lateMinEdge, -10, 30), minModel: a.minModel === null ? null : num(a.minModel, 50, 99), minMarket: a.minMarket === null ? null : num(a.minMarket, 50, 99) };
+        const upd = { betPct: num(a.betPct, 1, 100), dailyStopPct: num(a.dailyStopPct, 0, 100), lossStreak: num(a.lossStreak, 0, 10), cooldownMin: num(a.cooldownMin, 5, 1440), goal: num(a.goal, 0, 1e7), lateBet: num(a.lateBet, 1, 1000), lateBetPct: num(a.lateBetPct, 0, 100), lateMinReal: num(a.lateMinReal, 50, 99), anticStart: num(a.anticStart, 1, 50), anticStep: num(a.anticStep, 0, 50), anticFloor: num(a.anticFloor, 1, 50), lateMaxLosses: num(a.lateMaxLosses, 0, 20), mainGuardN: num(a.mainGuardN, 0, 1000), mainGuardPct: num(a.mainGuardPct, -100, 100), lateMinEdge: a.lateMinEdge === null ? null : num(a.lateMinEdge, -10, 30), minModel: a.minModel === null ? null : num(a.minModel, 50, 99), minMarket: a.minMarket === null ? null : num(a.minMarket, 50, 99) };
         for (const [k, v] of Object.entries(upd)) if (v !== undefined && k in a) S[k] = v;
+        if (a.mainOn === true && S.mainOn === false) S.mainTally = null;   // switched back on: the safety switch counts afresh
         for (const k of ['notifyFills', 'notifyResults', 'lateFavOnly', 'mainOn', 'lateAntic', 'anticBlockReset', 'lateGapFix']) if (typeof a[k] === 'boolean') S[k] = a[k];
         if (Array.isArray(a.lateHours) && a.lateHours.length === 3 && a.lateHours.every((x) => typeof x === 'boolean')) S.lateHours = a.lateHours.slice();
         if (typeof a.lateLive === 'boolean' && a.lateLive !== S.lateLive) {
