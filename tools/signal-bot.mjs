@@ -285,6 +285,20 @@ function twAvg(from, to) {
   if (prev && to > Math.max(prev[0], from)) { const a = Math.max(prev[0], from); sum += prev[1] * (to - a); dur += to - a; }
   return dur > 0 ? sum / dur : null;
 }
+// Start-price gap: Polymarket's start price is the official index's average over the minute before the window
+// opens; this is Coinbase's average over that same minute minus it. Coinbase often stays off from the index the
+// same way until the close, which made the coin flips see moves that weren't there, so they can correct for it.
+const startGaps = new Map();
+function startGap(Ws, K) {
+  if (startGaps.has(Ws)) return startGaps.get(Ws);
+  if (!ticks.length || ticks[0][0] > Ws - 58) return null;          // not running long enough to know (try again later)
+  const cb = twAvg(Ws - 60, Ws);
+  const g = cb != null && Math.abs(cb - K) < 100 ? cb - K : null;    // over $100 off = a bad reading, don't use it
+  startGaps.set(Ws, g);
+  for (const k of startGaps.keys()) if (k < Ws - 3600) startGaps.delete(k);
+  if (g != null) log(`start-price gap ${clock(Ws)} window: Coinbase ${g >= 0 ? '+' : '-'}$${Math.abs(g).toFixed(2)} vs Polymarket's start price`);
+  return g;
+}
 function priceAgo(sec) {
   const target = nowS() - sec;
   let best = null;
@@ -417,6 +431,14 @@ function evaluate() {
     const pVol = E.windowUpProb({ S, K, sigma: sig0 * params.volScale, elapsed: e, mode: Signal.US_SETTLEMENT_MODE, W, avgSoFar: twAvg(Ws, t), avgLast60: twAvg(Ws + W - 60, t) });
     const vel = E.velocity(closed, i, params.velBars, sig0, W);
     const pUp = E.combineWindow(pVol, patternFor === closed[i].t ? patternZ : 0, vel, params);
+    // the same chance with Coinbase shifted by the start-price gap (coin flips use this when the setting is on)
+    const gap = startGap(Ws, K);
+    let pUpFix = null;
+    if (gap != null) {
+      const a1 = twAvg(Ws, t), a2 = twAvg(Ws + W - 60, t);
+      const pv2 = E.windowUpProb({ S: S - gap, K, sigma: sig0 * params.volScale, elapsed: e, mode: Signal.US_SETTLEMENT_MODE, W, avgSoFar: a1 != null ? a1 - gap : null, avgLast60: a2 != null ? a2 - gap : null });
+      pUpFix = E.combineWindow(pv2, patternFor === closed[i].t ? patternZ : 0, vel, params);
+    }
     const favUp = mk >= 0.5, sign = favUp ? 1 : -1, favMid = favUp ? mk : 1 - mk;
     const ask = favUp ? pm.ask : 1 - pm.bid, cost = ask + Signal.fee(ask);
     const oursFav = favUp ? pUp : 1 - pUp;
@@ -426,7 +448,7 @@ function evaluate() {
     const w = { S, K, sigma: sig0 * params.volScale, left, e, Ws };
     const r = Signal.evalSignal({ w, favUp, ask, cost, oursFav, hist }, AP.target(TARGET));   // the autopilot page can change the target
     AP.observe({ Ws, e, w, favUp, ask, cost, oursFav, hist, favMid });   // settings scoreboard: every combination, every window
-    AP.observeLate({ Ws, e, pUp, mkUp: mk, press: patternPress(S, nowS()) });                          // late coin-flip test (practice only)
+    AP.observeLate({ Ws, e, pUp, pUpFix, gap, mkUp: mk, press: patternPress(S, nowS()) });                          // late coin-flip test (practice only)
     // Alert filter: both the model's win chance and Polymarket's own odds for that side must reach the minimums
     const modelPct = r.buy ? r.q * 100 : 0, marketPct = favMid * 100;
     const minM = AP.minModel(MIN_MODEL), minK = AP.minMarket(MIN_MARKET);   // the autopilot page can change these

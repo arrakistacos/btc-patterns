@@ -37,6 +37,7 @@ const DEFAULTS = {
   lateHours: [true, true, true],         // real coin flips allowed in each 8-hour block, Central time: 12am-8am, 8am-4pm, 4pm-12am
   lateFavOnly: true,                     // real coin-flip money only when the model backs Polymarket's favorite
   lateMinReal: 65,                       // …and only when the model gives that side at least this % (60 = no extra filter)
+  lateGapFix: true,                      // coin flips: shift Coinbase's price by the start-price gap (Coinbase vs Polymarket's start price) before the model decides
   lateMinEdge: 0,                        // …and only when the model's % is at least the all-in price per contract (price + fee) plus this many points; the order never pays more (null = no price check)
   goal: 0,                               // dollars: pause + notify when the current mode's balance reaches this (0 = off)
   goalHitFor: null,                      // "mode:goal" already reached, so the same goal fires only once
@@ -561,12 +562,15 @@ export function createAutopilot(o) {
     if (left > LATE.maxLeft || left < LATE.minLeft || lateTried.has(x.Ws)) return;
     const favMid = Math.max(x.mkUp, 1 - x.mkUp);
     if (favMid < LATE.favLo || favMid >= LATE.favHi) return;
-    const up = x.pUp >= 0.5, q = up ? x.pUp : 1 - x.pUp;
+    // start-price gap correction (on by default): the model's chance with Coinbase shifted onto Polymarket's index
+    const fix = S.lateGapFix !== false && x.pUpFix != null, pU = fix ? x.pUpFix : x.pUp;
+    const up = pU >= 0.5, q = up ? pU : 1 - pU;
     if (q < LATE.minModel) return;
     lateTried.add(x.Ws);
     for (const k of lateTried) if (k < x.Ws - 3600) lateTried.delete(k);
     if (S.late.trades.some((t) => t.Ws === x.Ws)) return;
-    const rec = { Ws: x.Ws, ts: Date.now(), side: up ? 'UP' : 'DOWN', q: r4(q), quoted: r4(up ? x.mkUp : 1 - x.mkUp), left: Math.round(left), result: null, pnl: null };
+    const rec = { Ws: x.Ws, ts: Date.now(), side: up ? 'UP' : 'DOWN', q: r4(q), quoted: r4(up ? x.mkUp : 1 - x.mkUp), left: Math.round(left), result: null, pnl: null,
+      gap: x.gap != null ? r2(x.gap) : null, fix: fix ? 1 : 0, qRaw: r4(up ? x.pUp : 1 - x.pUp) };
     // Chart pattern check: price pressing a triangle/wedge/flag line that would push it against our side
     rec.pat = !x.press ? 'none' : (x.press > 0) === up ? 'with' : 'against';
     try {
@@ -638,7 +642,7 @@ export function createAutopilot(o) {
     if (S.late.trades.length > 300) S.late.trades.splice(0, S.late.trades.length - 300);
     if (rec.status === 'filled') { S.late.stats.n++; S.late.stats.staked = r2(S.late.stats.staked + rec.cost); }
     if (rec.status === 'nofill') S.late.stats.nofill++;
-    log(`late coin-flip ${rec.real ? 'REAL' : 'test'}${rec.realSkip ? ` (real skipped: ${{ pattern: 'chart pattern against', underdog: 'model backs the underdog', conf: 'model below ' + S.lateMinReal + '%', price: `price ${(rec.allIn * 100).toFixed(1)}¢ all-in is above the model's ${Math.round(q * 100)}%${S.lateMinEdge ? ' minus ' + S.lateMinEdge : ''}`, hours: BLOCKS[rec.blk] + ' is switched off', maxloss: `${S.lateMaxLosses} real losses already this block` }[rec.realSkip]})` : ''}: ${rec.status} ${rec.side}${rec.px ? ' @ ' + cents(rec.px) : ''} (Polymarket showed ${cents(rec.quoted)}, model ${Math.round(q * 100)}%, ${rec.left}s left)${rec.msg ? ' - ' + rec.msg : ''}`);
+    log(`late coin-flip ${rec.real ? 'REAL' : 'test'}${rec.realSkip ? ` (real skipped: ${{ pattern: 'chart pattern against', underdog: 'model backs the underdog', conf: 'model below ' + S.lateMinReal + '%', price: `price ${(rec.allIn * 100).toFixed(1)}¢ all-in is above the model's ${Math.round(q * 100)}%${S.lateMinEdge ? ' minus ' + S.lateMinEdge : ''}`, hours: BLOCKS[rec.blk] + ' is switched off', maxloss: `${S.lateMaxLosses} real losses already this block` }[rec.realSkip]})` : ''}: ${rec.status} ${rec.side}${rec.px ? ' @ ' + cents(rec.px) : ''} (Polymarket showed ${cents(rec.quoted)}, model ${Math.round(q * 100)}%${rec.fix ? ` (${Math.round(rec.qRaw * 100)}% before the ${rec.gap >= 0 ? '+' : '-'}$${Math.abs(rec.gap)} start gap)` : rec.gap == null && S.lateGapFix !== false ? ' (no start gap yet)' : ''}, ${rec.left}s left)${rec.msg ? ' - ' + rec.msg : ''}`);
     save(); publishSoon();
   }
   async function settleLate() {
@@ -914,10 +918,10 @@ export function createAutopilot(o) {
     const snap = {
       v: 1, ts: Date.now(), ver: AUTOPILOT_VERSION, since: STARTED, why: botWhy, note: lastNote, keys: !!KEY,
       msgs: o.budget && isFinite(o.budget.left()) ? Math.floor(o.budget.left()) : null,   // ntfy messages left (free ntfy.sh)
-      ap: { enabled: S.enabled, mode: S.mode, mainOn: S.mainOn !== false, betPct: S.betPct, dailyStopPct: S.dailyStopPct, lossStreak: S.lossStreak, cooldownMin: S.cooldownMin, goal: S.goal, lateLive: S.lateLive, lateBet: S.lateBet, lateBetPct: S.lateBetPct, lateFavOnly: S.lateFavOnly, lateMinReal: S.lateMinReal, lateMinEdge: S.lateMinEdge, lateHours: S.lateHours, lateAntic: S.lateAntic, lateMaxLosses: S.lateMaxLosses, anticBlockReset: S.anticBlockReset !== false, anticStart: S.anticStart, anticStep: S.anticStep, anticFloor: S.anticFloor, streak: S.streak[S.mode] || 0, notifyFills: S.notifyFills, notifyResults: S.notifyResults, minModel: minModel(o.defMinModel), minMarket: minMarket(o.defMinMarket), target: target(o.defTarget), halted: S.halted },
+      ap: { enabled: S.enabled, mode: S.mode, mainOn: S.mainOn !== false, betPct: S.betPct, dailyStopPct: S.dailyStopPct, lossStreak: S.lossStreak, cooldownMin: S.cooldownMin, goal: S.goal, lateLive: S.lateLive, lateBet: S.lateBet, lateBetPct: S.lateBetPct, lateFavOnly: S.lateFavOnly, lateMinReal: S.lateMinReal, lateMinEdge: S.lateMinEdge, lateGapFix: S.lateGapFix !== false, lateHours: S.lateHours, lateAntic: S.lateAntic, lateMaxLosses: S.lateMaxLosses, anticBlockReset: S.anticBlockReset !== false, anticStart: S.anticStart, anticStep: S.anticStep, anticFloor: S.anticFloor, streak: S.streak[S.mode] || 0, notifyFills: S.notifyFills, notifyResults: S.notifyResults, minModel: minModel(o.defMinModel), minMarket: minMarket(o.defMinMarket), target: target(o.defTarget), halted: S.halted },
       bal: { live: S.liveBal, practice: S.practice }, stats: S.stats, days, acks: acks.slice(-5),
       trades: S.trades.slice(-12).map(tr),
-      late: { since: S.late.since, antic: anticView(), blockLosses: blockLosses(), capHit: capHit() ? 1 : 0, stats: S.late.stats, real: S.late.real || null, byPat: S.late.byPat || null, byFav: S.late.byFav || null, byBlock: lateByBlock(), trades: S.late.trades.slice(-6).map((t) => [t.ts, t.Ws, t.side, t.status, t.px || 0, t.quoted, Math.round(t.q * 100), t.result, t.pnl, t.left, t.msg || '', t.real ? 1 : 0, t.pat === 'against' ? (t.patSkip ? 2 : 1) : t.pat === 'with' ? 3 : 0, t.realSkip === 'underdog' ? 1 : t.realSkip === 'conf' ? 2 : t.realSkip === 'hours' ? 3 : t.realSkip === 'maxloss' ? 4 : t.realSkip === 'price' ? 5 : 0, t.fav != null ? t.fav : (t.quoted >= 0.5 ? 1 : 0)]) },
+      late: { since: S.late.since, antic: anticView(), blockLosses: blockLosses(), capHit: capHit() ? 1 : 0, stats: S.late.stats, real: S.late.real || null, byPat: S.late.byPat || null, byFav: S.late.byFav || null, byBlock: lateByBlock(), trades: S.late.trades.slice(-6).map((t) => [t.ts, t.Ws, t.side, t.status, t.px || 0, t.quoted, Math.round(t.q * 100), t.result, t.pnl, t.left, t.msg || '', t.real ? 1 : 0, t.pat === 'against' ? (t.patSkip ? 2 : 1) : t.pat === 'with' ? 3 : 0, t.realSkip === 'underdog' ? 1 : t.realSkip === 'conf' ? 2 : t.realSkip === 'hours' ? 3 : t.realSkip === 'maxloss' ? 4 : t.realSkip === 'price' ? 5 : 0, t.fav != null ? t.fav : (t.quoted >= 0.5 ? 1 : 0), t.gap != null ? Math.round(t.gap) : null]) },
       led: (() => { const d = pday(Date.now()); return [S.ledger.start, d, ...ledgerDay(d)]; })(), cf: S.chartFrom || '',
       h: Object.assign({ u: US.up ? 1 : 0, a: S.liveBal ? Math.round((Date.now() - S.liveBal.at) / 1000) : null, k: KEY ? 1 : 0 }, o.health ? o.health() : {}),
       lag: { since: S.lagt.since, stats: S.lagt.stats, byGap: S.lagt.byGap, est: S.lagt.est, src: US.up ? 's' : 'p', trades: S.lagt.trades.slice(-4).map((t) => [t.ts, t.Ws, t.side, t.status, t.px || 0, t.seen, t.com, t.result, t.pnl, t.left, t.msg || '']) },
@@ -1035,7 +1039,7 @@ export function createAutopilot(o) {
         const num = (v, lo, hi) => (typeof v === 'number' && isFinite(v) && v >= lo && v <= hi ? v : undefined);
         const upd = { betPct: num(a.betPct, 1, 100), dailyStopPct: num(a.dailyStopPct, 0, 100), lossStreak: num(a.lossStreak, 0, 10), cooldownMin: num(a.cooldownMin, 5, 1440), goal: num(a.goal, 0, 1e7), lateBet: num(a.lateBet, 1, 1000), lateBetPct: num(a.lateBetPct, 0, 100), lateMinReal: num(a.lateMinReal, 50, 99), anticStart: num(a.anticStart, 1, 50), anticStep: num(a.anticStep, 0, 50), anticFloor: num(a.anticFloor, 1, 50), lateMaxLosses: num(a.lateMaxLosses, 0, 20), lateMinEdge: a.lateMinEdge === null ? null : num(a.lateMinEdge, -10, 30), minModel: a.minModel === null ? null : num(a.minModel, 50, 99), minMarket: a.minMarket === null ? null : num(a.minMarket, 50, 99) };
         for (const [k, v] of Object.entries(upd)) if (v !== undefined && k in a) S[k] = v;
-        for (const k of ['notifyFills', 'notifyResults', 'lateFavOnly', 'mainOn', 'lateAntic', 'anticBlockReset']) if (typeof a[k] === 'boolean') S[k] = a[k];
+        for (const k of ['notifyFills', 'notifyResults', 'lateFavOnly', 'mainOn', 'lateAntic', 'anticBlockReset', 'lateGapFix']) if (typeof a[k] === 'boolean') S[k] = a[k];
         if (Array.isArray(a.lateHours) && a.lateHours.length === 3 && a.lateHours.every((x) => typeof x === 'boolean')) S.lateHours = a.lateHours.slice();
         if (typeof a.lateLive === 'boolean' && a.lateLive !== S.lateLive) {
           S.lateLive = a.lateLive;

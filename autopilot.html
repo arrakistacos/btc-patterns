@@ -166,6 +166,9 @@
         <label><input type="checkbox" id="lateEdgeOn"> and only when the price (with fee) is no more than the model's %</label>
         <span class="row">minus <input id="lateEdge" type="number" min="-10" max="30" step="1" style="width:56px"> points</span>
       </div>
+      <div class="row" style="margin-bottom:6px">
+        <label><input type="checkbox" id="lateGap"> Correct for the start-price gap (Coinbase vs Polymarket's start price) before deciding</label>
+      </div>
       <div class="row" style="margin-bottom:4px">
         <span>Real money during (Central time):</span>
         <label class="nw"><input type="checkbox" id="lh0"> 12am–8am</label>
@@ -188,7 +191,7 @@
       <div class="row" style="margin-bottom:10px"><button id="lateSave">Save coin-flip settings</button></div>
       <p class="hint" id="favLine" style="margin:0 0 4px"></p>
       <p class="hint" id="patLine" style="margin:0 0 8px"></p>
-      <p class="hint" id="lateNote" style="margin-top:0">Real orders only while autopilot is <b>Live</b> and on. They count toward your balance, stops, 2-loss pause and goal, and are skipped if a normal trade already happened in that window. Real money is also skipped outside the hours you tick, when the model backs the underdog (Polymarket's price for its side is under 50¢) or gives its side less than your minimum, when the price with fee is more than the model's win chance (the order also never pays more than that), and when price is pressing a chart pattern line (triangle, wedge or flag) that points against the flip. Skipped flips are still tracked as practice.</p>
+      <p class="hint" id="lateNote" style="margin-top:0">Real orders only while autopilot is <b>Live</b> and on. They count toward your balance, stops, 2-loss pause and goal, and are skipped if a normal trade already happened in that window. Real money is also skipped outside the hours you tick, when the model backs the underdog (Polymarket's price for its side is under 50¢) or gives its side less than your minimum, when the price with fee is more than the model's win chance (the order also never pays more than that), and when price is pressing a chart pattern line (triangle, wedge or flag) that points against the flip. With the start-price gap correction on, the model first shifts Coinbase's price by how far Coinbase's average for the minute before the window was from Polymarket's start price (the official index's average for that minute), because Coinbase tends to stay off the same way until the close. Skipped flips are still tracked as practice.</p>
       <div class="scroll"><table>
         <thead><tr><th>Window</th><th>Side</th><th class="r">Paid</th><th class="r">Result</th></tr></thead>
         <tbody id="lateBody"><tr><td colspan="4" class="muted">No late coin-flip trades yet.</td></tr></tbody>
@@ -599,9 +602,9 @@
       }
       $('favLine').textContent = [fl('fav', 'Model backed the favorite'), fl('dog', 'backed the underdog')].filter(Boolean).join(' · ');
       $('patLine').textContent = ['Chart pattern ' + (pl('against', 'against the flip') || 'against the flip: no trades yet'), pl('with', 'with it'), pl('none', 'no pattern line')].filter(Boolean).join(' · ');
-      const rows = (L.trades || []).slice().reverse().map(([ts, Ws, side, status, px, quoted, q, result, pnl, left, msg, real, pat, skip, fav]) => {
+      const rows = (L.trades || []).slice().reverse().map(([ts, Ws, side, status, px, quoted, q, result, pnl, left, msg, real, pat, skip, fav, gap]) => {
         const wd = new Date(Ws * 1000);
-        const when = `<span class="nw">${wd.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}</span><div class="hint">${left}s left · model ${q}%</div>${skip ? `<div class="hint" style="color:#ffb3b8">real skipped: ${skip === 1 ? 'underdog' : skip === 3 ? 'off hours' : skip === 4 ? 'loss cap' : skip === 5 ? 'price above model' : 'below min'}</div>` : ''}`;
+        const when = `<span class="nw">${wd.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}</span><div class="hint">${left}s left · model ${q}%${gap != null ? ` · start gap ${gap >= 0 ? '+' : '−'}$${Math.abs(gap)}` : ''}</div>${skip ? `<div class="hint" style="color:#ffb3b8">real skipped: ${skip === 1 ? 'underdog' : skip === 3 ? 'off hours' : skip === 4 ? 'loss cap' : skip === 5 ? 'price above model' : 'below min'}</div>` : ''}`;
         const tags = `${real ? ' <span class="tag l">REAL</span>' : ''}${pat === 1 || pat === 2 ? ` <span class="tag" style="background:rgba(234,57,67,.18);color:#ffb3b8">PATTERN ✗${pat === 2 ? ' · real skipped' : ''}</span>` : pat === 3 ? ' <span class="tag p">PATTERN ✓</span>' : ''}${fav === 0 && skip !== 1 ? ' <span class="tag p">UNDERDOG</span>' : ''}`;
         const sideCell = `<span class="${side === 'UP' ? 'up' : 'down'}" style="font-weight:700">${side}</span>${tags ? `<div style="margin-top:3px">${tags.trim()}</div>` : ''}`;
         if (status !== 'filled') return `<tr><td>${when}</td><td>${sideCell}</td><td colspan="2" class="muted">${esc(msg || status)}</td></tr>`;
@@ -619,7 +622,7 @@
         $('lateLive').checked = !!ap.lateLive;
         const pct = ap.lateBetPct > 0; $('lateUnit').value = pct ? 'pct' : 'usd'; $('lateBet').value = pct ? ap.lateBetPct : (ap.lateBet || 5);
         $('lateFav').checked = ap.lateFavOnly !== false; $('lateMin').value = ap.lateMinReal || 60;
-        $('lateEdgeOn').checked = typeof ap.lateMinEdge === 'number'; $('lateEdge').value = typeof ap.lateMinEdge === 'number' ? ap.lateMinEdge : 0;
+        $('lateGap').checked = ap.lateGapFix !== false; $('lateEdgeOn').checked = typeof ap.lateMinEdge === 'number'; $('lateEdge').value = typeof ap.lateMinEdge === 'number' ? ap.lateMinEdge : 0;
         const lh = Array.isArray(ap.lateHours) ? ap.lateHours : [true, true, true]; for (let i = 0; i < 3; i++) $('lh' + i).checked = lh[i] !== false;
         $('lateCap').value = ap.lateMaxLosses != null ? ap.lateMaxLosses : 2;
         $('anOn').checked = !!ap.lateAntic; $('anBlock').checked = ap.anticBlockReset !== false; $('anStart').value = ap.anticStart || 20; $('anStep').value = ap.anticStep != null ? ap.anticStep : 5; $('anFloor').value = ap.anticFloor || 10;
@@ -676,7 +679,7 @@
     $('lateBet').addEventListener('input', () => { lateDirty = true; });
     $('lateUnit').addEventListener('change', () => { lateDirty = true; });
     $('lateFav').addEventListener('change', () => { lateDirty = true; });
-    for (const id of ['lateEdge', 'lateEdgeOn', 'lateCap', 'lh0', 'lh1', 'lh2', 'anBlock', 'anOn', 'anStart', 'anStep', 'anFloor']) $(id).addEventListener(id === 'anOn' || id === 'lateEdgeOn' ? 'change' : 'input', () => { lateDirty = true; });
+    for (const id of ['lateGap', 'lateEdge', 'lateEdgeOn', 'lateCap', 'lh0', 'lh1', 'lh2', 'anBlock', 'anOn', 'anStart', 'anStep', 'anFloor']) $(id).addEventListener(id === 'anOn' || id === 'lateEdgeOn' || id === 'lateGap' ? 'change' : 'input', () => { lateDirty = true; });
     $('lateMin').addEventListener('input', () => { lateDirty = true; });
     $('lateSave').onclick = () => {
       const bet = +$('lateBet').value, on = $('lateLive').checked, pct = $('lateUnit').value === 'pct';
@@ -685,7 +688,7 @@
       if (!(minR >= 60 && minR <= 95)) return toast('Minimum model % must be 60–95', 'err');
       const edge = +$('lateEdge').value;
       if ($('lateEdgeOn').checked && !(edge >= -10 && edge <= 30)) return toast('Price margin must be −10 to 30 points', 'err');
-      const args = Object.assign(pct ? { lateLive: on, lateBetPct: bet } : { lateLive: on, lateBet: bet, lateBetPct: 0 }, { lateFavOnly: $('lateFav').checked, lateMinReal: minR, lateMinEdge: $('lateEdgeOn').checked ? edge : null, lateHours: [0, 1, 2].map((i) => $('lh' + i).checked), lateMaxLosses: +$('lateCap').value, lateAntic: $('anOn').checked, anticBlockReset: $('anBlock').checked, anticStart: +$('anStart').value, anticStep: +$('anStep').value, anticFloor: +$('anFloor').value });
+      const args = Object.assign(pct ? { lateLive: on, lateBetPct: bet } : { lateLive: on, lateBet: bet, lateBetPct: 0 }, { lateFavOnly: $('lateFav').checked, lateMinReal: minR, lateMinEdge: $('lateEdgeOn').checked ? edge : null, lateGapFix: $('lateGap').checked, lateHours: [0, 1, 2].map((i) => $('lh' + i).checked), lateMaxLosses: +$('lateCap').value, lateAntic: $('anOn').checked, anticBlockReset: $('anBlock').checked, anticStart: +$('anStart').value, anticStep: +$('anStep').value, anticFloor: +$('anFloor').value });
       if (!(args.lateMaxLosses >= 0 && args.lateMaxLosses <= 20 && Number.isInteger(args.lateMaxLosses))) return toast('Loss limit: a whole number 0–20 (0 = never)', 'err');
       if (args.lateAntic && !(args.anticStart >= 1 && args.anticStart <= 50 && args.anticFloor >= 1 && args.anticFloor <= args.anticStart && args.anticStep >= 0 && args.anticStep <= 50)) return toast('Anticipation: start 1–50%, floor 1% up to the start, step 0–50', 'err');
       const amount = pct ? `${bet}% of your buying power` : `$${bet}`;
