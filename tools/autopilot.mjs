@@ -37,6 +37,7 @@ const DEFAULTS = {
   lateHours: [true, true, true],         // real coin flips allowed in each 8-hour block, Central time: 12am-8am, 8am-4pm, 4pm-12am
   lateFavOnly: true,                     // real coin-flip money only when the model backs Polymarket's favorite
   lateMinReal: 65,                       // …and only when the model gives that side at least this % (60 = no extra filter)
+  lateMinEdge: 0,                        // …and only when the model's % is at least the all-in price per contract (price + fee) plus this many points; the order never pays more (null = no price check)
   goal: 0,                               // dollars: pause + notify when the current mode's balance reaches this (0 = off)
   goalHitFor: null,                      // "mode:goal" already reached, so the same goal fires only once
   streak: { practice: 0, live: 0 },      // current run of losses
@@ -524,7 +525,7 @@ export function createAutopilot(o) {
       if (t.status !== 'filled' || t.result == null) continue;
       const b = z[t.blk != null ? t.blk : blockOf(t.ts || t.Ws * 1000)];
       b.n++; b.w += t.result; b.staked += t.cost; b.pnl += t.pnl;
-      if (t.quoted >= 0.5 && t.q * 100 >= (S.lateMinReal || 60) - 1e-9) { b.fn++; b.fw += t.result; b.fstaked += t.cost; b.fpnl += t.pnl; }   // would pass your filters
+      if (t.quoted >= 0.5 && t.q * 100 >= (S.lateMinReal || 60) - 1e-9 && (typeof S.lateMinEdge !== 'number' || !(t.qty > 0) || t.q * 100 >= t.cost / t.qty * 100 + S.lateMinEdge - 1e-9)) { b.fn++; b.fw += t.result; b.fstaked += t.cost; b.fpnl += t.pnl; }   // would pass your filters
     }
     return z.map((b) => [b.n, b.w, r2(b.staked), r2(b.pnl), b.fn, b.fw, r2(b.fstaked), r2(b.fpnl)]);
   }
@@ -584,7 +585,15 @@ export function createAutopilot(o) {
         rec.fav = rec.quoted >= 0.5 ? 1 : 0;
         rec.blk = blockOf(Date.now());
         const hoursOk = !Array.isArray(S.lateHours) || S.lateHours[rec.blk] !== false;
-        const why = rec.pat === 'against' ? 'pattern' : S.lateFavOnly && !rec.fav ? 'underdog' : q * 100 < (S.lateMinReal || 60) - 1e-9 ? 'conf' : !hoursOk ? 'hours' : capHit() ? 'maxloss' : null;
+        // Price check: the model's win chance must cover the all-in price (price + fee) plus the margin, and the
+        // real order's limit is lowered so it can never fill above that
+        const allIn = (p) => p + feeAt(p), tk = mkt.tick > 0 ? mkt.tick : 0.01;
+        const edgeOn = typeof S.lateMinEdge === 'number', maxAllIn = q - (edgeOn ? S.lateMinEdge : 0) / 100;
+        rec.allIn = r4(allIn(levels[0][0]));
+        let realLimit = limit;
+        if (edgeOn) while (realLimit > levels[0][0] + 1e-9 && allIn(realLimit) > maxAllIn + 1e-9) realLimit = r2(realLimit - tk);
+        const priceOk = !edgeOn || allIn(levels[0][0]) <= maxAllIn + 1e-9;
+        const why = rec.pat === 'against' ? 'pattern' : S.lateFavOnly && !rec.fav ? 'underdog' : q * 100 < (S.lateMinReal || 60) - 1e-9 ? 'conf' : !priceOk ? 'price' : !hoursOk ? 'hours' : capHit() ? 'maxloss' : null;
         const real = eligible && !why;
         if (eligible && why) { rec.realSkip = why; if (why === 'pattern') rec.patSkip = 1; }
         if (real) {
@@ -594,21 +603,21 @@ export function createAutopilot(o) {
             const step = mkt.minQty > 0 ? mkt.minQty : 0.01;
             if (S.lateAntic) rec.betPct = anticPct();
             const stake = S.lateAntic ? bal * rec.betPct / 100 : S.lateBetPct > 0 ? bal * S.lateBetPct / 100 : Math.min(S.lateBet, bal);
-            const qty = r2(Math.floor(stake / (limit + feeAt(limit)) / step + 1e-9) * step);
+            const qty = r2(Math.floor(stake / (realLimit + feeAt(realLimit)) / step + 1e-9) * step);
             if (bal < MIN_BALANCE || qty < step) { outOfMoney(bal); rec.status = 'skipped'; rec.msg = 'Out of money'; }
             else {
               const day = dayRec('live', Date.now(), bal);
-              const ord = await liveOrder(mkt, up, limit, qty);
+              const ord = await liveOrder(mkt, up, realLimit, qty);
               rec.real = 1;
               if (ord.filled > 0) {
                 const px = ord.notional / ord.filled, fee = r4(feeAt(px) * ord.filled), cost = r2(ord.notional + fee);
                 Object.assign(rec, { status: 'filled', qty: r2(ord.filled), px: r4(px), cost });
-                record({ Ws: x.Ws, mode: 'live', strategy: 'late', betPct: rec.betPct, side: rec.side, status: ord.filled < qty - 1e-9 ? 'partial' : 'filled', q: rec.q, qty: r2(ord.filled), want: qty, px: r4(px), fee, cost, limit, orderId: ord.orderId, slug: mkt.slug, result: null, pnl: null, balBefore: r2(bal) });
+                record({ Ws: x.Ws, mode: 'live', strategy: 'late', betPct: rec.betPct, side: rec.side, status: ord.filled < qty - 1e-9 ? 'partial' : 'filled', q: rec.q, qty: r2(ord.filled), want: qty, px: r4(px), fee, cost, limit: realLimit, orderId: ord.orderId, slug: mkt.slug, result: null, pnl: null, balBefore: r2(bal) });
                 S.stats.live.n++; S.stats.live.staked = r2(S.stats.live.staked + cost); day.n++;
                 if (S.notifyFills) push({ title: `BOUGHT ${rec.side} (LATE)`, body: `${r2(ord.filled)} @ ${cents(px)} = ${money(cost)} · late coin-flip, ${rec.left}s left${S.lateAntic ? ` · anticipation ${rec.betPct}%` : ''}`, priority: 4, tags: up ? 'green_circle' : 'red_circle', click: o.site + 'autopilot.html' });
               } else {
-                rec.status = 'nofill'; rec.msg = ord.msg || `No fill at ${cents(limit)} or better`;
-                record({ Ws: x.Ws, mode: 'live', strategy: 'late', side: rec.side, status: 'nofill', msg: rec.msg, q: rec.q, qty, limit, orderId: ord.orderId });
+                rec.status = 'nofill'; rec.msg = ord.msg || `No fill at ${cents(realLimit)} or better`;
+                record({ Ws: x.Ws, mode: 'live', strategy: 'late', side: rec.side, status: 'nofill', msg: rec.msg, q: rec.q, qty, limit: realLimit, orderId: ord.orderId });
               }
             }
           } catch (e) {
@@ -629,7 +638,7 @@ export function createAutopilot(o) {
     if (S.late.trades.length > 300) S.late.trades.splice(0, S.late.trades.length - 300);
     if (rec.status === 'filled') { S.late.stats.n++; S.late.stats.staked = r2(S.late.stats.staked + rec.cost); }
     if (rec.status === 'nofill') S.late.stats.nofill++;
-    log(`late coin-flip ${rec.real ? 'REAL' : 'test'}${rec.realSkip ? ` (real skipped: ${{ pattern: 'chart pattern against', underdog: 'model backs the underdog', conf: 'model below ' + S.lateMinReal + '%', hours: BLOCKS[rec.blk] + ' is switched off', maxloss: `${S.lateMaxLosses} real losses already this block` }[rec.realSkip]})` : ''}: ${rec.status} ${rec.side}${rec.px ? ' @ ' + cents(rec.px) : ''} (Polymarket showed ${cents(rec.quoted)}, model ${Math.round(q * 100)}%, ${rec.left}s left)${rec.msg ? ' - ' + rec.msg : ''}`);
+    log(`late coin-flip ${rec.real ? 'REAL' : 'test'}${rec.realSkip ? ` (real skipped: ${{ pattern: 'chart pattern against', underdog: 'model backs the underdog', conf: 'model below ' + S.lateMinReal + '%', price: `price ${(rec.allIn * 100).toFixed(1)}¢ all-in is above the model's ${Math.round(q * 100)}%${S.lateMinEdge ? ' minus ' + S.lateMinEdge : ''}`, hours: BLOCKS[rec.blk] + ' is switched off', maxloss: `${S.lateMaxLosses} real losses already this block` }[rec.realSkip]})` : ''}: ${rec.status} ${rec.side}${rec.px ? ' @ ' + cents(rec.px) : ''} (Polymarket showed ${cents(rec.quoted)}, model ${Math.round(q * 100)}%, ${rec.left}s left)${rec.msg ? ' - ' + rec.msg : ''}`);
     save(); publishSoon();
   }
   async function settleLate() {
@@ -905,10 +914,10 @@ export function createAutopilot(o) {
     const snap = {
       v: 1, ts: Date.now(), ver: AUTOPILOT_VERSION, since: STARTED, why: botWhy, note: lastNote, keys: !!KEY,
       msgs: o.budget && isFinite(o.budget.left()) ? Math.floor(o.budget.left()) : null,   // ntfy messages left (free ntfy.sh)
-      ap: { enabled: S.enabled, mode: S.mode, mainOn: S.mainOn !== false, betPct: S.betPct, dailyStopPct: S.dailyStopPct, lossStreak: S.lossStreak, cooldownMin: S.cooldownMin, goal: S.goal, lateLive: S.lateLive, lateBet: S.lateBet, lateBetPct: S.lateBetPct, lateFavOnly: S.lateFavOnly, lateMinReal: S.lateMinReal, lateHours: S.lateHours, lateAntic: S.lateAntic, lateMaxLosses: S.lateMaxLosses, anticBlockReset: S.anticBlockReset !== false, anticStart: S.anticStart, anticStep: S.anticStep, anticFloor: S.anticFloor, streak: S.streak[S.mode] || 0, notifyFills: S.notifyFills, notifyResults: S.notifyResults, minModel: minModel(o.defMinModel), minMarket: minMarket(o.defMinMarket), target: target(o.defTarget), halted: S.halted },
+      ap: { enabled: S.enabled, mode: S.mode, mainOn: S.mainOn !== false, betPct: S.betPct, dailyStopPct: S.dailyStopPct, lossStreak: S.lossStreak, cooldownMin: S.cooldownMin, goal: S.goal, lateLive: S.lateLive, lateBet: S.lateBet, lateBetPct: S.lateBetPct, lateFavOnly: S.lateFavOnly, lateMinReal: S.lateMinReal, lateMinEdge: S.lateMinEdge, lateHours: S.lateHours, lateAntic: S.lateAntic, lateMaxLosses: S.lateMaxLosses, anticBlockReset: S.anticBlockReset !== false, anticStart: S.anticStart, anticStep: S.anticStep, anticFloor: S.anticFloor, streak: S.streak[S.mode] || 0, notifyFills: S.notifyFills, notifyResults: S.notifyResults, minModel: minModel(o.defMinModel), minMarket: minMarket(o.defMinMarket), target: target(o.defTarget), halted: S.halted },
       bal: { live: S.liveBal, practice: S.practice }, stats: S.stats, days, acks: acks.slice(-5),
       trades: S.trades.slice(-12).map(tr),
-      late: { since: S.late.since, antic: anticView(), blockLosses: blockLosses(), capHit: capHit() ? 1 : 0, stats: S.late.stats, real: S.late.real || null, byPat: S.late.byPat || null, byFav: S.late.byFav || null, byBlock: lateByBlock(), trades: S.late.trades.slice(-6).map((t) => [t.ts, t.Ws, t.side, t.status, t.px || 0, t.quoted, Math.round(t.q * 100), t.result, t.pnl, t.left, t.msg || '', t.real ? 1 : 0, t.pat === 'against' ? (t.patSkip ? 2 : 1) : t.pat === 'with' ? 3 : 0, t.realSkip === 'underdog' ? 1 : t.realSkip === 'conf' ? 2 : t.realSkip === 'hours' ? 3 : t.realSkip === 'maxloss' ? 4 : 0, t.fav != null ? t.fav : (t.quoted >= 0.5 ? 1 : 0)]) },
+      late: { since: S.late.since, antic: anticView(), blockLosses: blockLosses(), capHit: capHit() ? 1 : 0, stats: S.late.stats, real: S.late.real || null, byPat: S.late.byPat || null, byFav: S.late.byFav || null, byBlock: lateByBlock(), trades: S.late.trades.slice(-6).map((t) => [t.ts, t.Ws, t.side, t.status, t.px || 0, t.quoted, Math.round(t.q * 100), t.result, t.pnl, t.left, t.msg || '', t.real ? 1 : 0, t.pat === 'against' ? (t.patSkip ? 2 : 1) : t.pat === 'with' ? 3 : 0, t.realSkip === 'underdog' ? 1 : t.realSkip === 'conf' ? 2 : t.realSkip === 'hours' ? 3 : t.realSkip === 'maxloss' ? 4 : t.realSkip === 'price' ? 5 : 0, t.fav != null ? t.fav : (t.quoted >= 0.5 ? 1 : 0)]) },
       led: (() => { const d = pday(Date.now()); return [S.ledger.start, d, ...ledgerDay(d)]; })(), cf: S.chartFrom || '',
       h: Object.assign({ u: US.up ? 1 : 0, a: S.liveBal ? Math.round((Date.now() - S.liveBal.at) / 1000) : null, k: KEY ? 1 : 0 }, o.health ? o.health() : {}),
       lag: { since: S.lagt.since, stats: S.lagt.stats, byGap: S.lagt.byGap, est: S.lagt.est, src: US.up ? 's' : 'p', trades: S.lagt.trades.slice(-4).map((t) => [t.ts, t.Ws, t.side, t.status, t.px || 0, t.seen, t.com, t.result, t.pnl, t.left, t.msg || '']) },
@@ -1024,7 +1033,7 @@ export function createAutopilot(o) {
         break;
       case 'set': {
         const num = (v, lo, hi) => (typeof v === 'number' && isFinite(v) && v >= lo && v <= hi ? v : undefined);
-        const upd = { betPct: num(a.betPct, 1, 100), dailyStopPct: num(a.dailyStopPct, 0, 100), lossStreak: num(a.lossStreak, 0, 10), cooldownMin: num(a.cooldownMin, 5, 1440), goal: num(a.goal, 0, 1e7), lateBet: num(a.lateBet, 1, 1000), lateBetPct: num(a.lateBetPct, 0, 100), lateMinReal: num(a.lateMinReal, 50, 99), anticStart: num(a.anticStart, 1, 50), anticStep: num(a.anticStep, 0, 50), anticFloor: num(a.anticFloor, 1, 50), lateMaxLosses: num(a.lateMaxLosses, 0, 20), minModel: a.minModel === null ? null : num(a.minModel, 50, 99), minMarket: a.minMarket === null ? null : num(a.minMarket, 50, 99) };
+        const upd = { betPct: num(a.betPct, 1, 100), dailyStopPct: num(a.dailyStopPct, 0, 100), lossStreak: num(a.lossStreak, 0, 10), cooldownMin: num(a.cooldownMin, 5, 1440), goal: num(a.goal, 0, 1e7), lateBet: num(a.lateBet, 1, 1000), lateBetPct: num(a.lateBetPct, 0, 100), lateMinReal: num(a.lateMinReal, 50, 99), anticStart: num(a.anticStart, 1, 50), anticStep: num(a.anticStep, 0, 50), anticFloor: num(a.anticFloor, 1, 50), lateMaxLosses: num(a.lateMaxLosses, 0, 20), lateMinEdge: a.lateMinEdge === null ? null : num(a.lateMinEdge, -10, 30), minModel: a.minModel === null ? null : num(a.minModel, 50, 99), minMarket: a.minMarket === null ? null : num(a.minMarket, 50, 99) };
         for (const [k, v] of Object.entries(upd)) if (v !== undefined && k in a) S[k] = v;
         for (const k of ['notifyFills', 'notifyResults', 'lateFavOnly', 'mainOn', 'lateAntic', 'anticBlockReset']) if (typeof a[k] === 'boolean') S[k] = a[k];
         if (Array.isArray(a.lateHours) && a.lateHours.length === 3 && a.lateHours.every((x) => typeof x === 'boolean')) S.lateHours = a.lateHours.slice();

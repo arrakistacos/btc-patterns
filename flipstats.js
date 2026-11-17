@@ -5,7 +5,7 @@
 //   Ws window start (s) · q model win chance for the side · quoted polymarket.com price for the side when it decided
 //   cost all-in price per contract (price + fee) of its fill · won 1/0 · pat 0 none / 1 chart pattern against / 2 with
 //   real 1 if it was a real-money flip · bt 1 for backtest rows (before the bot kept records)
-// cfg: { favOnly, minReal (%), hours [3 booleans], antic, start, step, floor, blockReset, maxLosses, betPct, betUsd, tz }
+// cfg: { favOnly, minReal (%), minEdge (points the model's % must beat the all-in price by; null = no price check), hours [3 booleans], antic, start, step, floor, blockReset, maxLosses, betPct, betUsd, tz }
 //   (ladder off and betPct 0 = a fixed betUsd dollars per flip, like the bot)
 (function (root, factory) {
   if (typeof module === 'object' && module.exports) module.exports = factory();
@@ -22,7 +22,7 @@
   function defaults(c) {
     c = c || {};
     return {
-      favOnly: c.favOnly !== false, minReal: c.minReal != null ? +c.minReal : 65, hours: Array.isArray(c.hours) ? c.hours : [true, false, false],
+      favOnly: c.favOnly !== false, minReal: c.minReal != null ? +c.minReal : 65, minEdge: typeof c.minEdge === 'number' ? c.minEdge : null, hours: Array.isArray(c.hours) ? c.hours : [true, false, false],
       antic: c.antic !== false, start: c.start != null ? +c.start : 15, step: c.step != null ? +c.step : 5, floor: c.floor != null ? +c.floor : 10,
       blockReset: c.blockReset !== false, maxLosses: c.maxLosses != null ? +c.maxLosses : 2, betPct: c.betPct != null ? +c.betPct : 10, betUsd: c.betUsd != null ? +c.betUsd : 10, tz: c.tz || TZ,
     };
@@ -34,6 +34,7 @@
     if (pat === 1) return false;                                   // chart pattern against the flip
     if (c.favOnly && !(quoted >= 0.5)) return false;               // model backs the underdog
     if (q * 100 < c.minReal - 1e-9) return false;                  // model below the minimum
+    if (c.minEdge != null && q * 100 < cost * 100 + c.minEdge - 1e-9) return false;   // paid more than the model's chance
     const blk = Math.floor(parts(Ws * 1000, c.tz).hour / 8);
     return c.hours[blk] !== false;                                  // block switched off
   }
