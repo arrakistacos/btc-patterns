@@ -243,6 +243,10 @@
         <label class="field"><span>Bet size, % of balance per BUY alert</span><span class="row"><input id="sBet" type="number" min="1" max="100" step="1"> %</span></label>
         <label class="field"><span>Stop for the day after losing (% of the day's starting balance, 0 = never)</span><span class="row"><input id="sStop" type="number" min="0" max="100" step="5"> %</span></label>
         <label class="field"><span>Goal: notify me and pause when the balance reaches (0 = off)</span><span class="row">$<input id="sGoal" type="number" min="0" step="10"></span><span class="hint">Uses the current mode's balance: practice or your Polymarket US cash.</span></label>
+        <label class="field"><span>Teeter-totter (last 30 s: buy the side that breaks out after the lead flipped back and forth)</span><select id="tMode"><option value="2">Real money (when Live)</option><option value="1">Practice only (track results)</option><option value="0">Off</option></select><span class="hint" id="tSum"></span></label>
+        <label class="field"><span>Teeter-totter bet, % of balance</span><span class="row"><input id="tPct" type="number" min="0.5" max="25" step="0.5"> %</span></label>
+        <label class="field"><span>Teeter-totter: buy when one side reaches</span><span class="row"><input id="tAt" type="number" min="60" max="97" step="1"> % after <input id="tFlips" type="number" min="1" max="10" step="1" style="width:56px"> flips</span></label>
+        <label class="field"><span>Teeter-totter: practice for the rest of the day after this many real losses (0 = no limit)</span><span class="row"><input id="tMaxL" type="number" min="0" max="50" step="1"> losses</span></label>
         <label class="field"><span>Real BUY-alert bets: practice for the rest of the day after this many losses (0 = no cap)</span><span class="row"><input id="sMaxL" type="number" min="0" max="100" step="1"> losses</span><span class="hint" id="sMaxLHint"></span></label>
         <label class="field"><span>Pause after this many losses in a row (0 = never)</span><span class="row"><input id="sStreak" type="number" min="0" max="10" step="1"> losses</span></label>
         <label class="field"><span>…for this long</span><span class="row"><input id="sCool" type="number" min="5" max="1440" step="5"> minutes</span></label>
@@ -537,7 +541,7 @@
 
       // trades (newest first)
       const rows = (s.trades || []).slice().reverse().map(([ts, Ws, m, side, status, qty, px, cost, result, pnl, msg, q, late]) => {
-        const sideCell = `<span class="${side === 'UP' ? 'up' : 'down'}" style="font-weight:700">${side}</span> <span class="tag ${m === 'l' ? 'l' : 'p'}">${m === 'l' ? 'LIVE' : 'PRACTICE'}</span>${late ? ' <span class="tag p">LATE</span>' : ''}`;
+        const sideCell = `<span class="${side === 'UP' ? 'up' : 'down'}" style="font-weight:700">${side}</span> <span class="tag ${m === 'l' ? 'l' : 'p'}">${m === 'l' ? 'LIVE' : 'PRACTICE'}</span>${late === 2 ? ' <span class="tag p">TEETER</span>' : late ? ' <span class="tag p">LATE</span>' : ''}`;
         const wd = new Date(Ws * 1000), isToday = wd.toDateString() === new Date().toDateString();
         const when = `<span class="nw">${isToday ? '' : wd.toLocaleDateString([], { month: 'short', day: 'numeric' }) + ' '}${wd.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}</span>${q ? `<div class="hint nw">${q}% chance</div>` : ''}`;
         if (status === 'filled' || status === 'partial') {
@@ -558,6 +562,9 @@
       if (first || !document.activeElement || !document.activeElement.closest('.grid2')) {
         $('sMain').value = ap.mainOn === false ? '0' : '1';
         $('sMaxL').value = ap.mainMaxLosses != null ? ap.mainMaxLosses : 6;
+        { const t = ap.teeter || [true, true, 2, 85, 2, 0], m = ap.teeterSum;
+          $('tMode').value = !t[0] ? '0' : t[1] ? '2' : '1'; $('tPct').value = t[2]; $('tAt').value = t[3]; $('tFlips').value = t[4]; $('tMaxL').value = t[5];
+          $('tSum').textContent = !m ? '' : (m[0] ? `Every trigger so far: ${m[1]} of ${m[0]} won (${m[2] >= 0 ? '+' : ''}${m[2]}% per $1 at the price seen).` : 'No triggers yet.') + (m[3] ? ` Real: ${m[4]} of ${m[3]} won, ${m[5] >= 0 ? '+' : '−'}$${Math.abs(m[5]).toFixed(2)}.` : '') + (m[6] ? ` ${m[6]} real loss${m[6] > 1 ? 'es' : ''} today.` : ''); }
         $('sMaxLHint').textContent = ap.mainMaxLosses ? `${ap.mainLossToday || 0} so far today. Bets still waiting for a result count too.` : '';
         { const g = ap.mainTally, n = ap.mainGuardN || 0;
           $('sGuard').textContent = !n ? '' : `Safety switch: back to practice if real BUY bets are below ${ap.mainGuardPct}% per $1 after ${n} bets.` +
@@ -713,7 +720,7 @@
       if (!(goal >= 0)) return toast('Goal must be $0 or more', 'err');
       if (!(streak >= 0 && streak <= 10 && Number.isInteger(streak))) return toast('Losses in a row must be 0–10', 'err');
       if (!(cool >= 5 && cool <= 1440)) return toast('Pause must be 5–1440 minutes', 'err');
-      send('set', { mainOn: $('sMain').value === '1', mainMaxLosses: +$('sMaxL').value, betPct: bet, dailyStopPct: stop, goal, lossStreak: streak, cooldownMin: cool, minModel: +$('sMinModel').value, minMarket: +$('sMinMarket').value, target: +$('sTarget').value, notifyFills: $('sFills').checked, notifyResults: $('sResults').checked }, 'Saving settings');
+      send('set', { mainOn: $('sMain').value === '1', mainMaxLosses: +$('sMaxL').value, teeterOn: $('tMode').value !== '0', teeterLive: $('tMode').value === '2', teeterPct: +$('tPct').value, teeterAt: +$('tAt').value, teeterFlips: +$('tFlips').value, teeterMaxLosses: +$('tMaxL').value, betPct: bet, dailyStopPct: stop, goal, lossStreak: streak, cooldownMin: cool, minModel: +$('sMinModel').value, minMarket: +$('sMinMarket').value, target: +$('sTarget').value, notifyFills: $('sFills').checked, notifyResults: $('sResults').checked }, 'Saving settings');
     };
     $('pReset').onclick = () => { const b = +$('pBal').value; if (!(b >= 10)) return toast('At least $10', 'err'); send('resetPractice', { balance: b }, 'Resetting practice'); };
 
