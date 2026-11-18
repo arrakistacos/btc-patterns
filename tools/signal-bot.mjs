@@ -204,10 +204,20 @@ async function getJSON(url) {
 
 // ---------------------------------------------------------------- tuned params + history table
 let params = Object.assign({}, E.DEFAULT_WINDOW_PARAMS), edge = null, tunedAt = null;
+// pinned-params.json next to the bot ({ "window": {...}, "pinnedAt": "..." }) keeps the model fixed: the twice-daily
+// retune (params.json) is then only logged as a suggestion, not used. Delete the file to follow the retune again.
+const PIN_FILE = resolve(ROOT, 'pinned-params.json');
+let lastSuggested = null;
 async function loadTuning() {
+  let pinned = null;
+  if (existsSync(PIN_FILE)) { try { const p = JSON.parse(readFileSync(PIN_FILE, 'utf8')); if (p && p.window) pinned = p; } catch (e) { log('pinned-params.json:', e.message); } }
+  if (pinned) { params = Object.assign({}, E.DEFAULT_WINDOW_PARAMS, pinned.window); tunedAt = 'pinned ' + (pinned.pinnedAt || ''); }
   try {
     const p = await getJSON(SITE + 'params.json?ts=' + Date.now());
-    if (p && p.window) { params = Object.assign({}, E.DEFAULT_WINDOW_PARAMS, p.window); tunedAt = p.generated; }
+    if (p && p.window) {
+      if (!pinned) { params = Object.assign({}, E.DEFAULT_WINDOW_PARAMS, p.window); tunedAt = p.generated; }
+      else if (JSON.stringify(p.window) !== lastSuggested) { lastSuggested = JSON.stringify(p.window); if (lastSuggested !== JSON.stringify(pinned.window)) log(`retune suggests ${lastSuggested} (${p.generated}); keeping the pinned model`); }
+    }
   } catch (e) { log('params.json:', e.message); }
   try { edge = await getJSON(SITE + 'data/edge.json?ts=' + Date.now()); } catch (e) { log('edge.json:', e.message); }
 }
