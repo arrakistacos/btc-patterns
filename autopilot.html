@@ -564,11 +564,13 @@
         $('sMaxL').value = ap.mainMaxLosses != null ? ap.mainMaxLosses : 6;
         { const t = ap.teeter || [true, true, 2, 85, 2, 0], m = ap.teeterSum;
           $('tMode').value = !t[0] ? '0' : t[1] ? '2' : '1'; $('tPct').value = t[2]; $('tAt').value = t[3]; $('tFlips').value = t[4]; $('tMaxL').value = t[5];
-          $('tSum').textContent = !m ? '' : (m[0] ? `Every trigger so far: ${m[1]} of ${m[0]} won (${m[2] >= 0 ? '+' : ''}${m[2]}% per $1 at the price seen).` : 'No triggers yet.') + (m[3] ? ` Real: ${m[4]} of ${m[3]} won, ${m[5] >= 0 ? '+' : '−'}$${Math.abs(m[5]).toFixed(2)}.` : '') + (m[6] ? ` ${m[6]} real loss${m[6] > 1 ? 'es' : ''} today.` : ''); }
+          const ms = ap.missed && ap.missed.teeter;
+          $('tSum').textContent = (ms && ms[0] ? `Unfilled real orders: ${ms[1]} of ${ms[0]} would have won. ` : '') + (!m ? '' : (m[0] ? `Every trigger so far: ${m[1]} of ${m[0]} won (${m[2] >= 0 ? '+' : ''}${m[2]}% per $1 at the price seen).` : 'No triggers yet.') + (m[3] ? ` Real: ${m[4]} of ${m[3]} won, ${m[5] >= 0 ? '+' : '−'}$${Math.abs(m[5]).toFixed(2)}.` : '') + (m[6] ? ` ${m[6]} real loss${m[6] > 1 ? 'es' : ''} today.` : '')); }
         $('sMaxLHint').textContent = ap.mainMaxLosses ? `${ap.mainLossToday || 0} so far today. Bets still waiting for a result count too.` : '';
         { const g = ap.mainTally, n = ap.mainGuardN || 0;
           $('sGuard').textContent = !n ? '' : `Safety switch: back to practice if real BUY bets are below ${ap.mainGuardPct}% per $1 after ${n} bets.` +
             (g ? ` So far ${g[0]} bets, ${g[1]} won, ${g[2] >= 0 ? '+' : '−'}$${Math.abs(g[2]).toFixed(2)}${g[3] > 0 ? ` (${(g[2] / g[3] * 100).toFixed(1)}% per $1)` : ''}.` : ' No real BUY bets yet.'); }
+        { const ms = ap.missed && ap.missed.reg; if (ms && ms[0]) $('sGuard').textContent += ` Unfilled real orders: ${ms[1]} of ${ms[0]} would have won.`; }
         $('sBet').value = ap.betPct; $('sStop').value = ap.dailyStopPct;
         $('sGoal').value = ap.goal || 0;
         $('sStreak').value = ap.lossStreak != null ? ap.lossStreak : 2; $('sCool').value = ap.cooldownMin || 60;

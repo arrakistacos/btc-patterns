@@ -414,10 +414,10 @@ export function createAutopilot(o) {
       filled = r2(filled);
     }
 
-    if (!(filled > 0)) return record({ Ws, mode, side, status: 'nofill', msg: msg || `No fill at ${cents(limit)} or better`, q, qty, limit, orderId, paper: paper ? 1 : undefined });
+    if (!(filled > 0)) return record({ Ws, mode, side, status: 'nofill', msg: msg || `No fill at ${cents(limit)} or better`, q, mkt: sig.marketPct, qty, limit, seen: best, orderId, slug: mkt.slug, missed: null, paper: paper ? 1 : undefined });
     const px = notional / filled, fee = r4(feeAt(px) * filled), cost = r2(notional + fee);
     if (!live) S.practice.balance = r2(S.practice.balance - cost);
-    const t = record({ Ws, mode, side, status: filled < qty - 1e-9 ? 'partial' : 'filled', q, mkt: sig.marketPct, qty: filled, want: qty, px: r4(px), fee, cost, limit, orderId, slug: mkt.slug, result: null, pnl: null, balBefore: r2(bal), paper: paper ? 1 : undefined });
+    const t = record({ Ws, mode, side, status: filled < qty - 1e-9 ? 'partial' : 'filled', q, mkt: sig.marketPct, qty: filled, want: qty, px: r4(px), fee, cost, limit, seen: best, orderId, slug: mkt.slug, result: null, pnl: null, balBefore: r2(bal), paper: paper ? 1 : undefined });
     S.stats[mode].n++; S.stats[mode].staked = r2(S.stats[mode].staked + cost);
     day.n++;
     log(`AUTOPILOT ${mode.toUpperCase()}${paper ? (capped ? ' (daily loss cap reached)' : ' (regular bets off)') : ''} bought ${side} ${filled} @ ${cents(px)} = ${money(cost)} (${S.betPct}% of ${money(bal)})`);
@@ -474,6 +474,24 @@ export function createAutopilot(o) {
       log(`SAFETY SWITCH: real regular bets back to practice after ${g.n} bets (${g.w} won, ${money(g.pnl)}, ${pct.toFixed(1)}% per $1 < ${S.mainGuardPct}%)`);
       push({ title: 'Regular bets back to practice', body: `Safety switch: ${g.n} real regular bets, ${g.w} won, ${money(g.pnl)} (${pct.toFixed(1)}% per $1, limit ${S.mainGuardPct}%). Coin flips are unchanged. Switch them back on in Settings to try again.`, priority: 4, tags: 'warning', click: o.site + 'autopilot.html' });
     }
+  }
+  // Unfilled real orders: when the price runs away before the order lands, the side usually wins. Recording whether it
+  // did shows what the misses cost (practice and backtests assume every order fills).
+  async function settleMissed() {
+    const now = Date.now() / 1000;
+    for (const t of S.trades) {
+      if (t.status !== 'nofill' || t.mode !== 'live' || t.missed !== null || !t.slug || now < t.Ws + W + 15) continue;
+      let s = null;
+      try { const j = await gw(`/v1/markets/${t.slug}/settlement`); if (j.settlement != null) s = +j.settlement; } catch { /* not yet */ }
+      if (s == null && now > t.Ws + W + 600) { try { const u = await Signal.fetchUsTerms(t.Ws); if (u.settlementPrice && u.priceToBeat) s = u.settlementPrice >= u.priceToBeat ? 1 : 0; } catch { /* later */ } }
+      if (s == null) continue;
+      t.missed = (s >= 0.5) === (t.side === 'UP') ? 1 : 0;
+      save(); publishSoon();
+    }
+  }
+  function missedSummary(strategy) {
+    const x = S.trades.filter((t) => t.mode === 'live' && t.status === 'nofill' && (t.strategy || null) === strategy && t.missed != null);
+    return [x.length, x.filter((t) => t.missed).length];
   }
   let lastSettleCheck = 0;
   async function settle() {
@@ -922,13 +940,13 @@ export function createAutopilot(o) {
             rec.real = 1;
             if (ord.filled > 0) {
               const px = ord.notional / ord.filled, fee = r4(feeAt(px) * ord.filled), cost = r2(ord.notional + fee);
-              record({ Ws, mode: 'live', strategy: 'teeter', betPct: S.teeterPct, side: rec.side, status: ord.filled < qty - 1e-9 ? 'partial' : 'filled', qty: r2(ord.filled), want: qty, px: r4(px), fee, cost, limit, orderId: ord.orderId, slug: mkt.slug, result: null, pnl: null, balBefore: r2(bal) });
+              record({ Ws, mode: 'live', strategy: 'teeter', betPct: S.teeterPct, side: rec.side, status: ord.filled < qty - 1e-9 ? 'partial' : 'filled', qty: r2(ord.filled), want: qty, px: r4(px), fee, cost, limit, seen: r4(ask), orderId: ord.orderId, slug: mkt.slug, result: null, pnl: null, balBefore: r2(bal) });
               Object.assign(rec, { realStatus: 'filled', realPx: r4(px), realCost: cost });
               S.stats.live.n++; S.stats.live.staked = r2(S.stats.live.staked + cost); day.n++;
               if (S.notifyFills) push({ title: `BOUGHT ${rec.side} (TEETER)`, body: `${r2(ord.filled)} @ ${cents(px)} = ${money(cost)} · teeter-totter, ${st.flips} flips, ${rec.left}s left`, priority: 4, tags: up ? 'green_circle' : 'red_circle', click: o.site + 'autopilot.html' });
             } else {
               rec.realStatus = 'nofill'; rec.msg = ord.msg || `No fill at ${cents(limit)} or better`;
-              record({ Ws, mode: 'live', strategy: 'teeter', side: rec.side, status: 'nofill', msg: rec.msg, qty, limit, orderId: ord.orderId });
+              record({ Ws, mode: 'live', strategy: 'teeter', side: rec.side, status: 'nofill', msg: rec.msg, qty, limit, seen: r4(ask), orderId: ord.orderId, slug: mkt.slug, missed: null });
             }
           }
         } catch (e2) {
@@ -1053,7 +1071,7 @@ export function createAutopilot(o) {
     const snap = {
       v: 1, ts: Date.now(), ver: AUTOPILOT_VERSION, since: STARTED, why: botWhy, note: lastNote, keys: !!KEY,
       msgs: o.budget && isFinite(o.budget.left()) ? Math.floor(o.budget.left()) : null,   // ntfy messages left (free ntfy.sh)
-      ap: { enabled: S.enabled, mode: S.mode, mainOn: S.mainOn !== false, mainTally: S.mainTally ? [S.mainTally.n, S.mainTally.w, S.mainTally.pnl, S.mainTally.cost] : null, mainGuardN: S.mainGuardN, mainGuardPct: S.mainGuardPct, mainMaxLosses: S.mainMaxLosses, mainLossToday: S.mainLoss && S.mainLoss.d === dayOf(Date.now()) ? S.mainLoss.n : 0, betPct: S.betPct, dailyStopPct: S.dailyStopPct, lossStreak: S.lossStreak, cooldownMin: S.cooldownMin, goal: S.goal, teeter: [S.teeterOn !== false, S.teeterLive !== false, S.teeterPct, S.teeterAt, S.teeterFlips, S.teeterMaxLosses], teeterSum: teeterSummary(), lateLive: S.lateLive, lateBet: S.lateBet, lateBetPct: S.lateBetPct, lateFavOnly: S.lateFavOnly, lateMinReal: S.lateMinReal, lateMinEdge: S.lateMinEdge, lateGapFix: S.lateGapFix !== false, lateHours: S.lateHours, lateAntic: S.lateAntic, lateMaxLosses: S.lateMaxLosses, anticBlockReset: S.anticBlockReset !== false, anticStart: S.anticStart, anticStep: S.anticStep, anticFloor: S.anticFloor, streak: S.streak[S.mode] || 0, notifyFills: S.notifyFills, notifyResults: S.notifyResults, minModel: minModel(o.defMinModel), minMarket: minMarket(o.defMinMarket), target: target(o.defTarget), halted: S.halted },
+      ap: { enabled: S.enabled, mode: S.mode, mainOn: S.mainOn !== false, mainTally: S.mainTally ? [S.mainTally.n, S.mainTally.w, S.mainTally.pnl, S.mainTally.cost] : null, mainGuardN: S.mainGuardN, mainGuardPct: S.mainGuardPct, mainMaxLosses: S.mainMaxLosses, mainLossToday: S.mainLoss && S.mainLoss.d === dayOf(Date.now()) ? S.mainLoss.n : 0, betPct: S.betPct, dailyStopPct: S.dailyStopPct, lossStreak: S.lossStreak, cooldownMin: S.cooldownMin, goal: S.goal, teeter: [S.teeterOn !== false, S.teeterLive !== false, S.teeterPct, S.teeterAt, S.teeterFlips, S.teeterMaxLosses], teeterSum: teeterSummary(), missed: { reg: missedSummary(null), teeter: missedSummary('teeter') }, lateLive: S.lateLive, lateBet: S.lateBet, lateBetPct: S.lateBetPct, lateFavOnly: S.lateFavOnly, lateMinReal: S.lateMinReal, lateMinEdge: S.lateMinEdge, lateGapFix: S.lateGapFix !== false, lateHours: S.lateHours, lateAntic: S.lateAntic, lateMaxLosses: S.lateMaxLosses, anticBlockReset: S.anticBlockReset !== false, anticStart: S.anticStart, anticStep: S.anticStep, anticFloor: S.anticFloor, streak: S.streak[S.mode] || 0, notifyFills: S.notifyFills, notifyResults: S.notifyResults, minModel: minModel(o.defMinModel), minMarket: minMarket(o.defMinMarket), target: target(o.defTarget), halted: S.halted },
       bal: { live: S.liveBal, practice: S.practice }, stats: S.stats, days, acks: acks.slice(-5),
       trades: S.trades.slice(-12).map(tr),
       late: { since: S.late.since, antic: anticView(), blockLosses: blockLosses(), capHit: capHit() ? 1 : 0, stats: S.late.stats, real: S.late.real || null, byPat: S.late.byPat || null, byFav: S.late.byFav || null, byBlock: lateByBlock(), trades: S.late.trades.slice(-6).map((t) => [t.ts, t.Ws, t.side, t.status, t.px || 0, t.quoted, Math.round(t.q * 100), t.result, t.pnl, t.left, t.msg || '', t.real ? 1 : 0, t.pat === 'against' ? (t.patSkip ? 2 : 1) : t.pat === 'with' ? 3 : 0, t.realSkip === 'underdog' ? 1 : t.realSkip === 'conf' ? 2 : t.realSkip === 'hours' ? 3 : t.realSkip === 'maxloss' ? 4 : t.realSkip === 'price' ? 5 : 0, t.fav != null ? t.fav : (t.quoted >= 0.5 ? 1 : 0), t.gap != null ? Math.round(t.gap) : null]) },
@@ -1253,7 +1271,7 @@ export function createAutopilot(o) {
   function tick(why) {
     botWhy = why || botWhy;
     const now = Date.now();
-    if (now - lastSettleCheck > 10000) { lastSettleCheck = now; settle().catch((e) => log('autopilot settle:', e.message)); settleLate().catch((e) => log('late test settle:', e.message)); settleLag().catch((e) => log('lag test settle:', e.message)); settleTeeter().catch((e) => log('teeter settle:', e.message)); sbSettle().catch((e) => log('scoreboard settle:', e.message)); }
+    if (now - lastSettleCheck > 10000) { lastSettleCheck = now; settle().catch((e) => log('autopilot settle:', e.message)); settleLate().catch((e) => log('late test settle:', e.message)); settleLag().catch((e) => log('lag test settle:', e.message)); settleTeeter().catch((e) => log('teeter settle:', e.message)); settleMissed().catch((e) => log('missed settle:', e.message)); sbSettle().catch((e) => log('scoreboard settle:', e.message)); }
     if (now - STARTED > 30000) publishScore();
     if (S.halted && S.halted.untilTs && now >= S.halted.untilTs) {
       S.halted = null; save(); publishSoon(1500, true);
