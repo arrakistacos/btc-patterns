@@ -1,5 +1,5 @@
 {
- "generated": "2026-11-18T18:09:00.360Z",
+ "generated": "2026-11-19T02:37:44.954Z",
  "window": {
   "mode": "end60",
   "volBars": 6,
@@ -10,7 +10,7 @@
  },
  "marketMatch": {
   "mode": "end60",
-  "volBars": 12,
+  "volBars": 6,
   "volScale": 1,
   "beta": 0,
   "gamma": 0,
