@@ -1157,6 +1157,54 @@ export function createAutopilot(o) {
     flipPubAt = Date.now();
     flipChunks().forEach((c, k) => setTimeout(() => publish(c, true), 2500 + k * 1500));
   }
+  // The bet book for the autopilot page's results tables: recent bets of every strategy, real and practice, and totals
+  // over everything the bot still has on record. Sent on request, 25 rows a message (well under ntfy's 4 KB).
+  //   row: [ts s, Ws, strategy r regular / t teeter-totter / c coin flip, money l real / p practice / x tracked only,
+  //         side U/D, status f filled / p partial / n not filled / e error, price, cost $, result 1/0/null, profit $]
+  let bookPubAt = 0;
+  function bookData() {
+    const c2 = (x) => (x == null ? null : Math.round(x * 100) / 100);
+    const code = (st) => ({ filled: 'f', partial: 'p', nofill: 'n', error: 'e' })[st];
+    const rows = [];
+    for (const t of S.trades) {
+      if (!code(t.status)) continue;
+      if (t.strategy === 'late' && t.mode === 'practice') continue;
+      rows.push([Math.round(t.ts / 1000), t.Ws, t.strategy === 'teeter' ? 't' : t.strategy === 'late' ? 'c' : 'r', t.mode === 'live' ? 'l' : 'p', t.side === 'UP' ? 'U' : 'D', code(t.status), c2(t.px), c2(t.cost), t.result == null ? null : t.result ? 1 : 0, c2(t.pnl)]);
+    }
+    // coin flips tracked with $10 practice bets (real ones come from the trades above)
+    for (const t of S.late.trades) {
+      if (t.real || !code(t.status)) continue;
+      rows.push([Math.round(t.ts / 1000), t.Ws, 'c', 'p', t.side === 'UP' ? 'U' : 'D', code(t.status), c2(t.px), c2(t.cost), t.result == null ? null : t.result ? 1 : 0, c2(t.pnl)]);
+    }
+    // teeter-totter triggers that weren't real bets, priced as $10 at the price seen
+    for (const t of S.teeter.trades) {
+      if (t.real || t.status !== 'seen') continue;
+      const pnl = t.result == null ? null : t.result ? 10 * (1 / t.cost - 1) : -10;
+      rows.push([Math.round(t.ts / 1000), t.Ws, 't', 'x', t.side === 'UP' ? 'U' : 'D', 'f', c2(t.ask), 10, t.result == null ? null : t.result, c2(pnl)]);
+    }
+    rows.sort((a, b) => a[0] - b[0]);
+    // totals per strategy and money: [bets settled, won, profit, staked, first ts, unfilled]
+    const sum = {};
+    for (const r of rows) {
+      const k = r[2] + r[3], z = sum[k] || (sum[k] = [0, 0, 0, 0, r[0], 0]);
+      if (r[5] === 'n') { z[5]++; continue; }
+      if ((r[5] === 'f' || r[5] === 'p') && r[8] != null) { z[0]++; z[1] += r[8]; z[2] = c2(z[2] + (r[9] || 0)); z[3] = c2(z[3] + (r[7] || 0)); }
+    }
+    // the newest 80 of each strategy
+    const keep = []; for (const k of ['r', 't', 'c']) keep.push(...rows.filter((r) => r[2] === k).slice(-80));
+    keep.sort((a, b) => a[0] - b[0]);
+    return { rows: keep, sum };
+  }
+  function bookChunks() {
+    const { rows, sum } = bookData(), N = 25, of = Math.max(1, Math.ceil(rows.length / N)), ts = Date.now(), out = [];
+    for (let i = 0; i < of; i++) out.push({ v: 1, kind: 'book', ts, i, of, rows: rows.slice(i * N, (i + 1) * N), sum: i === 0 ? sum : undefined });
+    return out;
+  }
+  function publishBook() {
+    if (Date.now() - bookPubAt < 60000) return;
+    bookPubAt = Date.now();
+    bookChunks().forEach((c, k) => setTimeout(() => publish(c, true), 2500 + k * 1500));
+  }
   function publishLedger() {
     if (Date.now() - ledPubAt < 5 * 60000) return;
     ledPubAt = Date.now();
@@ -1219,6 +1267,7 @@ export function createAutopilot(o) {
       case 'refresh': if (S.mode === 'live' && KEY) await refreshLive().catch(() => {}); break;
       case 'ledger': publishLedger(); break;
       case 'flips': publishFlips(); break;
+      case 'book': publishBook(); break;
       case 'chartFrom': {
         const d = String(a.d || '');
         if (d && !/^\d{4}-\d{2}-\d{2}$/.test(d)) { ok = false; msg = 'bad date'; break; }
@@ -1351,5 +1400,5 @@ export function createAutopilot(o) {
       last: lt ? { id: lt.id, ts: lt.ts, side: lt.side, result: lt.result == null ? null : !!lt.result } : null,
     };
   }
-  return { ledInfo, ledgerChunks, flipChunks, onSignal, observe, observeLate, settleLate, observeLag, settleLag, lagEstimate, lagFlush, tick, start, check, settle, sbSettle, scoreboard, publishScore, minModel, minMarket, target, state: () => S, hasKey: () => !!KEY, flush: publish, snapshot };
+  return { ledInfo, ledgerChunks, flipChunks, bookChunks, onSignal, observe, observeLate, settleLate, observeLag, settleLag, lagEstimate, lagFlush, tick, start, check, settle, sbSettle, scoreboard, publishScore, minModel, minMarket, target, state: () => S, hasKey: () => !!KEY, flush: publish, snapshot };
 }

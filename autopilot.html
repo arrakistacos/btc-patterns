@@ -65,6 +65,9 @@
   .seg button { border: 0; border-radius: 0; padding: 9px 16px; background: var(--panel2); color: var(--muted); }
   .seg button.on { background: var(--accent); color: #06101f; }
   .seg button.on.liveon { background: var(--up); }
+  .tabs { display: flex; flex-wrap: wrap; margin-bottom: 10px; } .tabs button { flex: 1 1 auto; padding: 8px 12px; }
+  .sumtbl td.k { white-space: nowrap; } .sumtbl tr.tot td { border-top: 1px solid var(--line); font-weight: 700; }
+  .moretbl { margin-top: 12px; }
 
   .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 10px; }
   .tile { background: var(--panel2); border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; }
@@ -137,16 +140,23 @@
       <div class="tile"><div class="k">Win rate</div><div class="v num" id="tWin">—</div><div class="s" id="tWinS"></div></div>
     </div>
 
-    <div class="card">
-      <h3>Trades <span class="muted" style="text-transform:none;letter-spacing:0;font-weight:500" id="nowLine"></span></h3>
-      <div class="scroll"><table>
-        <thead><tr><th>Window</th><th>Side</th><th class="r">Bought</th><th class="r">Result</th></tr></thead>
-        <tbody id="trades"><tr><td colspan="4" class="muted">No trades yet. Autopilot trades the moment a BUY alert fires.</td></tr></tbody>
+    <div class="card" id="resultsCard">
+      <h3>Results <span class="muted" style="text-transform:none;letter-spacing:0;font-weight:500" id="nowLine"></span></h3>
+      <div class="seg tabs" id="resTabs" role="tablist"><button data-tab="all" role="tab">All bets</button><button data-tab="r" role="tab">Regular</button><button data-tab="t" role="tab">Teeter-totter</button><button data-tab="c" role="tab">Coin flips</button></div>
+      <p class="hint" id="resNote" style="margin-top:0"></p>
+      <div class="scroll"><table class="sumtbl">
+        <thead><tr><th>Strategy</th><th>Money</th><th class="r">Bets</th><th class="r">Won</th><th class="r">Profit</th><th class="r hidem">Per $1</th></tr></thead>
+        <tbody id="resSum"><tr><td colspan="6" class="muted">Waiting for the bet history from the bot…</td></tr></tbody>
       </table></div>
+      <div class="scroll moretbl"><table>
+        <thead><tr><th>Window</th><th>Bet</th><th class="r">Paid</th><th class="r">Result</th></tr></thead>
+        <tbody id="resBody"><tr><td colspan="4" class="muted">—</td></tr></tbody>
+      </table></div>
+      <div class="row" style="margin-top:8px;gap:14px"><a href="#" id="resMore" class="hint">Show more</a><a href="#" id="resRefresh" class="hint">Refresh</a></div>
     </div>
 
     <div class="card">
-      <h3>Late coin-flip test <span class="tag p" id="lateTag" style="text-transform:none;letter-spacing:0">PRACTICE</span></h3>
+      <h3>Coin-flip settings <span class="tag p" id="lateTag" style="text-transform:none;letter-spacing:0">PRACTICE</span></h3>
       <p class="hint" style="margin-top:0">With 75–30 seconds left in a close window (favorite priced 50–70¢), buys the side our model gives at least 60%, at the live Polymarket US price. It's tracked with pretend money ($10 a trade) unless you turn on real trades below. In the backtest this won 65% at about 54¢ (+$15.67 per $100), but those prices may have been a few seconds stale. This checks it against real prices.</p>
       <div class="tiles" style="margin-bottom:10px">
         <div class="tile"><div class="k">Trades</div><div class="v num" id="lN">0</div><div class="s" id="lNs"></div></div>
@@ -192,10 +202,7 @@
       <p class="hint" id="favLine" style="margin:0 0 4px"></p>
       <p class="hint" id="patLine" style="margin:0 0 8px"></p>
       <p class="hint" id="lateNote" style="margin-top:0">Real orders only while autopilot is <b>Live</b> and on. They count toward your balance, stops, 2-loss pause and goal, and are skipped if a normal trade already happened in that window. Real money is also skipped outside the hours you tick, when the model backs the underdog (Polymarket's price for its side is under 50¢) or gives its side less than your minimum, when the price with fee is more than the model's win chance (the order also never pays more than that), and when price is pressing a chart pattern line (triangle, wedge or flag) that points against the flip. With the start-price gap correction on, the model first shifts Coinbase's price by how far Coinbase's average for the minute before the window was from Polymarket's start price (the official index's average for that minute), because Coinbase tends to stay off the same way until the close. Skipped flips are still tracked as practice.</p>
-      <div class="scroll"><table>
-        <thead><tr><th>Window</th><th>Side</th><th class="r">Paid</th><th class="r">Result</th></tr></thead>
-        <tbody id="lateBody"><tr><td colspan="4" class="muted">No late coin-flip trades yet.</td></tr></tbody>
-      </table></div>
+      <p class="hint" style="margin-bottom:0">Every coin flip, real and practice, is in the Coin flips tab under Results.</p>
     </div>
 
     <div class="card" id="nightsCard">
@@ -329,6 +336,72 @@
     let pollTimer = null, fastUntil = 0;
     const pending = new Map();   // nonce -> { label, at }
 
+    // ---------------- results tables: the bot's bet book ('book' messages), 25 rows per message
+    //   row: [ts s, Ws, strategy r/t/c, money l real / p practice / x tracked, side U/D, status f/p/n/e, price, cost, result, profit]
+    const BKS = 'btcpw.book', TABS = 'btcpw.tab';
+    let book = null, bookAt = 0, bookAsked = 0, resShow = 25; const bookParts = new Map();
+    let resTab = 'all'; try { resTab = localStorage.getItem(TABS) || 'all'; } catch (e) {}
+    try { const c = JSON.parse(localStorage.getItem(BKS) || 'null'); if (c && Array.isArray(c.rows)) { book = c; bookAt = c.at || 0; } } catch (e) {}
+    function bookChunk(m) {
+      if (!Array.isArray(m.rows) || m.ts <= bookAt) return false;
+      let g = bookParts.get(m.ts); if (!g) { g = { of: m.of, parts: new Map(), sum: null }; bookParts.set(m.ts, g); }
+      g.parts.set(m.i, m.rows); if (m.sum) g.sum = m.sum;
+      if (g.parts.size < g.of) return false;
+      const rows = []; for (let i = 0; i < g.of; i++) rows.push(...(g.parts.get(i) || []));
+      book = { at: m.ts, rows, sum: g.sum || {} }; bookAt = m.ts; bookParts.clear();
+      try { localStorage.setItem(BKS, JSON.stringify(book)); } catch (e) {}
+      return true;
+    }
+    function askBook(force) {
+      if (!st || Date.now() - bookAsked < (force ? 15000 : 60000)) return;
+      const newest = (st.trades || []).reduce((a, t) => Math.max(a, t[0] || 0), 0);
+      if (!force && book && Date.now() - bookAt < 10 * 60000 && newest <= bookAt) return;
+      bookAsked = Date.now(); send('book', {}, null, true);
+    }
+    const STRAT = { r: 'Regular', t: 'Teeter-totter', c: 'Coin flip' };
+    const MONEY = { l: 'Real', p: 'Practice', x: 'Tracked' };
+    function moneyLabel(strat, m) { return m === 'l' ? 'Real' : strat === 'r' ? 'Practice' : strat === 't' ? 'Tracked ($10)' : 'Practice ($10)'; }
+    function renderResults() {
+      for (const b of $('resTabs').querySelectorAll('button')) b.classList.toggle('on', b.dataset.tab === resTab);
+      const tabs = resTab === 'all' ? ['r', 't', 'c'] : [resTab];
+      // rows: the bet book, or until it arrives the latest trades from the status message
+      let rows = book ? book.rows : (st && st.trades || []).filter((t) => t[4] !== 'skipped').map(([ts, Ws, m, side, status, qty, px, cost, result, pnl, msg, q, late]) => [Math.round(ts / 1000), Ws, late === 2 ? 't' : late ? 'c' : 'r', m === 'l' ? 'l' : 'p', side[0], { filled: 'f', partial: 'p', nofill: 'n', error: 'e' }[status] || 'e', px, cost, result, pnl]);
+      rows = rows.filter((r) => tabs.includes(r[2]));
+      // totals
+      const sum = book ? book.sum : null, out = [];
+      const line = (label, money, z, tot) => {
+        const pnl = z[2], per = z[3] ? pnl / z[3] : null;
+        return `<tr${tot ? ' class="tot"' : ''}><td class="k">${label}</td><td>${money}</td><td class="r num">${z[0]}${z[5] ? `<div class="hint nw">${z[5]} unfilled</div>` : ''}</td><td class="r num nw">${z[0] ? Math.round(z[1] / z[0] * 100) + '%' : '—'}</td><td class="r num nw ${cls(pnl)}">${signed(pnl)}</td><td class="r num hidem nw">${per == null ? '—' : (per >= 0 ? '+' : '−') + Math.abs(per * 100).toFixed(1) + '%'}</td></tr>`;
+      };
+      if (sum) {
+        const real = [0, 0, 0, 0, 0, 0];
+        for (const k of tabs) for (const m of ['l', 'p', 'x']) {
+          const z = sum[k + m]; if (!z) continue;
+          out.push(line(STRAT[k], `<span class="tag ${m === 'l' ? 'l' : 'p'}">${moneyLabel(k, m).toUpperCase()}</span>`, z));
+          if (m === 'l') for (let i = 0; i < 6; i++) if (i !== 4) real[i] = Math.round((real[i] + z[i]) * 100) / 100;
+        }
+        if (resTab === 'all' && real[0]) out.push(line('All strategies', '<span class="tag l">REAL</span>', real, true));
+      }
+      $('resSum').innerHTML = out.length ? out.join('') : `<tr><td colspan="6" class="muted">${book ? 'No bets on record yet.' : 'Waiting for the bet history from the bot…'}</td></tr>`;
+      const firsts = sum ? tabs.flatMap((k) => ['l', 'p', 'x'].map((m) => sum[k + m] && sum[k + m][4]).filter(Boolean)) : [];
+      $('resNote').textContent = (book ? `Totals cover every bet the bot still has on record${firsts.length ? ' since ' + new Date(Math.min(...firsts) * 1000).toLocaleDateString([], { month: 'short', day: 'numeric' }) : ''}. ` : '') +
+        { all: 'Real money and practice are counted separately; the total line adds up real money only.', r: 'Bets on the BUY alerts. Practice ones use the practice balance; real ones your Polymarket US cash.', t: 'Buys the side that breaks out to 85% in the last 30 seconds after the lead flipped back and forth. "Tracked" are triggers that weren\'t real bets, priced as $10 bets.', c: 'With 75–30 seconds left in a close window, the side the model picks. Practice flips are $10 bets.' }[resTab];
+      // bet list, newest first
+      const list = rows.slice().reverse(), shown = list.slice(0, resShow);
+      $('resBody').innerHTML = shown.length ? shown.map(([ts, Ws, k, m, side, stc, px, cost, result, pnl]) => {
+        const wd = new Date(Ws * 1000), isToday = wd.toDateString() === new Date().toDateString();
+        const when = `<span class="nw">${isToday ? '' : wd.toLocaleDateString([], { month: 'short', day: 'numeric' }) + ' '}${wd.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}</span>`;
+        const bet = `<span class="${side === 'U' ? 'up' : 'down'}" style="font-weight:700">${side === 'U' ? 'UP' : 'DOWN'}</span> <span class="tag ${m === 'l' ? 'l' : 'p'}">${m === 'l' ? 'REAL' : m === 'x' ? 'TRACKED' : 'PRACTICE'}</span>${resTab === 'all' ? `<div class="hint nw">${STRAT[k]}</div>` : ''}`;
+        if (stc === 'n' || stc === 'e') return `<tr><td>${when}</td><td>${bet}</td><td colspan="2" class="muted">${stc === 'n' ? 'Not filled: the price moved before the order landed' : 'Order error'}</td></tr>`;
+        const res = result == null ? '<span class="muted">waiting…</span>' : `<span class="${result ? 'up' : 'down'}" style="font-weight:700">${result ? 'WON' : 'LOST'}</span><div class="num nw ${cls(pnl)}">${signed(pnl)}</div>`;
+        return `<tr><td>${when}</td><td>${bet}</td><td class="r num"><span class="nw">${money(cost)}</span>${px ? `<div class="muted nw">@ ${Math.round(px * 100)}¢${stc === 'p' ? ' · partial' : ''}</div>` : ''}</td><td class="r">${res}</td></tr>`;
+      }).join('') : `<tr><td colspan="4" class="muted">${book || st ? 'No bets yet.' : '—'}</td></tr>`;
+      $('resMore').classList.toggle('hide', list.length <= resShow);
+    }
+    $('resTabs').addEventListener('click', (ev) => { const b = ev.target.closest('button'); if (!b) return; resTab = b.dataset.tab; resShow = 25; try { localStorage.setItem(TABS, resTab); } catch (e) {} renderResults(); });
+    $('resMore').onclick = (ev) => { ev.preventDefault(); resShow += 25; renderResults(); };
+    $('resRefresh').onclick = (ev) => { ev.preventDefault(); askBook(true); toast('Asked the bot for the latest bets…'); };
+
     // ---------------- coin-flip nights (flipstats.js): the bot's archive of settled flips, 60 rows per message
     const FLS = 'btcpw.flips';
     let flips = null, flipsAt = 0, flipsAsked = 0; const flipParts = new Map();
@@ -393,7 +466,7 @@
       const r = await fetch(`${sess.server}/${sess.T.status}/json?poll=1&since=${since || '2h'}`, { cache: 'no-store' });
       if (!r.ok) throw new Error('ntfy HTTP ' + r.status);
       const lines = (await r.text()).trim().split('\n').filter(Boolean).map((l) => { try { return JSON.parse(l); } catch (e) { return null; } }).filter((m) => m && m.event === 'message');
-      let sawAny = lines.length > 0, s = null, score = null, gotFlips = false;
+      let sawAny = lines.length > 0, s = null, score = null, gotFlips = false, gotBook = false;
       // The bot's messages: status (no kind), the settings scoreboard ('score'), the coin-flip archive in pieces
       // ('flips'), and the Profits page's ledger ('ledger', not used here)
       for (let i = lines.length - 1; i >= 0; i--) {
@@ -401,9 +474,11 @@
         if (!m) continue;
         if (m.kind === 'score') { if (!score) score = m; }
         else if (m.kind === 'flips') { if (flipChunk(m)) gotFlips = true; }
+        else if (m.kind === 'book') { if (bookChunk(m)) gotBook = true; }
         else if (!m.kind && !s) s = m;
       }
       if (gotFlips) renderNights();
+      if (gotBook && st) renderResults();
       if (score && (!sc || score.ts > sc.ts)) { sc = score; renderScore(); }
       return { s, sawAny };
     }
@@ -539,19 +614,8 @@
       $('tWin').textContent = settled ? Math.round(sm.w / settled * 100) + '%' : '—';
       $('tWinS').textContent = settled ? `${sm.w} of ${settled} won` + (sm.nofill ? ` · ${sm.nofill} unfilled` : '') : 'no results yet';
 
-      // trades (newest first)
-      const rows = (s.trades || []).slice().reverse().map(([ts, Ws, m, side, status, qty, px, cost, result, pnl, msg, q, late]) => {
-        const sideCell = `<span class="${side === 'UP' ? 'up' : 'down'}" style="font-weight:700">${side}</span> <span class="tag ${m === 'l' ? 'l' : 'p'}">${m === 'l' ? 'LIVE' : 'PRACTICE'}</span>${late === 2 ? ' <span class="tag p">TEETER</span>' : late ? ' <span class="tag p">LATE</span>' : ''}`;
-        const wd = new Date(Ws * 1000), isToday = wd.toDateString() === new Date().toDateString();
-        const when = `<span class="nw">${isToday ? '' : wd.toLocaleDateString([], { month: 'short', day: 'numeric' }) + ' '}${wd.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}</span>${q ? `<div class="hint nw">${q}% chance</div>` : ''}`;
-        if (status === 'filled' || status === 'partial') {
-          const res = result == null ? '<span class="muted">waiting…</span>' : `<span class="${result ? 'up' : 'down'}" style="font-weight:700">${result ? 'WON' : 'LOST'}</span><div class="num nw ${cls(pnl)}">${signed(pnl)}</div>`;
-          return `<tr><td>${when}</td><td>${sideCell}</td><td class="r num"><span class="nw">${money(cost)}</span><div class="muted nw">${qty} @ ${Math.round(px * 100)}¢</div>${status === 'partial' ? '<div class="hint">partial fill</div>' : ''}</td><td class="r">${res}</td></tr>`;
-        }
-        const label = { skipped: 'Skipped', nofill: 'Not filled', error: 'Error' }[status] || status;
-        return `<tr><td>${when}</td><td>${sideCell}</td><td colspan="2" class="muted">${label}: ${esc(msg || '')}</td></tr>`;
-      });
-      $('trades').innerHTML = rows.length ? rows.join('') : '<tr><td colspan="4" class="muted">No trades yet. Autopilot trades the moment a BUY alert fires.</td></tr>';
+      // results tables
+      renderResults(); askBook();
 
       // days
       const drows = [];
@@ -617,15 +681,6 @@
       }
       $('favLine').textContent = [fl('fav', 'Model backed the favorite'), fl('dog', 'backed the underdog')].filter(Boolean).join(' · ');
       $('patLine').textContent = ['Chart pattern ' + (pl('against', 'against the flip') || 'against the flip: no trades yet'), pl('with', 'with it'), pl('none', 'no pattern line')].filter(Boolean).join(' · ');
-      const rows = (L.trades || []).slice().reverse().map(([ts, Ws, side, status, px, quoted, q, result, pnl, left, msg, real, pat, skip, fav, gap]) => {
-        const wd = new Date(Ws * 1000);
-        const when = `<span class="nw">${wd.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}</span><div class="hint">${left}s left · model ${q}%${gap != null ? ` · start gap ${gap >= 0 ? '+' : '−'}$${Math.abs(gap)}` : ''}</div>${skip ? `<div class="hint" style="color:#ffb3b8">real skipped: ${skip === 1 ? 'underdog' : skip === 3 ? 'off hours' : skip === 4 ? 'loss cap' : skip === 5 ? 'price above model' : 'below min'}</div>` : ''}`;
-        const tags = `${real ? ' <span class="tag l">REAL</span>' : ''}${pat === 1 || pat === 2 ? ` <span class="tag" style="background:rgba(234,57,67,.18);color:#ffb3b8">PATTERN ✗${pat === 2 ? ' · real skipped' : ''}</span>` : pat === 3 ? ' <span class="tag p">PATTERN ✓</span>' : ''}${fav === 0 && skip !== 1 ? ' <span class="tag p">UNDERDOG</span>' : ''}`;
-        const sideCell = `<span class="${side === 'UP' ? 'up' : 'down'}" style="font-weight:700">${side}</span>${tags ? `<div style="margin-top:3px">${tags.trim()}</div>` : ''}`;
-        if (status !== 'filled') return `<tr><td>${when}</td><td>${sideCell}</td><td colspan="2" class="muted">${esc(msg || status)}</td></tr>`;
-        const res = result == null ? '<span class="muted">waiting…</span>' : `<span class="${result ? 'up' : 'down'}" style="font-weight:700">${result ? 'WON' : 'LOST'}</span><div class="num nw ${cls(pnl)}">${signed(pnl)}</div>`;
-        return `<tr><td>${when}</td><td>${sideCell}</td><td class="r num"><span class="nw">${Math.round(px * 100)}¢</span><div class="hint nw">showed ${Math.round(quoted * 100)}¢</div></td><td class="r">${res}</td></tr>`;
-      });
       const R = L.real, rs = R ? R.w + R.l : 0;
       const ap = st && st.ap;
       $('lR').textContent = ap && ap.lateLive ? (ap.mode === 'live' ? 'ON' : 'armed') : 'off';
@@ -642,7 +697,6 @@
         $('lateCap').value = ap.lateMaxLosses != null ? ap.lateMaxLosses : 2;
         $('anOn').checked = !!ap.lateAntic; $('anBlock').checked = ap.anticBlockReset !== false; $('anStart').value = ap.anticStart || 20; $('anStep').value = ap.anticStep != null ? ap.anticStep : 5; $('anFloor').value = ap.anticFloor || 10;
       }
-      $('lateBody').innerHTML = rows.length ? rows.join('') : '<tr><td colspan="4" class="muted">No late coin-flip trades yet.</td></tr>';
     }
     function renderLag(G) {
       if (!G) return;
