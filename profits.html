@@ -129,7 +129,7 @@
           <div class="sub" id="chartSub">Real money, per day (midnight to midnight, Central time)</div>
         </div>
         <div class="spacer"></div>
-        <div class="seg" id="winSeg" title="Which bets count toward each day"><button data-w="day">All day</button><button data-w="am">12am–12pm</button></div>
+        <div class="seg" id="winSeg" title="One bar per day, or one per time block"><button data-w="day">Per day</button><button data-w="blk">Per time block</button></div>
         <div class="seg" id="unitSeg"><button data-u="bal">Balance</button><button data-u="$">$</button><button data-u="%">%</button></div>
         <button class="icon" id="setBtn" title="Chart settings" aria-label="Chart settings">⚙︎</button>
         <button class="icon" id="fsBtn" title="Full screen" aria-label="Full screen">⛶</button>
@@ -176,10 +176,11 @@
     const $ = (id) => document.getElementById(id);
     const LS = 'btcpw.autopilot';                 // shared with the autopilot page: log in once
     const PREF = 'btcpw.profits.prefs';
-    const DEF = { win: 500, unit: 'bal', from: '', line: false, today: true, am: false, v: 2 };
+    const DEF = { win: 500, unit: 'bal', from: '', line: false, today: true, blk: false, v: 2 };
     const ls = { get(k) { try { return JSON.parse(localStorage.getItem(k) || 'null'); } catch (e) { return null; } }, set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) {} }, del(k) { try { localStorage.removeItem(k); } catch (e) {} } };
     let prefs = Object.assign({}, DEF, ls.get(PREF) || {});
     if (prefs.v !== 2) { prefs.unit = 'bal'; prefs.v = 2; }   // the balance view became the default
+    delete prefs['am'];                                          // the 12am-12pm view was replaced by the per-block one
     const money = (x, d = 2) => x == null || !isFinite(x) ? '—' : (x < 0 ? '−$' : '$') + Math.abs(x).toLocaleString('en-US', { minimumFractionDigits: d, maximumFractionDigits: d });
     const signed = (x) => x == null || !isFinite(x) ? '—' : (x > 0 ? '+' : '') + money(x);
     const pctS = (x) => x == null || !isFinite(x) ? '—' : (x > 0 ? '+' : x < 0 ? '−' : '') + Math.abs(x).toLocaleString('en-US', { maximumFractionDigits: Math.abs(x) >= 100 ? 0 : 1, minimumFractionDigits: Math.abs(x) >= 100 ? 0 : 1 }) + '%';
@@ -195,8 +196,15 @@
     let sess = null, st = null, led = null, pollTimer = null, fastUntil = 0, lastOk = 0, ledAsked = 0, refreshAsked = 0, cfAsked = 0;
 
     // ---------------- ledger copy kept in this browser (so history loads instantly next time)
-    const ledKey = () => 'btcpw.profits.ledger4.' + sess.topic;   // v4: calendar days + the 12am-12pm figures
-    function ledLoad() { led = ls.get(ledKey()) || { start: null, days: {} }; }
+    const ledKey = () => 'btcpw.profits.ledger5.' + sess.topic;   // v5: calendar days + each day's three time blocks
+    function ledLoad() {
+      led = ls.get(ledKey());
+      if (!led) {   // start from the copy an earlier version of this page saved, so the chart draws right away
+        const old = ls.get('btcpw.profits.ledger4.' + sess.topic) || ls.get('btcpw.profits.ledger3.' + sess.topic);
+        led = { start: old ? old.start : null, days: {} };
+        if (old) for (const [d, r] of Object.entries(old.days || {})) led.days[d] = r.slice(0, 4);
+      }
+    }
     function ledSave() { ls.set(ledKey(), led); }
     function setStart(start) {   // the bot decides where tracking starts (it can rebuild from an earlier date)
       if (led.start === start) return;
@@ -209,12 +217,13 @@
     }
     function mergeStatus(s) {
       if (!s || !s.led) return;
-      const [start, d, pnl, sb, n, w, ap, an, aw] = s.led;
+      const [start, d, pnl, sb, n, w, ...blk] = s.led;
       setStart(start);
       const old = led.days[d] || [];
-      led.days[d] = ap !== undefined ? [pnl, sb, n, w, ap, an, aw] : [pnl, sb, n, w, old[4] ?? null, old[5] ?? null, old[6] ?? null];
+      led.days[d] = [pnl, sb, n, w, ...(blk.length === 9 ? blk : old.slice(4))];
     }
-    function missingAm() { return Object.values(led.days).some((r) => r.length < 5); }   // rows saved before the 12am-12pm figures
+    let blkAsked = false;   // ask once per visit for days saved before the per-block figures (each answer costs ntfy messages)
+    function missingBlk() { if (blkAsked) return false; const m = Object.values(led.days).some((r) => r.length < 13 && r[2] > 0); if (m) blkAsked = true; return m; }
     function missingHistory() {
       if (!led.start) return false;
       const today = pday(Date.now());
@@ -259,17 +268,17 @@
       if (st.cf === want || (!force && Date.now() - cfAsked < 120000)) return;
       cfAsked = Date.now(); send('chartFrom', { d: want });
     }
-    // …and which bets count: the whole day, or 12am-12pm only
+    // …and whether it shows one column per day or per time block (the Sense HAT follows the same choice)
     let cwAsked = 0;
     function syncWin(force) {
       if (!st || st.cw === undefined || Date.now() - st.ts > 75 * 60000) return;
-      const want = prefs.am ? 'am' : 'day';
+      const want = prefs.blk ? 'blk' : 'day';
       if (st.cw === want || (!force && Date.now() - cwAsked < 120000)) return;
       cwAsked = Date.now(); send('chartWin', { w: want });
     }
     function askRefresh(force) { if (!st || (!force && Date.now() - st.ts < 90000) || Date.now() - refreshAsked < 60000) return false; refreshAsked = Date.now(); send('refresh'); return true; }
     function askLedger() { if (Date.now() - ledAsked < 5 * 60000) return; ledAsked = Date.now(); send('ledger'); }
-    function schedule() { clearTimeout(pollTimer); pollTimer = setTimeout(poll, Date.now() < fastUntil ? 2000 : 15000); }
+    function schedule() { clearTimeout(pollTimer); pollTimer = setTimeout(poll, Date.now() < fastUntil ? 4000 : 15000); }
     async function poll() {
       if (!sess) return;
       try { await fetchMsgs(st ? Math.floor(st.ts / 1000) - 5 : '12h'); } catch (e) { /* offline for a moment */ }
@@ -296,24 +305,33 @@
     function showDash() {
       $('login').classList.add('hide'); $('dash').classList.remove('hide'); $('logout').classList.remove('hide');
       render(); schedule(); askRefresh();
-      if (missingHistory() || missingAm()) askLedger();
+      if (missingHistory() || missingBlk()) askLedger();
     }
 
     // ---------------- series
-    function series() {
+    const BLK = ['12am–8am', '8am–4pm', '4pm–12am'];
+    const curBlk = () => Math.floor((+new Date().toLocaleString('en-US', { timeZone: 'America/Chicago', hour: 'numeric', hourCycle: 'h23' }) % 24) / 8);
+    // one entry per day, or with blocks one per time block (12am-8am, 8am-4pm, 4pm-12am, by when the bet was placed),
+    // each starting from the balance it opened with; today's later blocks haven't happened yet
+    function series(blocks) {
       const today = pday(Date.now());
       if (!led.start) return [];
       let from = led.start;
       if (prefs.from && prefs.from > from && prefs.from <= today) from = prefs.from;
-      // 12am-12pm: each day counts only the bets placed before noon; balances still carry the whole day's result
-      const am = !!prefs.am, out = []; let prevEnd = null;
+      const out = []; let prevEnd = null; const cb = curBlk();
       for (let d = led.start; d <= today; d = addDays(d, 1)) {
         const r = led.days[d] || [0, null, 0, 0];
         let sb = r[1] != null ? r[1] : prevEnd;
-        const has = am && r[4] != null, pnl = has ? r[4] : r[0];
-        const pct = sb > 0 ? pnl / sb * 100 : null;
         if (sb != null) prevEnd = sb + r[0];
-        if (d >= from) out.push({ d, pnl, sb, pct, n: has ? r[5] : r[2], w: has ? r[6] : r[3], today: d === today });
+        if (d < from) continue;
+        if (!blocks) { out.push({ d, pnl: r[0], sb, pct: sb > 0 ? r[0] / sb * 100 : null, n: r[2], w: r[3], today: d === today }); continue; }
+        const has = r.length >= 13; let run = sb;
+        for (let k = 0; k < 3; k++) {
+          if (d === today && k > cb) break;
+          const pnl = has ? r[4 + k * 3] : k === 0 ? r[0] : 0, n = has ? r[5 + k * 3] : k === 0 ? r[2] : 0, w = has ? r[6 + k * 3] : k === 0 ? r[3] : 0;
+          out.push({ d, blk: k, pnl, sb: run, pct: run > 0 ? pnl / run * 100 : null, n, w, today: d === today && k === cb });
+          if (run != null) run += pnl;
+        }
       }
       return out;
     }
@@ -326,7 +344,7 @@
     function renderTiles(S) {
       const t = S.find((r) => r.today);
       $('tToday').textContent = t ? signed(t.pnl) : '—'; $('tToday').className = 'v num ' + cls(t && t.pnl);
-      $('tTodayS').textContent = t ? `${t.pct != null ? pctS(t.pct) + ' · ' : ''}${t.n} trade${t.n === 1 ? '' : 's'}${t.n ? ', ' + t.w + ' won' : ''} ${prefs.am ? '12am–12pm' : 'since midnight'}` : (prefs.am ? '12am–12pm' : 'since midnight');
+      $('tTodayS').textContent = t ? `${t.pct != null ? pctS(t.pct) + ' · ' : ''}${t.n} trade${t.n === 1 ? '' : 's'}${t.n ? ', ' + t.w + ' won' : ''} since midnight` : 'since midnight';
       periodTile('t7', S.slice(-7)); periodTile('t30', S.slice(-30));
       periodTile('tAll', S, led.start ? 'since ' + dLabel(led.start) : '');
       const b = st && st.bal && st.bal.live;
@@ -345,8 +363,8 @@
       return a >= 10000 ? s + (a / 1000).toFixed(a % 1000 ? 1 : 0) + 'k' : a >= 1000 ? s + a.toLocaleString('en-US', { maximumFractionDigits: 0 }) : s + a.toFixed(dec);
     };
     function draw() {
-      const all = series().filter((r) => prefs.today || !r.today);
-      const total = all.length, win = Math.max(7, Math.min(2000, prefs.win | 0 || 500));
+      const all = series(!!prefs.blk).filter((r) => prefs.today || !r.today);
+      const total = all.length, win = Math.max(7, Math.min(2000, prefs.win | 0 || 500)) * (prefs.blk ? 3 : 1);
       const maxOff = Math.max(0, total - win);
       const off = view.off == null || view.off > maxOff ? maxOff : view.off;
       const S = all.slice(off, off + win);
@@ -361,7 +379,7 @@
       const hasData = BAL ? S.some((r) => r.sb != null) : S.some((r) => r.n > 0);
       $('empty').classList.toggle('hide', hasData);
       if (!hasData) $('empty').innerHTML = '<span></span>';
-      if (!hasData) $('empty').firstChild.textContent = led.start ? `Tracking since ${dLabel(led.start, { weekday: 'short', month: 'short', day: 'numeric' })}. One bar per day (midnight to midnight, Central time) once real trades settle.` : 'Waiting for the first results from your bot…';
+      if (!hasData) $('empty').firstChild.textContent = led.start ? `Tracking since ${dLabel(led.start, { weekday: 'short', month: 'short', day: 'numeric' })}. One bar per ${prefs.blk ? 'time block' : 'day (midnight to midnight, Central time)'} once real trades settle.` : (st && Date.now() - st.ts > 30 * 60000 ? 'Your bot hasn\u2019t sent an update for a while (it may be saving its daily ntfy messages for alerts). The chart fills in when it does.' : 'Waiting for the first results from your bot…');
       // y scale: always includes $0, so a run of profitable days starts the axis at exactly $0
       let hi = 0, lo = 0;
       if (BAL) { for (const r of S) if (r.sb != null) hi = Math.max(hi, r.sb, r.sb + r.pnl); }   // balances: axis from $0 up
@@ -444,14 +462,17 @@
       const fmt = span > 300 ? { month: 'short', year: '2-digit' } : { month: 'short', day: 'numeric' };
       const every = Math.max(1, Math.ceil(64 / bw));
       let lastX = -1e9;
+      const blkMode = S.some((r) => r.blk != null), everyD = blkMode ? Math.max(1, Math.ceil(64 / (bw * 3))) : every;
+      let di = 0;
       S.forEach((r, i) => {
-        if ((S.length - 1 - i) % every) return;
-        const x = L + i * bw + bw / 2, t = dLabel(r.d, fmt), w = c.measureText(t).width;
+        if (blkMode) { if (r.blk !== 0 || (di++) % everyD) return; }
+        else if ((S.length - 1 - i) % every) return;
+        const x = L + i * bw + (blkMode ? bw * 1.5 : bw / 2), t = dLabel(r.d, fmt), w = c.measureText(t).width;
         if (x - w / 2 < lastX + 10 || x + w / 2 > W) return;
         c.fillText(t, Math.max(L + w / 2, x), H - 8); lastX = x + w / 2;
       });
       G = { S, L, pw, bw, T, ph, off, maxOff, total };
-      $('chartSub').textContent = `${prefs.am ? 'Real money, only bets placed 12am–12pm each day (Central time)' : 'Real money, per day (midnight to midnight, Central time)'}${led.start ? ' · since ' + dLabel(led.start, { month: 'short', day: 'numeric', year: 'numeric' }) : ''}`;
+      $('chartSub').textContent = `${prefs.blk ? 'Real money, per time block: 12am–8am, 8am–4pm, 4pm–12am (Central time)' : 'Real money, per day (midnight to midnight, Central time)'}${led.start ? ' · since ' + dLabel(led.start, { month: 'short', day: 'numeric', year: 'numeric' }) : ''}`;
     }
     // tooltip
     function tipAt(clientX, clientY) {
@@ -460,7 +481,7 @@
       const i = Math.floor((x - G.L) / G.bw);
       if (i < 0 || i >= G.S.length) return hideTip();
       const r = G.S[i], tip = $('tip');
-      const range = dLabel(r.d, { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' });
+      const range = dLabel(r.d, { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' }) + (r.blk != null ? ' · ' + BLK[r.blk] : '');
       tip.innerHTML = `<div class="muted">${esc(range)}${r.today ? ' · so far' : ''}</div><b class="num ${cls(r.pnl)}">${esc(signed(r.pnl))}</b> <span class="num ${cls(r.pct)}">${esc(pctS(r.pct))}</span>${r.sb != null ? `<div class="num">${esc(money(r.sb))} → <b>${esc(money(r.sb + r.pnl))}</b></div>` : ''}<div class="muted">${r.n ? `${r.n} trade${r.n === 1 ? '' : 's'}, ${r.w} won` : 'no trades'}</div>`;
       tip.classList.remove('hide');
       const tw = tip.offsetWidth, th = tip.offsetHeight, cx = G.L + i * G.bw + G.bw / 2;
@@ -491,9 +512,9 @@
     // units, settings, full screen
     function renderUnit() {
       for (const b of $('unitSeg').children) b.classList.toggle('on', b.dataset.u === prefs.unit);
-      for (const b of $('winSeg').children) b.classList.toggle('on', b.dataset.w === (prefs.am ? 'am' : 'day'));
+      for (const b of $('winSeg').children) b.classList.toggle('on', b.dataset.w === (prefs.blk ? 'blk' : 'day'));
     }
-    $('winSeg').addEventListener('click', (e) => { const w = e.target.dataset && e.target.dataset.w; if (!w) return; prefs.am = w === 'am'; ls.set(PREF, prefs); render(); syncWin(true); });
+    $('winSeg').addEventListener('click', (e) => { const w = e.target.dataset && e.target.dataset.w; if (!w) return; prefs.blk = w === 'blk'; ls.set(PREF, prefs); view.off = null; render(); syncWin(true); });
     $('unitSeg').addEventListener('click', (e) => { const u = e.target.dataset && e.target.dataset.u; if (!u) return; prefs.unit = u; ls.set(PREF, prefs); renderUnit(); draw(); });
     $('setBtn').onclick = () => {
       $('pWin').value = prefs.win; $('pUnit').value = prefs.unit; $('pFrom').value = prefs.from || ''; $('pLine').checked = !!prefs.line; $('pToday').checked = !!prefs.today;
@@ -505,7 +526,7 @@
     $('pSave').onclick = () => {
       const w = Math.round(+$('pWin').value);
       if (!(w >= 7 && w <= 2000)) return toast('Days on screen: 7 to 2,000', 'err');
-      prefs = { win: w, unit: $('pUnit').value, from: $('pFrom').value || '', line: $('pLine').checked, today: $('pToday').checked, am: !!prefs.am, v: 2 };
+      prefs = { win: w, unit: $('pUnit').value, from: $('pFrom').value || '', line: $('pLine').checked, today: $('pToday').checked, blk: !!prefs.blk, v: 2 };
       ls.set(PREF, prefs); view.off = null; $('setDlg').close(); renderUnit(); draw(); syncFrom(true);
       if (prefs.from && led.start && prefs.from < led.start) {
         if (!st || Date.now() - st.ts > 75 * 60000) return toast('The bot seems offline; it will rebuild once you save again while it is running', 'err');
@@ -553,7 +574,7 @@
 
     function render() {
       if (!sess || !led) return;
-      renderTiles(series()); renderUnit(); draw(); renderHealth();
+      renderTiles(series(false)); renderUnit(); draw(); renderHealth();
     }
     setInterval(() => { if (sess) renderHealth(); }, 30000);
 
@@ -563,7 +584,11 @@
       $('inTopic').value = saved.topic; $('inServer').value = saved.server || 'https://ntfy.sh';
       openSession(saved.server || 'https://ntfy.sh', saved.topic, APCrypto.unb64u(saved.bits))
         .then(() => fetchMsgs('12h'))
-        .then(({ s }) => { if (s || st) showDash(); else $('loginErr').textContent = 'No recent word from the bot. Log in again once it is running.'; })
+        .then(({ s }) => {
+          // no status lately (the bot may be saving its daily ntfy messages): still show the chart from the copy kept here
+          if (s || st || (led && led.start)) { showDash(); if (!s && !st) toast('No update from the bot in the last 12 hours, showing the copy saved on this device.'); }
+          else $('loginErr').textContent = 'No recent word from the bot. Log in again once it is running.';
+        })
         .catch((e) => { $('loginErr').textContent = 'Could not connect: ' + e.message; });
     }
   };

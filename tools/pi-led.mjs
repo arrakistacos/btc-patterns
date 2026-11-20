@@ -4,8 +4,9 @@
 //   top row      8 health lights, a steady dim line when all is well (it also marks the top of the chart)
 //                1 bot  2 Bitcoin price  3 Polymarket odds  4 Polymarket US  5 autopilot  6 phone alerts
 //                7 Healthchecks  8 the Pi itself (temperature, power)
-//   rows 2-8     the Profits page chart, one column per day (midnight to midnight, Central, or 12am-12pm only when
-//                the Profits page is set that way; the scroll then starts with an amber AM), today on the right
+//   rows 2-8     the Profits page chart, one column per day (midnight to midnight, Central), or per time block
+//                (12am-8am, 8am-4pm, 4pm-12am) when the Profits page is set that way (the scroll then starts with an
+//                amber BLK); today / the current block on the right
 //                and gently pulsing. Balance view: a blue bar from $0 up to the balance, the day's profit
 //                stacked on top in green or the part lost in red. Profit view: green bars up, red bars down.
 //   every minute the balance (white) and the total profit since the chart's start date (green/red) scroll by
@@ -131,7 +132,7 @@ export function textStrip(parts) {
 export function summaryParts(d) {
   if (!d) return [['?', C.white]];
   const parts = [];
-  if (d.win === 'am') parts.push(['AM  ', C.amber]);   // the chart and total count 12am-12pm only
+  if (d.win === 'blk') parts.push(['BLK  ', C.amber]);   // the chart shows one column per time block
   // no "$": at 3x5 pixels it reads as noise; the sign is enough
   if (d.bal != null) parts.push([d.bal.toFixed(2) + '  ', C.white]);
   const t = d.tot != null ? d.tot : d.pnl || 0;

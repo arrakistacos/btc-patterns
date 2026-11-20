@@ -347,7 +347,12 @@
       let g = bookParts.get(m.ts); if (!g) { g = { of: m.of, parts: new Map(), sum: null }; bookParts.set(m.ts, g); }
       g.parts.set(m.i, m.rows); if (m.sum) g.sum = m.sum;
       if (g.parts.size < g.of) return false;
-      const rows = []; for (let i = 0; i < g.of; i++) rows.push(...(g.parts.get(i) || []));
+      let rows = []; for (let i = 0; i < g.of; i++) rows.push(...(g.parts.get(i) || []));
+      if (m.delta && book) {   // only what changed: replace those bets in the copy kept here
+        const key = (r) => r[0] + '|' + r[1] + '|' + r[2] + '|' + r[3], fresh = new Set(rows.map(key));
+        rows = book.rows.filter((r) => !fresh.has(key(r))).concat(rows).sort((a, b) => a[0] - b[0]);
+        const per = {}; rows = rows.reverse().filter((r) => (per[r[2]] = (per[r[2]] || 0) + 1) <= 40).reverse();
+      }
       book = { at: m.ts, rows, sum: g.sum || {} }; bookAt = m.ts; bookParts.clear();
       try { localStorage.setItem(BKS, JSON.stringify(book)); } catch (e) {}
       return true;
@@ -355,8 +360,10 @@
     function askBook(force) {
       if (!st || Date.now() - bookAsked < (force ? 15000 : 60000)) return;
       const newest = (st.trades || []).reduce((a, t) => Math.max(a, t[0] || 0), 0);
-      if (!force && book && Date.now() - bookAt < 10 * 60000 && newest <= bookAt) return;
-      bookAsked = Date.now(); send('book', {}, null, true);
+      if (!force && book && Date.now() - bookAt < 15 * 60000 && newest <= bookAt) return;
+      bookAsked = Date.now();
+      const after = book && book.rows.length ? book.rows[book.rows.length - 1][0] : 0;   // only newer bets (saves ntfy messages)
+      send('book', after ? { after } : {}, null, true);
     }
     const STRAT = { r: 'Regular', t: 'Teeter-totter', c: 'Coin flip' };
     const MONEY = { l: 'Real', p: 'Practice', x: 'Tracked' };
@@ -411,14 +418,18 @@
       let g = flipParts.get(m.ts); if (!g) { g = { of: m.of, parts: new Map() }; flipParts.set(m.ts, g); }
       g.parts.set(m.i, m.rows);
       if (g.parts.size < g.of) return false;
-      flips = []; for (let i = 0; i < g.of; i++) flips.push(...(g.parts.get(i) || []));
+      const got = []; for (let i = 0; i < g.of; i++) got.push(...(g.parts.get(i) || []));
+      if (m.delta && flips) { const have = new Set(flips.map((r) => r[0])); flips = flips.concat(got.filter((r) => !have.has(r[0]))); }
+      else flips = got;
       flipsAt = m.ts; flipParts.clear();
       try { localStorage.setItem(FLS, JSON.stringify({ at: flipsAt, rows: flips })); } catch (e) {}
       return true;
     }
     function askFlips(force) {
       if (!st || (!force && Date.now() - flipsAsked < 10 * 60000) || (!force && flips && Date.now() - flipsAt < 30 * 60000)) return;
-      flipsAsked = Date.now(); send('flips', {}, null, true);
+      flipsAsked = Date.now();
+      const after = flips && flips.length ? flips[flips.length - 1][0] : 0;   // only newer flips (saves ntfy messages)
+      send('flips', after ? { after } : {}, null, true);
     }
     const wlHtml = (res, taken) => '<span class="wl">' + res.map((w, i) => `<span class="${i >= taken ? 'x' : w ? 'w' : 'l'}">${w ? 'W' : 'L'}</span>`).join('') + '</span>';
     const dollars = (x) => '$' + x.toFixed(2);
@@ -515,7 +526,7 @@
     function askScore() { if (Date.now() - scoreAsked < 60000) return; scoreAsked = Date.now(); send('score', {}, null, true); }
     function schedule() {
       clearTimeout(pollTimer);
-      pollTimer = setTimeout(poll, Date.now() < fastUntil ? 2000 : 15000);
+      pollTimer = setTimeout(poll, Date.now() < fastUntil ? 4000 : 15000);
     }
     async function poll() {
       if (!sess) return;

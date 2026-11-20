@@ -122,7 +122,29 @@ const budget = {
   left() { if (!LIMITED) return Infinity; const now = Date.now(); bud.tokens = Math.min(B_CAP, bud.tokens + (now - bud.at) / 1000 * B_RATE); bud.at = now; return bud.tokens; },
   take() { if (!LIMITED) return; this.left(); bud.tokens -= 1; budSave(); },
   exhausted() { if (!LIMITED) return; bud.tokens = 0; bud.at = Date.now(); budSave(); },
+  // ntfy.sh reports how many messages this internet connection has left today. Everything published from home
+  // counts (the pages' commands too), so the bot uses that instead of its own estimate (synced every 10 minutes).
+  async sync() {
+    if (!LIMITED) return;
+    try {
+      const r = await fetch(`${NTFY_SERVER}/v1/account`, { signal: AbortSignal.timeout(10000) });
+      if (!r.ok) return;
+      const a = await r.json(), m = a && a.stats ? a.stats.messages_remaining : null;
+      if (!Number.isFinite(m)) return;
+      const was = this.left(); bud.tokens = Math.min(B_CAP, Math.max(0, m)); bud.at = Date.now(); budSave();
+      if (Math.abs(was - m) >= 20) log(`ntfy: ${m} messages left today (the bot was counting ${Math.floor(was)})`);
+    } catch { /* keep the estimate */ }
+  },
+  // HTTP 429 is either the daily message limit (code 42908) or only too many requests at once, e.g. pages polling
+  // quickly; only the first one uses up the day (the 2026-11-20 stall: a burst 429 held status updates for hours).
+  async on429(text) {
+    if (!LIMITED) return;
+    let code = 0; try { code = JSON.parse(text).code; } catch { /* not JSON */ }
+    if (code === 42908) this.exhausted(); else log(`ntfy: too many requests at once (${code || 'HTTP 429'}), not the daily limit`);
+    await this.sync();
+  },
 };
+if (LIMITED && !DRY && !TEST && !CHECK_AP) { setTimeout(() => budget.sync(), 3000); setInterval(() => budget.sync(), 10 * 60000); }
 
 let pushStat = { ok: null, at: 0 };   // last phone alert: did it go through (for the Pi's LED face)
 async function push({ title, body, priority = 5, tags = 'rotating_light', click }, attempt = 0) {
@@ -139,7 +161,7 @@ async function push({ title, body, priority = 5, tags = 'rotating_light', click 
       log('push failed: HTTP', r.status);
       if (r.status === 429) {
         // daily limit reached: a new message is allowed every ~6 minutes, so try important ones again then
-        budget.exhausted();
+        await budget.on429(await r.text().catch(() => ''));
         if (priority >= 4 && attempt < 2) { log(`ntfy daily limit reached; will retry "${title}" in ${attempt ? 6 : 3} min`); setTimeout(() => push({ title, body, priority, tags, click }, attempt + 1), (attempt ? 6 : 3) * 60000); }
         return false;
       }

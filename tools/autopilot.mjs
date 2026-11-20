@@ -198,22 +198,25 @@ export function createAutopilot(o) {
     }
     return L[d];
   }
-  // The same for bets placed from 12am to 12pm only (the Profits chart and the Sense HAT can show just those):
-  // ledgerAm.days[d] = [profit, trades, wins]. Days before the trades the bot keeps were filled in from its logs.
+  // The same split by time block (12am-8am, 8am-4pm, 4pm-12am, by when the bet was placed) for the Profits chart's
+  // per-block view and the Sense HAT: ledgerBlk.days[d] = [profit, trades, wins] x 3 blocks. Days before the trades the
+  // bot keeps were filled in from its logs.
   const hourOf = (ms) => +new Date(ms).toLocaleString('en-US', { timeZone: tzName, hour: 'numeric', hourCycle: 'h23' }) % 24;
-  S.ledgerAm = S.ledgerAm || { days: {} };
+  S.ledgerBlk = S.ledgerBlk || { days: {} };
+  delete S.ledgerAm;
+  const blkAdd = (row, t) => { const k = Math.floor(hourOf(t.ts) / 8) * 3; row[k] = r2(row[k] + t.pnl); row[k + 1]++; if (t.result) row[k + 2]++; };
   function ledgerAdd(t) {
     const d = pday(t.ts); if (d < S.ledger.start) return;
     const r = ledgerDay(d); r[0] = r2(r[0] + t.pnl); r[2]++; if (t.result) r[3]++;
-    if (hourOf(t.ts) < 12) { const a = S.ledgerAm.days[d] || (S.ledgerAm.days[d] = [0, 0, 0]); a[0] = r2(a[0] + t.pnl); a[1]++; if (t.result) a[2]++; }
+    blkAdd(S.ledgerBlk.days[d] || (S.ledgerBlk.days[d] = [0, 0, 0, 0, 0, 0, 0, 0, 0]), t);
   }
-  // rebuild the 12am-12pm days the kept trades fully cover (the oldest kept day may be partial, so it stays as it was)
+  // rebuild the days the kept trades fully cover (the oldest kept day may be partial, so it stays as it was)
   {
     const live = S.trades.filter((t) => t.mode === 'live' && t.result != null && t.pnl != null);
     if (live.length) {
       const first = addDays(pday(live[0].ts), 1), days = {};
-      for (const t of live) { const d = pday(t.ts); if (d < first || hourOf(t.ts) >= 12) continue; const a = days[d] || (days[d] = [0, 0, 0]); a[0] = r2(a[0] + t.pnl); a[1]++; if (t.result) a[2]++; }
-      for (let d = first; d <= pday(Date.now()); d = addDays(d, 1)) S.ledgerAm.days[d] = days[d] || [0, 0, 0];
+      for (const t of live) { const d = pday(t.ts); if (d < first) continue; blkAdd(days[d] || (days[d] = [0, 0, 0, 0, 0, 0, 0, 0, 0]), t); }
+      for (let d = first; d <= pday(Date.now()); d = addDays(d, 1)) S.ledgerBlk.days[d] = days[d] || [0, 0, 0, 0, 0, 0, 0, 0, 0];
     }
   }
   function ledgerStartBal() {   // the day's starting balance: first balance seen that day, minus anything already won or lost
@@ -1089,7 +1092,7 @@ export function createAutopilot(o) {
       bal: { live: S.liveBal, practice: S.practice }, stats: S.stats, days, acks: acks.slice(-5),
       trades: S.trades.slice(-12).map(tr),
       late: { since: S.late.since, antic: anticView(), blockLosses: blockLosses(), capHit: capHit() ? 1 : 0, stats: S.late.stats, real: S.late.real || null, byPat: S.late.byPat || null, byFav: S.late.byFav || null, byBlock: lateByBlock(), trades: S.late.trades.slice(-6).map((t) => [t.ts, t.Ws, t.side, t.status, t.px || 0, t.quoted, Math.round(t.q * 100), t.result, t.pnl, t.left, t.msg || '', t.real ? 1 : 0, t.pat === 'against' ? (t.patSkip ? 2 : 1) : t.pat === 'with' ? 3 : 0, t.realSkip === 'underdog' ? 1 : t.realSkip === 'conf' ? 2 : t.realSkip === 'hours' ? 3 : t.realSkip === 'maxloss' ? 4 : t.realSkip === 'price' ? 5 : 0, t.fav != null ? t.fav : (t.quoted >= 0.5 ? 1 : 0), t.gap != null ? Math.round(t.gap) : null]) },
-      led: (() => { const d = pday(Date.now()); return [S.ledger.start, d, ...ledgerDay(d), ...(S.ledgerAm.days[d] || [0, 0, 0])]; })(), cf: S.chartFrom || '', cw: S.chartWin || 'day',
+      led: (() => { const d = pday(Date.now()), r = ledgerDay(d); return [S.ledger.start, d, ...r, ...(S.ledgerBlk.days[d] || (r[2] ? [] : [0, 0, 0, 0, 0, 0, 0, 0, 0]))]; })(), cf: S.chartFrom || '', cw: S.chartWin === 'blk' ? 'blk' : 'day',
       h: Object.assign({ u: US.up ? 1 : 0, a: S.liveBal ? Math.round((Date.now() - S.liveBal.at) / 1000) : null, k: KEY ? 1 : 0 }, o.health ? o.health() : {}),
       lag: { since: S.lagt.since, stats: S.lagt.stats, byGap: S.lagt.byGap, est: S.lagt.est, src: US.up ? 's' : 'p', trades: S.lagt.trades.slice(-4).map((t) => [t.ts, t.Ws, t.side, t.status, t.px || 0, t.seen, t.com, t.result, t.pnl, t.left, t.msg || '']) },
     };
@@ -1129,7 +1132,7 @@ export function createAutopilot(o) {
       const body = await APC.seal(K, payload || snapshot());
       if (body.length > 4000) log(`autopilot: status message is ${body.length} bytes, over ntfy's 4 KB limit; the pages may not see it`);
       const r = await fetch(`${NTFY}/${T.status}`, { method: 'POST', headers: Object.assign({ Priority: '1' }, NTFY_AUTH), body });
-      if (r.status === 429 && o.budget) o.budget.exhausted();
+      if (r.status === 429 && o.budget) { const tx = await r.text().catch(() => ''); if (o.budget.on429) await o.budget.on429(tx); else o.budget.exhausted(); }
       if (!r.ok) log('autopilot: status publish HTTP', r.status);
     } catch (e) { log('autopilot: status publish failed:', e.message); }
   }
@@ -1144,8 +1147,8 @@ export function createAutopilot(o) {
   let ledPubAt = 0;
   function ledgerChunks() {
     const rows = [], today = pday(Date.now());
-    for (let d = S.ledger.start; d <= today; d = addDays(d, 1)) { const am = S.ledgerAm.days[d]; rows.push([...(S.ledger.days[d] || [0, null, 0, 0]), ...(am || [null, null, null])]); }
-    const N = 60, of = Math.ceil(rows.length / N), out = [];   // 60 rows of 7 numbers stays well under 4 KB
+    for (let d = S.ledger.start; d <= today; d = addDays(d, 1)) { const r = S.ledger.days[d] || [0, null, 0, 0], b = S.ledgerBlk.days[d] || (r[2] ? [] : [0, 0, 0, 0, 0, 0, 0, 0, 0]); rows.push([...r, ...b]); }
+    const N = 40, of = Math.ceil(rows.length / N), out = [];   // 40 rows of up to 13 numbers stays well under 4 KB
     for (let i = 0; i < rows.length; i += N) out.push({ v: 1, kind: 'ledger', ts: Date.now(), start: S.ledger.start, d0: addDays(S.ledger.start, i), i: out.length, of, rows: rows.slice(i, i + N) });
     return out;
   }
@@ -1161,15 +1164,17 @@ export function createAutopilot(o) {
   }
   // the coin-flip archive for the autopilot page, 60 rows a message (well under ntfy's 4 KB)
   let flipPubAt = 0;
-  function flipChunks() {
-    const N = 60, of = Math.max(1, Math.ceil(S.flips.length / N)), out = [];
-    for (let i = 0; i < of; i++) out.push({ v: 1, kind: 'flips', ts: Date.now(), i, of, rows: S.flips.slice(i * N, (i + 1) * N) });
+  // after (Ws): the newest flip the page already has; then only newer flips are sent
+  function flipChunks(after) {
+    const rows = after > 0 ? S.flips.filter((r) => r[0] > after) : S.flips;
+    const N = 60, of = Math.max(1, Math.ceil(rows.length / N)), out = [];
+    for (let i = 0; i < of; i++) out.push({ v: 1, kind: 'flips', ts: Date.now(), i, of, delta: after > 0 ? 1 : 0, rows: rows.slice(i * N, (i + 1) * N) });
     return out;
   }
-  function publishFlips() {
+  function publishFlips(after) {
     if (Date.now() - flipPubAt < 60000) return;
     flipPubAt = Date.now();
-    flipChunks().forEach((c, k) => setTimeout(() => publish(c, true), 2500 + k * 1500));
+    flipChunks(after).forEach((c, k) => setTimeout(() => publish(c, true), 2500 + k * 1500));
   }
   // The bet book for the autopilot page's results tables: recent bets of every strategy, real and practice, and totals
   // over everything the bot still has on record. Sent on request, 25 rows a message (well under ntfy's 4 KB).
@@ -1204,23 +1209,26 @@ export function createAutopilot(o) {
       if (r[5] === 'n') { z[5]++; continue; }
       if ((r[5] === 'f' || r[5] === 'p') && r[8] != null) { z[0]++; z[1] += r[8]; z[2] = c2(z[2] + (r[9] || 0)); z[3] = c2(z[3] + (r[7] || 0)); }
     }
-    // the newest 80 of each strategy
-    const keep = []; for (const k of ['r', 't', 'c']) keep.push(...rows.filter((r) => r[2] === k).slice(-80));
+    // the newest 40 of each strategy
+    const keep = []; for (const k of ['r', 't', 'c']) keep.push(...rows.filter((r) => r[2] === k).slice(-40));
     keep.sort((a, b) => a[0] - b[0]);
     return { rows: keep, sum };
   }
-  function bookChunks() {
-    const { rows, sum } = bookData(), N = 25, of = Math.max(1, Math.ceil(rows.length / N)), ts = Date.now(), out = [];
-    for (let i = 0; i < of; i++) out.push({ v: 1, kind: 'book', ts, i, of, rows: rows.slice(i * N, (i + 1) * N), sum: i === 0 ? sum : undefined });
+  // after (s): the newest bet the page already has; then only bets placed after it, or settled since, are sent
+  // (every message counts against ntfy's daily allowance). The page merges them into its copy.
+  function bookChunks(after) {
+    const { rows: all, sum } = bookData(), since = after > 0 ? after - 900 : 0;
+    const rows = all.filter((r) => r[0] > since), N = 40, of = Math.max(1, Math.ceil(rows.length / N)), ts = Date.now(), out = [];
+    for (let i = 0; i < of; i++) out.push({ v: 1, kind: 'book', ts, i, of, delta: since ? 1 : 0, rows: rows.slice(i * N, (i + 1) * N), sum: i === 0 ? sum : undefined });
     return out;
   }
-  function publishBook() {
+  function publishBook(after) {
     if (Date.now() - bookPubAt < 60000) return;
     bookPubAt = Date.now();
-    bookChunks().forEach((c, k) => setTimeout(() => publish(c, true), 2500 + k * 1500));
+    bookChunks(after).forEach((c, k) => setTimeout(() => publish(c, true), 2500 + k * 1500));
   }
   function publishLedger() {
-    if (Date.now() - ledPubAt < 5 * 60000) return;
+    if (Date.now() - ledPubAt < 60000) return;
     ledPubAt = Date.now();
     ledgerChunks().forEach((c, k) => setTimeout(() => publish(c, true), 2500 + k * 1500));
   }
@@ -1280,11 +1288,11 @@ export function createAutopilot(o) {
       }
       case 'refresh': if (S.mode === 'live' && KEY) await refreshLive().catch(() => {}); break;
       case 'ledger': publishLedger(); break;
-      case 'flips': publishFlips(); break;
-      case 'book': publishBook(); break;
+      case 'flips': publishFlips(+a.after || 0); break;
+      case 'book': publishBook(+a.after || 0); break;
       case 'chartWin': {
-        const w = a.w === 'am' ? 'am' : 'day';
-        S.chartWin = w; save(); ok = true; msg = w === 'am' ? 'chart counts 12am-12pm only' : 'chart counts the whole day';
+        const w = a.w === 'blk' ? 'blk' : 'day';
+        S.chartWin = w; save(); ok = true; msg = w === 'blk' ? 'chart shows one bar per time block' : 'chart shows one bar per day';
         log('profits chart: ' + msg); break;
       }
       case 'chartFrom': {
@@ -1405,16 +1413,27 @@ export function createAutopilot(o) {
     const L = S.ledger && S.ledger.days ? S.ledger.days : {}, t = pday(Date.now()), today = L[t];
     const start = S.ledger && S.ledger.start ? S.ledger.start : t;
     const from = S.chartFrom && S.chartFrom > start && S.chartFrom <= t ? S.chartFrom : start;
-    const am = S.chartWin === 'am', A = S.ledgerAm ? S.ledgerAm.days : {};
+    // per time block: one column per block (12am-8am, 8am-4pm, 4pm-12am), each starting from the balance the block
+    // opened with; the current block is the last one
+    const blk = S.chartWin === 'blk', B = S.ledgerBlk ? S.ledgerBlk.days : {}, curBlk = Math.floor(hourOf(Date.now()) / 8);
     const days = []; let prevEnd = null, tot = 0;
     for (let d = start; d <= t; d = addDays(d, 1)) {
       const r = L[d] || [0, null, 0, 0], sb = r[1] != null ? r[1] : prevEnd;
-      if (sb != null) prevEnd = sb + r[0];   // balances carry the whole day's result either way
-      const p = am ? (A[d] ? A[d][0] : r[0]) : r[0], n = am ? (A[d] ? A[d][1] : r[2]) : r[2];
-      if (d >= from) { days.push([d, p, sb, n]); tot += p; }
+      if (sb != null) prevEnd = sb + r[0];
+      if (d < from) continue;
+      tot += r[0];
+      if (!blk) { days.push([d, r[0], sb, r[2]]); continue; }
+      const b = B[d];
+      let run = sb;
+      for (let k = 0; k < 3; k++) {
+        if (d === t && k > curBlk) break;
+        const p = b ? b[k * 3] : k === 0 ? r[0] : 0, n = b ? b[k * 3 + 1] : k === 0 ? r[2] : 0;
+        days.push([d + '#' + k, p, run, n]);
+        if (run != null) run += p;
+      }
     }
     return {
-      days: days.slice(-14), from, tot: Math.round(tot * 100) / 100, win: am ? 'am' : 'day', bal: S.liveBal ? S.liveBal.buyingPower : null,
+      days: days.slice(-14), from, tot: Math.round(tot * 100) / 100, win: blk ? 'blk' : 'day', bal: S.liveBal ? S.liveBal.buyingPower : null,
       k: KEY ? 1 : 0, u: US.up ? 1 : 0,
       ap: { on: !!S.enabled, mode: S.mode, halted: S.halted ? String(S.halted.reason || 'halted') : null },
       pnl: today ? today[0] : 0,
