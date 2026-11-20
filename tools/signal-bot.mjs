@@ -132,6 +132,8 @@ const budget = {
       const a = await r.json(), m = a && a.stats ? a.stats.messages_remaining : null;
       if (!Number.isFinite(m)) return;
       const was = this.left(); bud.tokens = Math.min(B_CAP, Math.max(0, m)); bud.at = Date.now(); budSave();
+      // a refused alert left the ntfy light red; once the day's allowance is back, ntfy is fine again
+      if (m > 0 && pushStat.ok === false) pushStat = { ok: true, at: Date.now() };
       if (Math.abs(was - m) >= 20) log(`ntfy: ${m} messages left today (the bot was counting ${Math.floor(was)})`);
     } catch { /* keep the estimate */ }
   },
