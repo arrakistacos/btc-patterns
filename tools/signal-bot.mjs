@@ -136,7 +136,7 @@ const budget = {
     } catch { /* keep the estimate */ }
   },
   // HTTP 429 is either the daily message limit (code 42908) or only too many requests at once, e.g. pages polling
-  // quickly; only the first one uses up the day (the 2026-11-20 stall: a burst 429 held status updates for hours).
+  // quickly; only the first one uses up the day. Either way the real count from ntfy.sh decides.
   async on429(text) {
     if (!LIMITED) return;
     let code = 0; try { code = JSON.parse(text).code; } catch { /* not JSON */ }

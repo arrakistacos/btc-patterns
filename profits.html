@@ -200,7 +200,8 @@
     function ledLoad() {
       led = ls.get(ledKey());
       if (!led) {   // start from the copy an earlier version of this page saved, so the chart draws right away
-        const old = ls.get('btcpw.profits.ledger4.' + sess.topic) || ls.get('btcpw.profits.ledger3.' + sess.topic);
+        const cand = [ls.get('btcpw.profits.ledger4.' + sess.topic), ls.get('btcpw.profits.ledger3.' + sess.topic)].filter((x) => x && x.days);
+        const old = cand.sort((x, y) => Object.keys(y.days).length - Object.keys(x.days).length)[0];   // the fuller one
         led = { start: old ? old.start : null, days: {} };
         if (old) for (const [d, r] of Object.entries(old.days || {})) led.days[d] = r.slice(0, 4);
       }
