@@ -198,9 +198,23 @@ export function createAutopilot(o) {
     }
     return L[d];
   }
+  // The same for bets placed from 12am to 12pm only (the Profits chart and the Sense HAT can show just those):
+  // ledgerAm.days[d] = [profit, trades, wins]. Days before the trades the bot keeps were filled in from its logs.
+  const hourOf = (ms) => +new Date(ms).toLocaleString('en-US', { timeZone: tzName, hour: 'numeric', hourCycle: 'h23' }) % 24;
+  S.ledgerAm = S.ledgerAm || { days: {} };
   function ledgerAdd(t) {
     const d = pday(t.ts); if (d < S.ledger.start) return;
     const r = ledgerDay(d); r[0] = r2(r[0] + t.pnl); r[2]++; if (t.result) r[3]++;
+    if (hourOf(t.ts) < 12) { const a = S.ledgerAm.days[d] || (S.ledgerAm.days[d] = [0, 0, 0]); a[0] = r2(a[0] + t.pnl); a[1]++; if (t.result) a[2]++; }
+  }
+  // rebuild the 12am-12pm days the kept trades fully cover (the oldest kept day may be partial, so it stays as it was)
+  {
+    const live = S.trades.filter((t) => t.mode === 'live' && t.result != null && t.pnl != null);
+    if (live.length) {
+      const first = addDays(pday(live[0].ts), 1), days = {};
+      for (const t of live) { const d = pday(t.ts); if (d < first || hourOf(t.ts) >= 12) continue; const a = days[d] || (days[d] = [0, 0, 0]); a[0] = r2(a[0] + t.pnl); a[1]++; if (t.result) a[2]++; }
+      for (let d = first; d <= pday(Date.now()); d = addDays(d, 1)) S.ledgerAm.days[d] = days[d] || [0, 0, 0];
+    }
   }
   function ledgerStartBal() {   // the day's starting balance: first balance seen that day, minus anything already won or lost
     if (!S.liveBal) return;
@@ -1075,7 +1089,7 @@ export function createAutopilot(o) {
       bal: { live: S.liveBal, practice: S.practice }, stats: S.stats, days, acks: acks.slice(-5),
       trades: S.trades.slice(-12).map(tr),
       late: { since: S.late.since, antic: anticView(), blockLosses: blockLosses(), capHit: capHit() ? 1 : 0, stats: S.late.stats, real: S.late.real || null, byPat: S.late.byPat || null, byFav: S.late.byFav || null, byBlock: lateByBlock(), trades: S.late.trades.slice(-6).map((t) => [t.ts, t.Ws, t.side, t.status, t.px || 0, t.quoted, Math.round(t.q * 100), t.result, t.pnl, t.left, t.msg || '', t.real ? 1 : 0, t.pat === 'against' ? (t.patSkip ? 2 : 1) : t.pat === 'with' ? 3 : 0, t.realSkip === 'underdog' ? 1 : t.realSkip === 'conf' ? 2 : t.realSkip === 'hours' ? 3 : t.realSkip === 'maxloss' ? 4 : t.realSkip === 'price' ? 5 : 0, t.fav != null ? t.fav : (t.quoted >= 0.5 ? 1 : 0), t.gap != null ? Math.round(t.gap) : null]) },
-      led: (() => { const d = pday(Date.now()); return [S.ledger.start, d, ...ledgerDay(d)]; })(), cf: S.chartFrom || '',
+      led: (() => { const d = pday(Date.now()); return [S.ledger.start, d, ...ledgerDay(d), ...(S.ledgerAm.days[d] || [0, 0, 0])]; })(), cf: S.chartFrom || '', cw: S.chartWin || 'day',
       h: Object.assign({ u: US.up ? 1 : 0, a: S.liveBal ? Math.round((Date.now() - S.liveBal.at) / 1000) : null, k: KEY ? 1 : 0 }, o.health ? o.health() : {}),
       lag: { since: S.lagt.since, stats: S.lagt.stats, byGap: S.lagt.byGap, est: S.lagt.est, src: US.up ? 's' : 'p', trades: S.lagt.trades.slice(-4).map((t) => [t.ts, t.Ws, t.side, t.status, t.px || 0, t.seen, t.com, t.result, t.pnl, t.left, t.msg || '']) },
     };
@@ -1130,8 +1144,8 @@ export function createAutopilot(o) {
   let ledPubAt = 0;
   function ledgerChunks() {
     const rows = [], today = pday(Date.now());
-    for (let d = S.ledger.start; d <= today; d = addDays(d, 1)) rows.push(S.ledger.days[d] || [0, null, 0, 0]);
-    const N = 100, of = Math.ceil(rows.length / N), out = [];
+    for (let d = S.ledger.start; d <= today; d = addDays(d, 1)) { const am = S.ledgerAm.days[d]; rows.push([...(S.ledger.days[d] || [0, null, 0, 0]), ...(am || [null, null, null])]); }
+    const N = 60, of = Math.ceil(rows.length / N), out = [];   // 60 rows of 7 numbers stays well under 4 KB
     for (let i = 0; i < rows.length; i += N) out.push({ v: 1, kind: 'ledger', ts: Date.now(), start: S.ledger.start, d0: addDays(S.ledger.start, i), i: out.length, of, rows: rows.slice(i, i + N) });
     return out;
   }
@@ -1268,6 +1282,11 @@ export function createAutopilot(o) {
       case 'ledger': publishLedger(); break;
       case 'flips': publishFlips(); break;
       case 'book': publishBook(); break;
+      case 'chartWin': {
+        const w = a.w === 'am' ? 'am' : 'day';
+        S.chartWin = w; save(); ok = true; msg = w === 'am' ? 'chart counts 12am-12pm only' : 'chart counts the whole day';
+        log('profits chart: ' + msg); break;
+      }
       case 'chartFrom': {
         const d = String(a.d || '');
         if (d && !/^\d{4}-\d{2}-\d{2}$/.test(d)) { ok = false; msg = 'bad date'; break; }
@@ -1386,14 +1405,16 @@ export function createAutopilot(o) {
     const L = S.ledger && S.ledger.days ? S.ledger.days : {}, t = pday(Date.now()), today = L[t];
     const start = S.ledger && S.ledger.start ? S.ledger.start : t;
     const from = S.chartFrom && S.chartFrom > start && S.chartFrom <= t ? S.chartFrom : start;
+    const am = S.chartWin === 'am', A = S.ledgerAm ? S.ledgerAm.days : {};
     const days = []; let prevEnd = null, tot = 0;
     for (let d = start; d <= t; d = addDays(d, 1)) {
       const r = L[d] || [0, null, 0, 0], sb = r[1] != null ? r[1] : prevEnd;
-      if (sb != null) prevEnd = sb + r[0];
-      if (d >= from) { days.push([d, r[0], sb, r[2]]); tot += r[0]; }
+      if (sb != null) prevEnd = sb + r[0];   // balances carry the whole day's result either way
+      const p = am ? (A[d] ? A[d][0] : r[0]) : r[0], n = am ? (A[d] ? A[d][1] : r[2]) : r[2];
+      if (d >= from) { days.push([d, p, sb, n]); tot += p; }
     }
     return {
-      days: days.slice(-14), from, tot: Math.round(tot * 100) / 100, bal: S.liveBal ? S.liveBal.buyingPower : null,
+      days: days.slice(-14), from, tot: Math.round(tot * 100) / 100, win: am ? 'am' : 'day', bal: S.liveBal ? S.liveBal.buyingPower : null,
       k: KEY ? 1 : 0, u: US.up ? 1 : 0,
       ap: { on: !!S.enabled, mode: S.mode, halted: S.halted ? String(S.halted.reason || 'halted') : null },
       pnl: today ? today[0] : 0,

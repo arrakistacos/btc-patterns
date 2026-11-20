@@ -129,6 +129,7 @@
           <div class="sub" id="chartSub">Real money, per day (midnight to midnight, Central time)</div>
         </div>
         <div class="spacer"></div>
+        <div class="seg" id="winSeg" title="Which bets count toward each day"><button data-w="day">All day</button><button data-w="am">12am–12pm</button></div>
         <div class="seg" id="unitSeg"><button data-u="bal">Balance</button><button data-u="$">$</button><button data-u="%">%</button></div>
         <button class="icon" id="setBtn" title="Chart settings" aria-label="Chart settings">⚙︎</button>
         <button class="icon" id="fsBtn" title="Full screen" aria-label="Full screen">⛶</button>
@@ -175,7 +176,7 @@
     const $ = (id) => document.getElementById(id);
     const LS = 'btcpw.autopilot';                 // shared with the autopilot page: log in once
     const PREF = 'btcpw.profits.prefs';
-    const DEF = { win: 500, unit: 'bal', from: '', line: false, today: true, v: 2 };
+    const DEF = { win: 500, unit: 'bal', from: '', line: false, today: true, am: false, v: 2 };
     const ls = { get(k) { try { return JSON.parse(localStorage.getItem(k) || 'null'); } catch (e) { return null; } }, set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) {} }, del(k) { try { localStorage.removeItem(k); } catch (e) {} } };
     let prefs = Object.assign({}, DEF, ls.get(PREF) || {});
     if (prefs.v !== 2) { prefs.unit = 'bal'; prefs.v = 2; }   // the balance view became the default
@@ -194,7 +195,7 @@
     let sess = null, st = null, led = null, pollTimer = null, fastUntil = 0, lastOk = 0, ledAsked = 0, refreshAsked = 0, cfAsked = 0;
 
     // ---------------- ledger copy kept in this browser (so history loads instantly next time)
-    const ledKey = () => 'btcpw.profits.ledger3.' + sess.topic;   // v3: calendar days
+    const ledKey = () => 'btcpw.profits.ledger4.' + sess.topic;   // v4: calendar days + the 12am-12pm figures
     function ledLoad() { led = ls.get(ledKey()) || { start: null, days: {} }; }
     function ledSave() { ls.set(ledKey(), led); }
     function setStart(start) {   // the bot decides where tracking starts (it can rebuild from an earlier date)
@@ -208,10 +209,12 @@
     }
     function mergeStatus(s) {
       if (!s || !s.led) return;
-      const [start, d, pnl, sb, n, w] = s.led;
+      const [start, d, pnl, sb, n, w, ap, an, aw] = s.led;
       setStart(start);
-      led.days[d] = [pnl, sb, n, w];
+      const old = led.days[d] || [];
+      led.days[d] = ap !== undefined ? [pnl, sb, n, w, ap, an, aw] : [pnl, sb, n, w, old[4] ?? null, old[5] ?? null, old[6] ?? null];
     }
+    function missingAm() { return Object.values(led.days).some((r) => r.length < 5); }   // rows saved before the 12am-12pm figures
     function missingHistory() {
       if (!led.start) return false;
       const today = pday(Date.now());
@@ -236,7 +239,7 @@
         if (m.kind === 'ledger') { mergeChunk(m); chunks++; }
         else if (!m.kind && (!s || m.ts > s.ts)) s = m;
       }
-      if (s && (!st || s.ts >= st.ts)) { st = s; mergeStatus(s); syncFrom(); }
+      if (s && (!st || s.ts >= st.ts)) { st = s; mergeStatus(s); syncFrom(); syncWin(); }
       if (chunks || s) ledSave();
       return { s, sawAny: lines.length > 0 };
     }
@@ -255,6 +258,14 @@
       const want = prefs.from || '';
       if (st.cf === want || (!force && Date.now() - cfAsked < 120000)) return;
       cfAsked = Date.now(); send('chartFrom', { d: want });
+    }
+    // …and which bets count: the whole day, or 12am-12pm only
+    let cwAsked = 0;
+    function syncWin(force) {
+      if (!st || st.cw === undefined || Date.now() - st.ts > 75 * 60000) return;
+      const want = prefs.am ? 'am' : 'day';
+      if (st.cw === want || (!force && Date.now() - cwAsked < 120000)) return;
+      cwAsked = Date.now(); send('chartWin', { w: want });
     }
     function askRefresh(force) { if (!st || (!force && Date.now() - st.ts < 90000) || Date.now() - refreshAsked < 60000) return false; refreshAsked = Date.now(); send('refresh'); return true; }
     function askLedger() { if (Date.now() - ledAsked < 5 * 60000) return; ledAsked = Date.now(); send('ledger'); }
@@ -285,7 +296,7 @@
     function showDash() {
       $('login').classList.add('hide'); $('dash').classList.remove('hide'); $('logout').classList.remove('hide');
       render(); schedule(); askRefresh();
-      if (missingHistory()) askLedger();
+      if (missingHistory() || missingAm()) askLedger();
     }
 
     // ---------------- series
@@ -294,13 +305,15 @@
       if (!led.start) return [];
       let from = led.start;
       if (prefs.from && prefs.from > from && prefs.from <= today) from = prefs.from;
-      const out = []; let prevEnd = null;
+      // 12am-12pm: each day counts only the bets placed before noon; balances still carry the whole day's result
+      const am = !!prefs.am, out = []; let prevEnd = null;
       for (let d = led.start; d <= today; d = addDays(d, 1)) {
         const r = led.days[d] || [0, null, 0, 0];
         let sb = r[1] != null ? r[1] : prevEnd;
-        const pct = sb > 0 ? r[0] / sb * 100 : null;
+        const has = am && r[4] != null, pnl = has ? r[4] : r[0];
+        const pct = sb > 0 ? pnl / sb * 100 : null;
         if (sb != null) prevEnd = sb + r[0];
-        if (d >= from) out.push({ d, pnl: r[0], sb, pct, n: r[2], w: r[3], today: d === today });
+        if (d >= from) out.push({ d, pnl, sb, pct, n: has ? r[5] : r[2], w: has ? r[6] : r[3], today: d === today });
       }
       return out;
     }
@@ -313,7 +326,7 @@
     function renderTiles(S) {
       const t = S.find((r) => r.today);
       $('tToday').textContent = t ? signed(t.pnl) : '—'; $('tToday').className = 'v num ' + cls(t && t.pnl);
-      $('tTodayS').textContent = t ? `${t.pct != null ? pctS(t.pct) + ' · ' : ''}${t.n} trade${t.n === 1 ? '' : 's'}${t.n ? ', ' + t.w + ' won' : ''} since midnight` : 'since midnight';
+      $('tTodayS').textContent = t ? `${t.pct != null ? pctS(t.pct) + ' · ' : ''}${t.n} trade${t.n === 1 ? '' : 's'}${t.n ? ', ' + t.w + ' won' : ''} ${prefs.am ? '12am–12pm' : 'since midnight'}` : (prefs.am ? '12am–12pm' : 'since midnight');
       periodTile('t7', S.slice(-7)); periodTile('t30', S.slice(-30));
       periodTile('tAll', S, led.start ? 'since ' + dLabel(led.start) : '');
       const b = st && st.bal && st.bal.live;
@@ -438,7 +451,7 @@
         c.fillText(t, Math.max(L + w / 2, x), H - 8); lastX = x + w / 2;
       });
       G = { S, L, pw, bw, T, ph, off, maxOff, total };
-      $('chartSub').textContent = `Real money, per day (midnight to midnight, Central time)${led.start ? ' · since ' + dLabel(led.start, { month: 'short', day: 'numeric', year: 'numeric' }) : ''}`;
+      $('chartSub').textContent = `${prefs.am ? 'Real money, only bets placed 12am–12pm each day (Central time)' : 'Real money, per day (midnight to midnight, Central time)'}${led.start ? ' · since ' + dLabel(led.start, { month: 'short', day: 'numeric', year: 'numeric' }) : ''}`;
     }
     // tooltip
     function tipAt(clientX, clientY) {
@@ -476,7 +489,11 @@
     new ResizeObserver(() => { if (!$('dash').classList.contains('hide')) draw(); }).observe(plot);
 
     // units, settings, full screen
-    function renderUnit() { for (const b of $('unitSeg').children) b.classList.toggle('on', b.dataset.u === prefs.unit); }
+    function renderUnit() {
+      for (const b of $('unitSeg').children) b.classList.toggle('on', b.dataset.u === prefs.unit);
+      for (const b of $('winSeg').children) b.classList.toggle('on', b.dataset.w === (prefs.am ? 'am' : 'day'));
+    }
+    $('winSeg').addEventListener('click', (e) => { const w = e.target.dataset && e.target.dataset.w; if (!w) return; prefs.am = w === 'am'; ls.set(PREF, prefs); render(); syncWin(true); });
     $('unitSeg').addEventListener('click', (e) => { const u = e.target.dataset && e.target.dataset.u; if (!u) return; prefs.unit = u; ls.set(PREF, prefs); renderUnit(); draw(); });
     $('setBtn').onclick = () => {
       $('pWin').value = prefs.win; $('pUnit').value = prefs.unit; $('pFrom').value = prefs.from || ''; $('pLine').checked = !!prefs.line; $('pToday').checked = !!prefs.today;
@@ -488,7 +505,7 @@
     $('pSave').onclick = () => {
       const w = Math.round(+$('pWin').value);
       if (!(w >= 7 && w <= 2000)) return toast('Days on screen: 7 to 2,000', 'err');
-      prefs = { win: w, unit: $('pUnit').value, from: $('pFrom').value || '', line: $('pLine').checked, today: $('pToday').checked, v: 2 };
+      prefs = { win: w, unit: $('pUnit').value, from: $('pFrom').value || '', line: $('pLine').checked, today: $('pToday').checked, am: !!prefs.am, v: 2 };
       ls.set(PREF, prefs); view.off = null; $('setDlg').close(); renderUnit(); draw(); syncFrom(true);
       if (prefs.from && led.start && prefs.from < led.start) {
         if (!st || Date.now() - st.ts > 75 * 60000) return toast('The bot seems offline; it will rebuild once you save again while it is running', 'err');

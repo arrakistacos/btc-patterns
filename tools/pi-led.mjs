@@ -4,7 +4,8 @@
 //   top row      8 health lights, a steady dim line when all is well (it also marks the top of the chart)
 //                1 bot  2 Bitcoin price  3 Polymarket odds  4 Polymarket US  5 autopilot  6 phone alerts
 //                7 Healthchecks  8 the Pi itself (temperature, power)
-//   rows 2-8     the Profits page chart, one column per day (midnight to midnight, Central), today on the right
+//   rows 2-8     the Profits page chart, one column per day (midnight to midnight, Central, or 12am-12pm only when
+//                the Profits page is set that way; the scroll then starts with an amber AM), today on the right
 //                and gently pulsing. Balance view: a blue bar from $0 up to the balance, the day's profit
 //                stacked on top in green or the part lost in red. Profit view: green bars up, red bars down.
 //   every minute the balance (white) and the total profit since the chart's start date (green/red) scroll by
@@ -107,7 +108,7 @@ const F = {
   ' ': '000000000000000', 'k': '100101110101101', '%': '101001010100101', '?': '111001011000010', ':': '000010000010000',
   'L': '100100100100111', 'O': '111101101101111', 'C': '111100100100111', 'K': '101101110101101', 'E': '111100111100111',
   'D': '110101101101110', 'W': '101101101111101', 'N': '111101101101101', 'P': '111101111100100', 'A': '010101111101101',
-  'R': '110101110101101', 'B': '110101110101110', 'T': '111010010010010',
+  'R': '110101110101101', 'B': '110101110101110', 'T': '111010010010010', 'M': '101111101101101',
 };
 // text -> array of 5-pixel columns (with one blank column between characters)
 export function textColumns(s) {
@@ -130,6 +131,7 @@ export function textStrip(parts) {
 export function summaryParts(d) {
   if (!d) return [['?', C.white]];
   const parts = [];
+  if (d.win === 'am') parts.push(['AM  ', C.amber]);   // the chart and total count 12am-12pm only
   // no "$": at 3x5 pixels it reads as noise; the sign is enough
   if (d.bal != null) parts.push([d.bal.toFixed(2) + '  ', C.white]);
   const t = d.tot != null ? d.tot : d.pnl || 0;
