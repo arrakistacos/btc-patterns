@@ -36,13 +36,21 @@ async function fetchAll() {
   const get = async (path) => {
     const ts = String(Date.now()), sig = sign(null, Buffer.from(ts + 'GET' + path.split('?')[0]), KEY).toString('base64');
     const r = await fetch(API + path, { headers: { 'X-PM-Access-Key': env.PM_KEY_ID, 'X-PM-Timestamp': ts, 'X-PM-Signature': sig, Accept: 'application/json' } });
-    const t = await r.text(); if (!r.ok) throw new Error(`HTTP ${r.status} on ${path.split('?')[0]}: ${t.slice(0, 200)}`);
+    const t = await r.text(); if (!r.ok) { const e = new Error(`HTTP ${r.status} on ${path.split('?')[0]}: ${t.slice(0, 120)}`); e.status = r.status; throw e; }
     return JSON.parse(t);
+  };
+  const sleep = (ms) => new Promise((res) => setTimeout(res, ms));
+  const getPolitely = async (path) => {   // the API rate-limits: pause between pages and back off on 429
+    for (let k = 0; ; k++) {
+      try { return await get(path); } catch (e) { if (e.status !== 429 || k >= 8) throw e; await sleep(15000 * (k + 1)); }
+    }
   };
   const all = []; let cursor = '', pages = 0;
   for (;;) {
-    const j = await get('/v1/portfolio/activities' + (cursor ? '?cursor=' + encodeURIComponent(cursor) : ''));
+    const j = await getPolitely('/v1/portfolio/activities' + (cursor ? '?cursor=' + encodeURIComponent(cursor) : ''));
     all.push(...(j.activities || [])); pages++;
+    if (pages % 10 === 0) { writeFileSync(out, JSON.stringify(all)); process.stderr.write(`${pages} pages, ${all.length} activities\n`); }
+    await sleep(1200);
     if (j.eof || !j.nextCursor || j.nextCursor === cursor || pages > 2000) break;
     cursor = j.nextCursor;
   }
