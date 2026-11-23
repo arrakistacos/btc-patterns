@@ -645,7 +645,9 @@
           const since = m && m[7] ? new Date(m[7]).toLocaleDateString([], { month: 'short', day: 'numeric' }) : '';
           $('tSum').textContent = !m ? '' : (since ? `Since the ${since} rule change: ` : '') + (m[0] ? `${m[1]} of ${m[0]} triggers won (${m[2] >= 0 ? '+' : ''}${m[2]}% per $1 at the price seen).` : 'no triggers yet.')
             + (m[10] && m[10][0] ? ` Real orders filled: ${m[10][1]} of ${m[10][0]}.` : '') + (m[3] ? ` Real: ${m[4]} of ${m[3]} won, ${m[5] >= 0 ? '+' : '−'}$${Math.abs(m[5]).toFixed(2)}.` : '')
-            + (ap.missed && ap.missed.teeter && ap.missed.teeter[0] ? ` Unfilled real orders (all time): ${ap.missed.teeter[1]} of ${ap.missed.teeter[0]} would have won.` : '') + nw(m[11], 'Filled 2¢+ under the trigger') + nw(m[8], 'Skipped, not a fresh cross') + nw(m[9], 'Skipped, over the trigger cap') + (m[6] ? ` ${m[6]} real loss${m[6] > 1 ? 'es' : ''} today.` : ''); }
+            + (ap.missed && ap.missed.teeter && ap.missed.teeter[0] ? ` Unfilled real orders (all time): ${ap.missed.teeter[1]} of ${ap.missed.teeter[0]} would have won.` : '') + nw(m[11], 'Filled 2¢+ under the trigger')
+            + (m[12] && m[12].some((x) => x[0]) ? ` By flips: ${['2', '3', '4+'].map((k, i) => `${k}: ${m[12][i][1]} of ${m[12][i][0]} won`).join(', ')}.` : '')
+            + (m[13] && (m[13][0][0] || m[13][1][0]) ? ` Side that led at 60 s left: ${m[13][0][1]} of ${m[13][0][0]} won; other side: ${m[13][1][1]} of ${m[13][1][0]}.` : '') + nw(m[8], 'Skipped, not a fresh cross') + nw(m[9], 'Skipped, over the trigger cap') + (m[6] ? ` ${m[6]} real loss${m[6] > 1 ? 'es' : ''} today.` : ''); }
         $('sMaxLHint').textContent = ap.mainMaxLosses ? `${ap.mainLossToday || 0} so far today. Bets still waiting for a result count too.` : '';
         { const g = ap.mainTally, n = ap.mainGuardN || 0;
           $('sGuard').textContent = !n ? '' : `Safety switch: back to practice if real BUY bets are below ${ap.mainGuardPct}% per $1 after ${n} bets.` +

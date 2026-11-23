@@ -932,13 +932,15 @@ export function createAutopilot(o) {
     if (!st) { st = { lead: null, flips: 0, done: false }; TT.set(Ws, st); for (const k of TT.keys()) if (k < Ws - 900) TT.delete(k); }
     if (st.done) return;
     const mid = (b.bid + b.ask) / 2, prev = st.prev; st.prev = { mid, e };
+    if (st.lead60 === undefined) st.lead60 = e <= 243 ? (mid >= 0.5 ? 1 : 0) : null;   // who led at 60 s left (logged, not a rule)
     if (e <= 270) { const l = mid >= 0.53 ? 1 : mid <= 0.47 ? 0 : null; if (l != null) { if (st.lead != null && l !== st.lead) st.flips++; st.lead = l; } }
     if (e < 270 || e > 295 || st.flips < (S.teeterFlips || 2)) return;
     const th = (S.teeterAt || 85) / 100;
     if (!(mid >= th || mid <= 1 - th)) return;
     const up = mid >= 0.5, ask = up ? b.ask : r4(1 - b.bid);
     const feeAt = (p) => mkt.feeK * p * (1 - p);
-    const rec = { Ws, ts: Date.now(), side: up ? 'UP' : 'DOWN', ask: r4(ask), left: Math.round(W - e), flips: st.flips, slug: mkt.slug, real: 0, result: null, rule: 2 };
+    const rec = { Ws, ts: Date.now(), side: up ? 'UP' : 'DOWN', ask: r4(ask), left: Math.round(W - e), flips: st.flips, slug: mkt.slug, real: 0, result: null, rule: 2,
+      same60: st.lead60 == null ? null : (up ? 1 : 0) === st.lead60 ? 1 : 0 };
     // Fresh cross (Nov 20): the side must have been below the threshold on the previous reading (about 1 s earlier).
     // Without it, a move that broke out at 35–45 s left was bought the moment the 30 s gate opened, often at 97–98¢.
     // A stale trigger is tracked once (not bet) and the bot keeps watching for a fresh cross in the same window.
@@ -973,14 +975,14 @@ export function createAutopilot(o) {
             rec.real = 1;
             if (ord.filled > 0) {
               const px = ord.notional / ord.filled, fee = r4(feeAt(px) * ord.filled), cost = r2(ord.notional + fee);
-              record({ Ws, mode: 'live', strategy: 'teeter', betPct: S.teeterPct, side: rec.side, status: ord.filled < qty - 1e-9 ? 'partial' : 'filled', qty: r2(ord.filled), want: qty, px: r4(px), fee, cost, limit, seen: r4(ask), orderId: ord.orderId, slug: mkt.slug, result: null, pnl: null, balBefore: r2(bal) });
+              record({ Ws, mode: 'live', strategy: 'teeter', betPct: S.teeterPct, side: rec.side, status: ord.filled < qty - 1e-9 ? 'partial' : 'filled', qty: r2(ord.filled), want: qty, px: r4(px), fee, cost, limit, seen: r4(ask), orderId: ord.orderId, slug: mkt.slug, result: null, pnl: null, balBefore: r2(bal), flips: st.flips, same60: rec.same60 });
               Object.assign(rec, { realStatus: 'filled', realPx: r4(px), realCost: cost });
               if (px < ask - 0.015) rec.under = 1;   // filled 2¢+ below the trigger: the price was falling while the order went in
               S.stats.live.n++; S.stats.live.staked = r2(S.stats.live.staked + cost); day.n++;
               if (S.notifyFills) push({ title: `BOUGHT ${rec.side} (TEETER)`, body: `${r2(ord.filled)} @ ${cents(px)} = ${money(cost)} · teeter-totter, ${st.flips} flips, ${rec.left}s left`, priority: 4, tags: up ? 'green_circle' : 'red_circle', click: o.site + 'autopilot.html' });
             } else {
               rec.realStatus = 'nofill'; rec.msg = ord.msg || `No fill at ${cents(limit)} or better`;
-              record({ Ws, mode: 'live', strategy: 'teeter', side: rec.side, status: 'nofill', msg: rec.msg, qty, limit, seen: r4(ask), orderId: ord.orderId, slug: mkt.slug, missed: null });
+              record({ Ws, mode: 'live', strategy: 'teeter', side: rec.side, status: 'nofill', msg: rec.msg, qty, limit, seen: r4(ask), orderId: ord.orderId, slug: mkt.slug, missed: null, flips: st.flips, same60: rec.same60 });
             }
           }
         } catch (e2) {
@@ -992,7 +994,7 @@ export function createAutopilot(o) {
     }
     S.teeter.trades.push(rec);
     if (S.teeter.trades.length > 400) S.teeter.trades.splice(0, S.teeter.trades.length - 400);
-    log(`teeter-totter ${rec.real ? 'REAL' : 'test'}${rec.realSkip ? ` (real skipped: ${rec.realSkip})` : ''}: ${rec.realStatus || rec.status} ${rec.side} @ ${cents(rec.realPx || ask)} (${st.flips} flips, US ${Math.round(mid * 100)}%, ${rec.left}s left)${rec.msg ? ' - ' + rec.msg : ''}`);
+    log(`teeter-totter ${rec.real ? 'REAL' : 'test'}${rec.realSkip ? ` (real skipped: ${rec.realSkip})` : ''}: ${rec.realStatus || rec.status} ${rec.side} @ ${cents(rec.realPx || ask)} (${st.flips} flips, ${rec.same60 == null ? 'leader at 60 s unknown' : rec.same60 ? 'same side as at 60 s left' : 'other side from 60 s left'}, US ${Math.round(mid * 100)}%, ${rec.left}s left)${rec.msg ? ' - ' + rec.msg : ''}`);
     save(); publishSoon();
   }
   async function settleTeeter() {
@@ -1009,7 +1011,7 @@ export function createAutopilot(o) {
   }
   // Counts since the Nov 20 rule change (fresh cross + price cap): [triggers, won, % per $1 at the trigger price,
   // real settled, real won, real P&L, real losses today, rule since (ms), [stale n, won], [over cap n, won],
-  // [real orders, filled], [filled 2¢+ under the trigger n, won]]
+  // [real orders, filled], [filled 2¢+ under the trigger n, won], [[2 flips], [3 flips], [4+ flips]], [[same side as at 60 s], [other side]]]
   function teeterSummary() {
     const T = S.teeter.trades.filter((t) => t.rule === 2), since = S.teeter.ruleSince || 0;
     const done = T.filter((t) => t.status === 'seen' && t.result != null && !t.stale && !t.capped);
@@ -1021,7 +1023,10 @@ export function createAutopilot(o) {
       real.length, real.filter((t) => t.result).length, r2(real.reduce((a, t) => a + t.pnl, 0)),
       S.teeterLoss && S.teeterLoss.d === dayOf(Date.now()) ? S.teeterLoss.n : 0, since,
       nw(T.filter((t) => t.stale && t.result != null)), nw(T.filter((t) => t.capped && t.result != null)),
-      [orders.length, orders.filter((t) => t.status === 'filled' || t.status === 'partial').length], nw(T.filter((t) => t.under && t.result != null))];
+      [orders.length, orders.filter((t) => t.status === 'filled' || t.status === 'partial').length], nw(T.filter((t) => t.under && t.result != null)),
+      // logged since Nov 22, not rules: triggers by flips (2, 3, 4+) and by side vs the 60 s leader (same, other)
+      [nw(done.filter((t) => t.flips === 2)), nw(done.filter((t) => t.flips === 3)), nw(done.filter((t) => t.flips >= 4))],
+      [nw(done.filter((t) => t.same60 === 1)), nw(done.filter((t) => t.same60 === 0))]];
   }
   async function settleLag() {
     const now = Date.now() / 1000;
