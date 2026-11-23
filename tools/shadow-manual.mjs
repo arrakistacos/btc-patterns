@@ -82,6 +82,13 @@ function ownFills(activities) {
   }
   return out;
 }
+// What a resolution paid: the realized gain it booked plus the cost of the shares it closed (without fees),
+// i.e. $1 a share for the winning side, nothing for the losing one
+function resolutionPayout(r) {
+  const b = r.beforePosition || {}, a = r.afterPosition || {};
+  const paid = (num(a.realized) || 0) - (num(b.realized) || 0) + (num(b.baseCost) ?? ((num(b.cost) || 0) - (num(b.fees) || 0)));
+  return { ts: Date.parse(a.updateTime || r.updateTime) / 1000, d: Math.max(0, Math.round(paid * 100) / 100), slug: r.marketSlug };
+}
 // Cash before each moment, walked backward from a known balance: buys cost shares x price + fee, sells return
 // shares x price - fee, a resolution pays its cash value, deposits and withdrawals move the amount.
 function cashWalk(activities, anchorTs, anchorBal) {
@@ -93,8 +100,7 @@ function cashWalk(activities, anchorTs, anchorBal) {
       const qty = num(ex.lastShares), yes = num(ex.lastPx), px = m[2] === 'LONG' ? yes : 1 - yes, f = num(ex.commissionNotionalCollected) || 0;
       ev.push({ ts: Date.parse(ex.transactTime) / 1000, d: (m[1] === 'BUY' ? -qty * px : qty * px) - f });
     } else if (a.type === 'ACTIVITY_TYPE_POSITION_RESOLUTION' && a.positionResolution) {
-      const r = a.positionResolution, t = r.afterPosition && r.afterPosition.updateTime;
-      ev.push({ ts: Date.parse(t) / 1000, d: num(r.cashValue) || 0 });
+      const p = resolutionPayout(a.positionResolution); if (p) ev.push(p);
     } else if (a.accountBalanceChange) {
       const c = a.accountBalanceChange, amt = num(c.amount) || 0, sign = /WITHDRAWAL/.test(a.type) ? -1 : /DEPOSIT/.test(a.type) ? 1 : 0;
       if (sign && !/FAILED|CANCEL|REJECT/.test(c.status || '')) ev.push({ ts: Date.parse(c.createTime) / 1000, d: sign * amt });
@@ -134,6 +140,8 @@ function audit() {
     t.fee += f.feeUsd; if (f.manual) t.manual++; else t.auto++;
   }
   const trades = [...T.values()].filter((t) => t.ts != null).sort((a, b) => a.ts - b.ts);
+  // what each window paid at resolution, for trades outside the recordings
+  const PAY = {}; for (const a of acts) if (a.type === 'ACTIVITY_TYPE_POSITION_RESOLUTION' && a.positionResolution) { const p = resolutionPayout(a.positionResolution); PAY[p.slug] = (PAY[p.slug] || 0) + p.d; }
   const { windows } = lagDirs.length ? loadWindows({ lagDirs, logs }) : { windows: [] };
   const W = new Map(windows.map((w) => [w.Ws, w]));
   const ct = (s) => new Date(s * 1000).toLocaleString('en-US', { timeZone: 'America/Chicago', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', second: '2-digit' });
@@ -154,6 +162,10 @@ function audit() {
         for (const [dt, key] of [[5, 'p5'], [15, 'p15'], [30, 'p30']]) { const r = near(e + dt); if (Math.abs(r.e - (e + dt)) <= 3 && r.e <= 299) R[key] = sp(r); }
       }
       R.pnl = t.proceeds + held * R.won - t.cost - t.fee;
+    } else {
+      // outside the recordings: P&L from the account's own cash (sales, fees, and what the resolution paid)
+      R.pnl = t.proceeds - t.cost - t.fee + (held > 1e-6 ? (PAY[t.slug] || 0) : 0);
+      if (held > 1e-6) R.won = (PAY[t.slug] || 0) > 0 ? 1 : 0;
     }
     rows.push(R);
   }
@@ -165,9 +177,12 @@ function audit() {
   if (chk.length) L.push(`- Balance before each trade is walked back from the bot's last reading (${anchor ? '$' + anchor[1].toFixed(2) + ' at ' + ct(anchor[0]) : ''}). Checked against the bot's own balance readings before its ${chk.length} orders: median miss $${chk[chk.length >> 1].toFixed(2)}, 90% within $${chk[Math.floor(chk.length * 0.9)].toFixed(2)}.`);
   L.push('');
   // summary
-  const rec = rows.filter((r) => r.won != null), wins = rec.filter((r) => r.pnl > 0).length, tot = rec.reduce((s, r) => s + r.pnl, 0), staked = rec.reduce((s, r) => s + r.t.cost, 0);
+  const rec = rows.filter((r) => r.inRec && r.won != null), wins = rec.filter((r) => r.pnl > 0).length, tot = rec.reduce((s, r) => s + r.pnl, 0), staked = rec.reduce((s, r) => s + r.t.cost, 0);
   const q = (a, p) => { const b = a.filter((x) => x != null).sort((x, y) => x - y); return b.length ? b[Math.min(b.length - 1, Math.floor(p * b.length))] : null; };
   const pr = (a, f = (x) => x.toFixed(0)) => `${f(q(a, 0.1))} / ${f(q(a, 0.5))} / ${f(q(a, 0.9))}`;
+  const allP = rows.filter((r) => r.pnl != null), allT = allP.reduce((s2, r) => s2 + r.pnl, 0), allS = allP.reduce((s2, r) => s2 + r.t.cost, 0);
+  L.push('## All manual trades (from the account\'s own fills and resolutions)', '');
+  L.push(`- ${allP.length} trades, ${allP.filter((r) => r.pnl > 0).length} made money, net **${allT >= 0 ? '+' : '−'}$${Math.abs(allT).toFixed(2)}** on $${allS.toFixed(2)} bought (${allS ? (allT / allS * 100).toFixed(1) : '—'}% per $1). Sold some or all early: ${allP.filter((r) => r.t.sold > 1e-6).length}. Stake as % of cash, 10th / median / 90th percentile: ${pr(allP.map((r) => r.stakePct), (x) => (x * 100).toFixed(1) + '%')}. Seconds left at entry: ${pr(allP.map((r) => r.left))}. Price paid: ${pr(allP.map((r) => r.avg), (x) => (x * 100).toFixed(0) + '¢')}.`, '');
   L.push('## Summary (manual trades inside the recordings)', '');
   L.push(`- ${rec.length} trades, ${wins} made money (${rec.length ? (wins / rec.length * 100).toFixed(1) : '—'}%), net **${tot >= 0 ? '+' : '−'}$${Math.abs(tot).toFixed(2)}** on $${staked.toFixed(2)} bought (${staked ? (tot / staked * 100).toFixed(1) : '—'}% per $1). Held to the end: ${rec.filter((r) => r.t.sold < 1e-6).length}; sold some or all early: ${rec.filter((r) => r.t.sold > 1e-6).length}.`);
   L.push(`- What your entries looked like (10th / median / 90th percentile): seconds left ${pr(rec.map((r) => r.left))}; distance toward the bet, $ ${pr(rec.map((r) => r.D))}; Polymarket ask at entry ${pr(rec.map((r) => r.ask), (x) => (x * 100).toFixed(0) + '¢')}; price paid ${pr(rec.map((r) => r.avg), (x) => (x * 100).toFixed(0) + '¢')}; stake ${pr(rec.map((r) => r.stakePct), (x) => (x * 100).toFixed(1) + '%')} of cash.`);
