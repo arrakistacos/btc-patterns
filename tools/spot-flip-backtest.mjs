@@ -135,6 +135,11 @@ const show = (title, cfg) => {
     band('tier 10% (base)', f.filter((x) => Math.abs(x.tier - 0.1) < 1e-9)), band('tier 20%', f.filter((x) => Math.abs(x.tier - 0.2) < 1e-9)), band('tier 30% (all levers)', f.filter((x) => Math.abs(x.tier - 0.3) < 1e-9)),
     band('ask under 50¢ (Polymarket still against it)', f.filter((x) => x.ask < 0.5)), band('ask 50–70¢', f.filter((x) => x.ask >= 0.5)),
     band(`60–150 s left`, f.filter((x) => x.T >= 60)), band(`under 60 s left`, f.filter((x) => x.T < 60)), '');
+  // a few long shots that won at 2–20¢ can carry the average, so the result by price is what matters
+  L.push('| Price paid (all days, filled) | Bets | Won | Per $1 |', '|---|---|---|---|');
+  for (const [lo, hi] of [[0, 0.3], [0.3, 0.4], [0.4, 0.5], [0.5, 0.6], [0.6, 0.7], [0.7, 1]]) { const a = f.filter((x) => x.px >= lo && x.px < hi); if (a.length) L.push(band(`${Math.round(lo * 100)}–${Math.round(hi * 100)}¢`, a).replace(/^\| /, '| ')); }
+  const r = f.map((x) => ret(x.px, x.win)).sort((a, b) => b - a), top = r.slice(0, 10).reduce((a, b) => a + b, 0), tot = r.reduce((a, b) => a + b, 0);
+  L.push('', `The 10 best bets add ${top >= 0 ? '+' : ''}${top.toFixed(2)} to a total of ${tot >= 0 ? '+' : ''}${tot.toFixed(2)} on $1 bets; the other ${Math.max(0, r.length - 10)} add ${(tot - top).toFixed(2)}.`, '');
   L.push('| Bet size (all days, in time order) | Balance at the end (×start) | Worst drop from a peak | 30 days by bootstrap: 10th pct / median / 90th pct | Chance of losing 75%+ in 30 days |', '|---|---|---|---|---|');
   for (const [lab, s] of [['flat 2%', 0.02], ['flat 10%', 0.10], ['flat 20%', 0.20], ['flat 30%', 0.30], ['tiered 10–30%', 'tier']]) {
     const b = bankroll(all, s), bs = bootstrap(all, s, 30);
