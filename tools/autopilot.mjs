@@ -885,6 +885,7 @@ export function createAutopilot(o) {
       lagFlush();
       const comMid = (com.bid + com.ask) / 2, usMid = (b.bid + b.ask) / 2;
       await observeTeeter(x.Ws, e, b, mkt).catch((err) => log('teeter-totter:', err.message.slice(0, 120)));
+      try { observeTvd(x.Ws, e, x.btc, x.K, b, mkt); } catch (err) { log('tv divergence:', err.message.slice(0, 120)); }
       lagRing.push([ts, x.Ws, comMid, usMid]);
       while (lagRing.length && lagRing[0][0] < ts - 2 * 3600000) lagRing.shift();
       if (now - lagEstAt > 10 * 60000 && lagRing.length > 300) { lagEstAt = now; lagEstimate(); }
@@ -996,6 +997,72 @@ export function createAutopilot(o) {
     if (S.teeter.trades.length > 400) S.teeter.trades.splice(0, S.teeter.trades.length - 400);
     log(`teeter-totter ${rec.real ? 'REAL' : 'test'}${rec.realSkip ? ` (real skipped: ${rec.realSkip})` : ''}: ${rec.realStatus || rec.status} ${rec.side} @ ${cents(rec.realPx || ask)} (${st.flips} flips, ${rec.same60 == null ? 'leader at 60 s unknown' : rec.same60 ? 'same side as at 60 s left' : 'other side from 60 s left'}, US ${Math.round(mid * 100)}%, ${rec.left}s left)${rec.msg ? ' - ' + rec.msg : ''}`);
     save(); publishSoon();
+  }
+  // ---------- TV Divergence: practice only (Nov 23). It never places an order; it logs every trigger as a forward
+  // test of the rule picked in tools/tv-divergence-backtest.mjs, which stays paused for real money until 50+ forward
+  // triggers hold up. Rule: 30–150 s left; Coinbase spot at least $35 past the window's price to beat K on side X for
+  // 3 readings in a row (about 3 s, counting only readings inside the last 150 s), having been on the other side of K
+  // within the 60 s before that hold began; Polymarket US's ask for X at most 70¢. One trigger per window. Then it
+  // logs the next reading's ask as a simulated fill (at the trigger price, +0¢, and up to 1¢ more), whether X's price
+  // rose 5¢+ within 15 s, and how the window settled.
+  const TVD = { minLeft: 30, maxLeft: 150, B: 35, hold: 3, cap: 0.70, look: 60 };
+  S.tvd = S.tvd || { since: Date.now(), trades: [] };
+  const tvdW = new Map();
+  function observeTvd(Ws, e, spot, K, b, mkt) {
+    if (S.tvdOn === false || K == null || !(spot > 0)) return;
+    let st = tvdW.get(Ws);
+    if (!st) { st = { hist: [], hold: 0, side: 0, holdStartE: null, done: false, rec: null }; tvdW.set(Ws, st); for (const k of tvdW.keys()) if (k < Ws - 900) tvdW.delete(k); }
+    const midUp = (b.bid + b.ask) / 2, r = st.rec;
+    if (r) {   // follow-ups on this window's trigger
+      if (r.fillAsk === undefined) {
+        const a = r.side === 'UP' ? b.ask : r4(1 - b.bid);
+        if (e - r.e <= 2) Object.assign(r, { fillAsk: r4(a), fill0: a <= r.ask + 1e-9 ? 1 : 0, fill1: a <= r.ask + 0.01 + 1e-9 ? 1 : 0 });
+        else Object.assign(r, { fillAsk: null, fill0: 0, fill1: 0 });
+        save();
+      }
+      if (r.rose5 == null && e >= r.e + 15) {
+        if (e <= r.e + 18) { const m = r.side === 'UP' ? midUp : 1 - midUp; Object.assign(r, { mid15: r4(m), rose5: m - r.mid0 >= 0.05 ? 1 : 0 }); }
+        else r.rose5 = -1;   // no reading 15–18 s later
+        save();
+      }
+    }
+    const d = spot - K, T = W - e;
+    st.hist.push({ e, d }); while (st.hist.length && st.hist[0].e < e - 90) st.hist.shift();
+    if (st.done) return;
+    if (T > TVD.maxLeft) { st.hold = 0; st.side = 0; return; }
+    const side = d >= TVD.B ? 1 : d <= -TVD.B ? -1 : 0;
+    if (side && side === st.side) st.hold++; else { st.hold = side ? 1 : 0; st.side = side; st.holdStartE = e; }
+    if (T < TVD.minLeft || !side || st.hold < TVD.hold) return;
+    if (!st.hist.some((h) => h.e < st.holdStartE && st.holdStartE - h.e <= TVD.look && (side > 0 ? h.d < 0 : h.d > 0))) return;
+    const up = side > 0, ask = up ? b.ask : r4(1 - b.bid);
+    if (!(ask <= TVD.cap + 1e-9) || ask <= 0.02) return;
+    st.done = true;
+    const rec = { Ws, ts: Date.now(), e, left: Math.round(T), side: up ? 'UP' : 'DOWN', K: r2(K), spot: r2(spot), dist: r2(Math.abs(d)), ask: r4(ask), mid0: r4(up ? midUp : 1 - midUp), feeK: mkt.feeK, slug: mkt.slug, result: null };
+    st.rec = rec; S.tvd.trades.push(rec);
+    if (S.tvd.trades.length > 1000) S.tvd.trades.splice(0, S.tvd.trades.length - 1000);
+    log(`TV divergence (practice): ${rec.side} at ${cents(ask)}, spot $${rec.dist.toFixed(0)} ${up ? 'above' : 'below'} the price to beat, ${rec.left}s left`);
+    save(); publishSoon();
+  }
+  async function settleTvd() {
+    const now = Date.now() / 1000;
+    for (const t of S.tvd.trades) {
+      if (t.result != null || now < t.Ws + W + 15) continue;
+      let s = null;
+      try { const j = await gw(`/v1/markets/${t.slug}/settlement`); if (j.settlement != null) s = +j.settlement; } catch { /* not yet */ }
+      if (s == null && now > t.Ws + W + 600) { try { const u = await Signal.fetchUsTerms(t.Ws); if (u.settlementPrice && u.priceToBeat) s = u.settlementPrice >= u.priceToBeat ? 1 : 0; } catch { /* later */ } }
+      if (s == null) continue;
+      t.result = (s >= 0.5) === (t.side === 'UP') ? 1 : 0;
+      save(); publishSoon();
+    }
+  }
+  // [triggers, settled, won, [filled at +0¢, won, % per $1], [filled at +1¢, won, % per $1],
+  //  [15 s check known, rose 5¢+, won when it rose, won when it didn't], since (ms), unfilled at +1¢ that won]
+  function tvdSummary() {
+    const T = S.tvd.trades, done = T.filter((t) => t.result != null);
+    const leg = (k) => { const f = done.filter((t) => t[k] === 1 && t.fillAsk != null); const r = f.reduce((a, t) => { const c = t.fillAsk + (t.feeK || 0.095) * t.fillAsk * (1 - t.fillAsk); return a + (t.result ? 1 / c - 1 : -1); }, 0); return [f.length, f.filter((t) => t.result).length, f.length ? Math.round(r / f.length * 1000) / 10 : 0]; };
+    const ck = done.filter((t) => t.rose5 === 0 || t.rose5 === 1), up = ck.filter((t) => t.rose5 === 1), dn = ck.filter((t) => t.rose5 === 0);
+    return [T.length, done.length, done.filter((t) => t.result).length, leg('fill0'), leg('fill1'),
+      [ck.length, up.length, up.filter((t) => t.result).length, dn.filter((t) => t.result).length], S.tvd.since, done.filter((t) => t.fill1 === 0 && t.result).length];
   }
   async function settleTeeter() {
     const now = Date.now() / 1000;
@@ -1118,7 +1185,7 @@ export function createAutopilot(o) {
     const snap = {
       v: 1, ts: Date.now(), ver: AUTOPILOT_VERSION, since: STARTED, why: botWhy, note: lastNote, keys: !!KEY,
       msgs: o.budget && isFinite(o.budget.left()) ? Math.floor(o.budget.left()) : null,   // ntfy messages left (free ntfy.sh)
-      ap: { enabled: S.enabled, mode: S.mode, mainOn: S.mainOn !== false, mainTally: S.mainTally ? [S.mainTally.n, S.mainTally.w, S.mainTally.pnl, S.mainTally.cost] : null, mainGuardN: S.mainGuardN, mainGuardPct: S.mainGuardPct, mainMaxLosses: S.mainMaxLosses, mainLossToday: S.mainLoss && S.mainLoss.d === dayOf(Date.now()) ? S.mainLoss.n : 0, betPct: S.betPct, dailyStopPct: S.dailyStopPct, lossStreak: S.lossStreak, cooldownMin: S.cooldownMin, goal: S.goal, teeter: [S.teeterOn !== false, S.teeterLive !== false, S.teeterPct, S.teeterAt, S.teeterFlips, S.teeterMaxLosses, S.teeterFresh !== false, S.teeterMaxPx, S.teeterTrigMax], teeterSum: teeterSummary(), missed: { reg: missedSummary(null), teeter: missedSummary('teeter') }, lateLive: S.lateLive, lateBet: S.lateBet, lateBetPct: S.lateBetPct, lateFavOnly: S.lateFavOnly, lateMinReal: S.lateMinReal, lateMinEdge: S.lateMinEdge, lateGapFix: S.lateGapFix !== false, lateHours: S.lateHours, lateAntic: S.lateAntic, lateMaxLosses: S.lateMaxLosses, anticBlockReset: S.anticBlockReset !== false, anticStart: S.anticStart, anticStep: S.anticStep, anticFloor: S.anticFloor, streak: S.streak[S.mode] || 0, notifyFills: S.notifyFills, notifyResults: S.notifyResults, minModel: minModel(o.defMinModel), minMarket: minMarket(o.defMinMarket), target: target(o.defTarget), halted: S.halted },
+      ap: { enabled: S.enabled, mode: S.mode, mainOn: S.mainOn !== false, mainTally: S.mainTally ? [S.mainTally.n, S.mainTally.w, S.mainTally.pnl, S.mainTally.cost] : null, mainGuardN: S.mainGuardN, mainGuardPct: S.mainGuardPct, mainMaxLosses: S.mainMaxLosses, mainLossToday: S.mainLoss && S.mainLoss.d === dayOf(Date.now()) ? S.mainLoss.n : 0, betPct: S.betPct, dailyStopPct: S.dailyStopPct, lossStreak: S.lossStreak, cooldownMin: S.cooldownMin, goal: S.goal, teeter: [S.teeterOn !== false, S.teeterLive !== false, S.teeterPct, S.teeterAt, S.teeterFlips, S.teeterMaxLosses, S.teeterFresh !== false, S.teeterMaxPx, S.teeterTrigMax], teeterSum: teeterSummary(), tvd: tvdSummary(), missed: { reg: missedSummary(null), teeter: missedSummary('teeter') }, lateLive: S.lateLive, lateBet: S.lateBet, lateBetPct: S.lateBetPct, lateFavOnly: S.lateFavOnly, lateMinReal: S.lateMinReal, lateMinEdge: S.lateMinEdge, lateGapFix: S.lateGapFix !== false, lateHours: S.lateHours, lateAntic: S.lateAntic, lateMaxLosses: S.lateMaxLosses, anticBlockReset: S.anticBlockReset !== false, anticStart: S.anticStart, anticStep: S.anticStep, anticFloor: S.anticFloor, streak: S.streak[S.mode] || 0, notifyFills: S.notifyFills, notifyResults: S.notifyResults, minModel: minModel(o.defMinModel), minMarket: minMarket(o.defMinMarket), target: target(o.defTarget), halted: S.halted },
       bal: { live: S.liveBal, practice: S.practice }, stats: S.stats, days, acks: acks.slice(-5),
       trades: S.trades.slice(-12).map(tr),
       late: { since: S.late.since, antic: anticView(), blockLosses: blockLosses(), capHit: capHit() ? 1 : 0, stats: S.late.stats, real: S.late.real || null, byPat: S.late.byPat || null, byFav: S.late.byFav || null, byBlock: lateByBlock(), trades: S.late.trades.slice(-6).map((t) => [t.ts, t.Ws, t.side, t.status, t.px || 0, t.quoted, Math.round(t.q * 100), t.result, t.pnl, t.left, t.msg || '', t.real ? 1 : 0, t.pat === 'against' ? (t.patSkip ? 2 : 1) : t.pat === 'with' ? 3 : 0, t.realSkip === 'underdog' ? 1 : t.realSkip === 'conf' ? 2 : t.realSkip === 'hours' ? 3 : t.realSkip === 'maxloss' ? 4 : t.realSkip === 'price' ? 5 : 0, t.fav != null ? t.fav : (t.quoted >= 0.5 ? 1 : 0), t.gap != null ? Math.round(t.gap) : null]) },
@@ -1377,7 +1444,7 @@ export function createAutopilot(o) {
   function tick(why) {
     botWhy = why || botWhy;
     const now = Date.now();
-    if (now - lastSettleCheck > 10000) { lastSettleCheck = now; settle().catch((e) => log('autopilot settle:', e.message)); settleLate().catch((e) => log('late test settle:', e.message)); settleLag().catch((e) => log('lag test settle:', e.message)); settleTeeter().catch((e) => log('teeter settle:', e.message)); settleMissed().catch((e) => log('missed settle:', e.message)); sbSettle().catch((e) => log('scoreboard settle:', e.message)); }
+    if (now - lastSettleCheck > 10000) { lastSettleCheck = now; settle().catch((e) => log('autopilot settle:', e.message)); settleLate().catch((e) => log('late test settle:', e.message)); settleLag().catch((e) => log('lag test settle:', e.message)); settleTeeter().catch((e) => log('teeter settle:', e.message)); settleTvd().catch((e) => log('tv divergence settle:', e.message)); settleMissed().catch((e) => log('missed settle:', e.message)); sbSettle().catch((e) => log('scoreboard settle:', e.message)); }
     if (now - STARTED > 30000) publishScore();
     if (S.halted && S.halted.untilTs && now >= S.halted.untilTs) {
       S.halted = null; save(); publishSoon(1500, true);
