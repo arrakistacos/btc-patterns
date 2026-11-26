@@ -885,7 +885,7 @@ export function createAutopilot(o) {
       lagFlush();
       const comMid = (com.bid + com.ask) / 2, usMid = (b.bid + b.ask) / 2;
       await observeTeeter(x.Ws, e, b, mkt).catch((err) => log('teeter-totter:', err.message.slice(0, 120)));
-      try { observeTvd(x.Ws, e, x.btc, x.K, b, mkt); } catch (err) { log('tv divergence:', err.message.slice(0, 120)); }
+      try { observeTvd(x.Ws, e, x.btc, x.K, b, mkt, x.spotAge); } catch (err) { log('tv divergence:', err.message.slice(0, 120)); }
       lagRing.push([ts, x.Ws, comMid, usMid]);
       while (lagRing.length && lagRing[0][0] < ts - 2 * 3600000) lagRing.shift();
       if (now - lagEstAt > 10 * 60000 && lagRing.length > 300) { lagEstAt = now; lagEstimate(); }
@@ -1005,13 +1005,18 @@ export function createAutopilot(o) {
   // within the 60 s before that hold began; Polymarket US's ask for X at most 70¢. One trigger per window. Then it
   // logs the next reading's ask as a simulated fill (at the trigger price, +0¢, and up to 1¢ more), whether X's price
   // rose 5¢+ within 15 s, and how the window settled.
-  const TVD = { minLeft: 30, maxLeft: 150, B: 35, hold: 3, cap: 0.70, look: 60 };
+  // Nov 25 (v2): sanity guards after 8 of the first 30 triggers fired on a frozen Coinbase price (fixed in
+  // signal-bot's candle guard): no trigger unless the latest trade is under 3 s old and the price has changed in the
+  // last 10 s, and the ask must be at least 50¢ (Polymarket far under 50¢ while spot is $35+ past the line has so far
+  // only meant broken data). Triggers from before v2 that saw a frozen price are marked bad and left out of the counts.
+  const TVD = { minLeft: 30, maxLeft: 150, B: 35, hold: 3, cap: 0.70, floor: 0.50, look: 60, maxAge: 3, flatSec: 10 };
   S.tvd = S.tvd || { since: Date.now(), trades: [] };
   const tvdW = new Map();
-  function observeTvd(Ws, e, spot, K, b, mkt) {
+  function observeTvd(Ws, e, spot, K, b, mkt, spotAge) {
     if (S.tvdOn === false || K == null || !(spot > 0)) return;
     let st = tvdW.get(Ws);
-    if (!st) { st = { hist: [], hold: 0, side: 0, holdStartE: null, done: false, rec: null }; tvdW.set(Ws, st); for (const k of tvdW.keys()) if (k < Ws - 900) tvdW.delete(k); }
+    if (!st) { st = { hist: [], hold: 0, side: 0, holdStartE: null, done: false, rec: null, px: null, pxE: e }; tvdW.set(Ws, st); for (const k of tvdW.keys()) if (k < Ws - 900) tvdW.delete(k); }
+    if (spot !== st.px) { st.px = spot; st.pxE = e; }
     const midUp = (b.bid + b.ask) / 2, r = st.rec;
     if (r) {   // follow-ups on this window's trigger
       if (r.fillAsk === undefined) {
@@ -1036,8 +1041,12 @@ export function createAutopilot(o) {
     if (!st.hist.some((h) => h.e < st.holdStartE && st.holdStartE - h.e <= TVD.look && (side > 0 ? h.d < 0 : h.d > 0))) return;
     const up = side > 0, ask = up ? b.ask : r4(1 - b.bid);
     if (!(ask <= TVD.cap + 1e-9) || ask <= 0.02) return;
+    if (ask < TVD.floor - 1e-9 || (spotAge != null && spotAge > TVD.maxAge) || e - st.pxE >= TVD.flatSec) {
+      if (!st.guardNoted) { st.guardNoted = true; log(`TV divergence: guard held back a trigger (${ask < TVD.floor - 1e-9 ? `ask ${cents(ask)} under ${cents(TVD.floor)}` : spotAge > TVD.maxAge ? `spot ${Math.round(spotAge)} s old` : `spot unchanged ${e - st.pxE} s`})`); }
+      return;
+    }
     st.done = true;
-    const rec = { Ws, ts: Date.now(), e, left: Math.round(T), side: up ? 'UP' : 'DOWN', K: r2(K), spot: r2(spot), dist: r2(Math.abs(d)), ask: r4(ask), mid0: r4(up ? midUp : 1 - midUp), feeK: mkt.feeK, slug: mkt.slug, result: null };
+    const rec = { v: 2, Ws, ts: Date.now(), e, left: Math.round(T), side: up ? 'UP' : 'DOWN', K: r2(K), spot: r2(spot), dist: r2(Math.abs(d)), ask: r4(ask), mid0: r4(up ? midUp : 1 - midUp), feeK: mkt.feeK, slug: mkt.slug, result: null };
     st.rec = rec; S.tvd.trades.push(rec);
     if (S.tvd.trades.length > 1000) S.tvd.trades.splice(0, S.tvd.trades.length - 1000);
     log(`TV divergence (practice): ${rec.side} at ${cents(ask)}, spot $${rec.dist.toFixed(0)} ${up ? 'above' : 'below'} the price to beat, ${rec.left}s left`);
@@ -1056,13 +1065,14 @@ export function createAutopilot(o) {
     }
   }
   // [triggers, settled, won, [filled at +0¢, won, % per $1], [filled at +1¢, won, % per $1],
-  //  [15 s check known, rose 5¢+, won when it rose, won when it didn't], since (ms), unfilled at +1¢ that won]
+  //  [15 s check known, rose 5¢+, won when it rose, won when it didn't], since (ms), unfilled at +1¢ that won, left out as bad data]
   function tvdSummary() {
-    const T = S.tvd.trades, done = T.filter((t) => t.result != null);
+    const T = S.tvd.trades.filter((t) => !t.bad), done = T.filter((t) => t.result != null);
     const leg = (k) => { const f = done.filter((t) => t[k] === 1 && t.fillAsk != null); const r = f.reduce((a, t) => { const c = t.fillAsk + (t.feeK || 0.095) * t.fillAsk * (1 - t.fillAsk); return a + (t.result ? 1 / c - 1 : -1); }, 0); return [f.length, f.filter((t) => t.result).length, f.length ? Math.round(r / f.length * 1000) / 10 : 0]; };
     const ck = done.filter((t) => t.rose5 === 0 || t.rose5 === 1), up = ck.filter((t) => t.rose5 === 1), dn = ck.filter((t) => t.rose5 === 0);
     return [T.length, done.length, done.filter((t) => t.result).length, leg('fill0'), leg('fill1'),
-      [ck.length, up.length, up.filter((t) => t.result).length, dn.filter((t) => t.result).length], S.tvd.since, done.filter((t) => t.fill1 === 0 && t.result).length];
+      [ck.length, up.length, up.filter((t) => t.result).length, dn.filter((t) => t.result).length], S.tvd.since, done.filter((t) => t.fill1 === 0 && t.result).length,
+      S.tvd.trades.length - T.length];   // last: triggers left out as bad data
   }
   async function settleTeeter() {
     const now = Date.now() / 1000;

@@ -251,6 +251,7 @@ const C = [];          // 5m candles {t,o,h,l,c,v}
 const ticks = [];      // [ts, price] last ~6 min, for time-weighted averages and momentum
 let lastTrade = 0, lastCbMsg = 0, cbWs = null;
 function upsert(k) {
+  if (k.t > bucket(nowS())) return;   // never a candle stamped in the future
   const last = C[C.length - 1];
   if (!last || k.t > last.t) C.push(k);
   else { const i = C.findIndex((x) => x.t === k.t); if (i >= 0) C[i] = k; }
@@ -270,8 +271,9 @@ async function loadCandles(count) {
   rows.sort((a, b) => a.t - b.t);
   for (const k of rows) upsert(k);
 }
+let lastTick = null;   // the latest Coinbase trade { p, ts }: what "spot" means everywhere outside the candles
 function onTrade(price, size, ts) {
-  lastTrade = nowS();
+  lastTrade = nowS(); lastTick = { p: price, ts };
   ticks.push([ts, price]);
   while (ticks.length && ticks[0][0] < ts - 400) ticks.shift();
   const t = bucket(ts), last = C[C.length - 1];
@@ -309,6 +311,28 @@ async function pollCoinbase() {
     const ts = j.time ? Date.parse(j.time) / 1000 : nowS();
     if (+j.price > 0 && ts > cbPollLast) { cbPollLast = ts; onTrade(+j.price, 0, ts); if (!cbPollNoted) { cbPollNoted = true; log('coinbase live feed down — using the REST price every 2 s until it reconnects'); } }
   } catch { /* try again in 2 s */ } finally { cbPollBusy = false; }
+}
+// Candle guard (Nov 25): the last candle's close sometimes stopped following trades partway through a window and
+// sat at an older price until the next window (8% of recorded seconds on Nov 24, 25% on Nov 25), so the recordings,
+// the model and the TV Divergence tracker saw a frozen spot. The cause isn't pinned down yet: this logs the first
+// sighting in each window with the candle tail, and repairs it by dropping any candle stamped in the future and
+// putting the latest trade back into the current candle.
+const spotNow = () => (lastTick ? lastTick.p : C.length ? C[C.length - 1].c : null);
+let candleGuardLogged = 0;
+function candleGuard() {
+  if (!lastTick || !C.length || nowS() - lastTick.ts > 3) return;
+  const last = C[C.length - 1], tb = bucket(lastTick.ts);
+  if (last.t === tb && Math.abs(last.c - lastTick.p) < 0.005) return;
+  if (last.t < tb) return;   // a new window's first trade is on its way into onTrade
+  if (candleGuardLogged !== bucket(nowS())) {
+    candleGuardLogged = bucket(nowS());
+    log(`candle guard: last candle ${clock(last.t)} close ${last.c} vs last trade ${lastTick.p} (${new Date(lastTick.ts * 1000).toISOString().slice(11, 19)}); tail ${C.slice(-4).map((k) => new Date(k.t * 1000).toISOString().slice(11, 16) + '=' + k.c).join(' ')}`);
+  }
+  const now = bucket(nowS());
+  while (C.length && C[C.length - 1].t > now) C.pop();
+  const l = C[C.length - 1];
+  if (!l || tb > l.t) C.push({ t: tb, o: l ? l.c : lastTick.p, h: lastTick.p, l: lastTick.p, c: lastTick.p, v: 0 });
+  else if (tb === l.t) { l.c = lastTick.p; l.h = Math.max(l.h, l.c); l.l = Math.min(l.l, l.c); }
 }
 function twAvg(from, to) {
   let sum = 0, dur = 0, prev = null;
@@ -426,6 +450,7 @@ function ensurePtb(Ws) {
 // ---------------------------------------------------------------- the decision, once per second
 let sent = { Ws: null, n: 0 }, wasBuy = false, feedDownSince = null, feedDownWarned = false, lastStatus = 0, lastWhy = '';
 function evaluate() {
+  try { candleGuard(); } catch (e) { log('candle guard:', e.message); }
   const t = nowS(), Ws = bucket(t), e = t - Ws, left = W - e;
   pmRoll(Ws);
   ensurePtb(Ws);
@@ -450,7 +475,7 @@ function evaluate() {
   const mk = pmMid();
   // US lag recorder: about once a second, Polymarket US best prices next to polymarket.com's (practice lag test too)
   if (healthy && mk != null && pm.bid != null && pm.ask != null && pm.t === Ws && C.length && e >= 5)
-    AP.observeLag({ Ws, e, btc: C[C.length - 1].c, K: ptb.Ws === Ws ? ptb.K : null, com: () => (pm.t === Ws && pm.bid != null && pm.ask != null ? { bid: pm.bid, ask: pm.ask } : null) });
+    AP.observeLag({ Ws, e, btc: spotNow(), spotAge: lastTick ? nowS() - lastTick.ts : null, K: ptb.Ws === Ws ? ptb.K : null, com: () => (pm.t === Ws && pm.bid != null && pm.ask != null ? { bid: pm.bid, ask: pm.ask } : null) });
   if (closed.length < 60 || !C.length) why = 'loading candles';
   else if (!healthy) why = `feeds stale (coinbase ${lastTrade ? cbAge.toFixed(1) + "s" : "—"}, polymarket ${isFinite(pmAge) ? pmAge.toFixed(1) + 's' : '—'})`;
   else if (mk == null || pm.bid == null || pm.ask == null) why = 'waiting for odds';
