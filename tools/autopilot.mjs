@@ -1430,6 +1430,29 @@ export function createAutopilot(o) {
     bookPubAt = Date.now();
     bookChunks(after).forEach((c, k) => setTimeout(() => publish(c, true), 2500 + k * 1500));
   }
+  // Real TV Divergence orders for the Profits page's "TV trades" view, sent only when that page asks ('tvdBook').
+  // rows: [placed (s), window start (s), side U/D, status f filled / p partial / n not filled / e error, ask seen,
+  //        fill price, shares, cost $ (with fee), fee $, fee billed 1 / estimated 0, result 1/0/null, profit $,
+  //        bet size %, seconds left]. A row for an unfilled order carries the window's result (would it have won).
+  let tvdPubAt = 0;
+  function tvdBookRows() {
+    const c2 = (x) => (x == null ? null : Math.round(x * 100) / 100), c4 = (x) => (x == null ? null : Math.round(x * 1e4) / 1e4);
+    const code = (st) => ({ filled: 'f', partial: 'p', nofill: 'n', error: 'e' })[st] || 'e';
+    const pct = new Map(S.trades.filter((t) => t.strategy === 'tvd').map((t) => [t.Ws, t.betPct]));
+    const since = S.tvd.liveSince || 0;   // the same orders the live tally counts
+    return S.tvd.trades.filter((t) => t.real === 1 && t.ts >= since && t.realStatus).map((t) => {
+      const f = t.realStatus === 'filled' || t.realStatus === 'partial';
+      return [Math.round(t.ts / 1000), t.Ws, t.side === 'UP' ? 'U' : 'D', code(t.realStatus), c2(t.ask), f ? c4(t.realPx) : null, f ? c2(t.realQty) : null,
+        f ? c2(t.realCost) : null, f ? c4(t.realFee) : null, f ? (t.feeSrc === 'billed' ? 1 : 0) : null,
+        f ? (t.realResult == null ? null : t.realResult ? 1 : 0) : (t.result == null ? null : t.result ? 1 : 0), f ? c2(t.realPnl) : null, pct.get(t.Ws) ?? null, t.left];
+    });
+  }
+  function publishTvdBook(after) {
+    if (Date.now() - tvdPubAt < 30000) return;
+    tvdPubAt = Date.now();
+    const since = after > 0 ? after - 900 : 0, rows = tvdBookRows().filter((r) => r[0] > since), N = 40, of = Math.max(1, Math.ceil(rows.length / N)), ts = Date.now();
+    for (let i = 0; i < of; i++) setTimeout(() => publish({ v: 1, kind: 'tvdBook', ts, i, of, delta: since ? 1 : 0, since: S.tvd.liveSince || null, rows: rows.slice(i * N, (i + 1) * N) }, true), 2500 + i * 1500);
+  }
   function publishLedger() {
     if (Date.now() - ledPubAt < 60000) return;
     ledPubAt = Date.now();
@@ -1494,6 +1517,7 @@ export function createAutopilot(o) {
       case 'ledger': publishLedger(); break;
       case 'flips': publishFlips(+a.after || 0); break;
       case 'book': publishBook(+a.after || 0); break;
+      case 'tvdBook': publishTvdBook(+a.after || 0); break;
       case 'chartWin': {
         const w = a.w === 'blk' ? 'blk' : 'day';
         S.chartWin = w; save(); ok = true; msg = w === 'blk' ? 'chart shows one bar per time block' : 'chart shows one bar per day';

@@ -64,6 +64,8 @@
   #empty span { background: var(--panel); padding: 8px 12px; border-radius: 9px; max-width: 420px; }
   .pan { display: flex; align-items: center; gap: 10px; font-size: 12px; color: var(--muted); }
   .pan input[type=range] { flex: 1; padding: 0; accent-color: var(--accent); background: transparent; border: 0; }
+  #tvStats { font-size: 12px; color: var(--muted); line-height: 1.6; }
+  #tvStats b { color: var(--text); font-weight: 600; }
   .legend { display: flex; flex-wrap: wrap; gap: 14px; font-size: 12px; color: var(--muted); }
   .sw { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 6px; vertical-align: -1px; }
   /* full screen: the browser's own, or a fixed overlay where that isn't available (iPhone) */
@@ -125,23 +127,24 @@
     <section class="card" id="chartCard">
       <div class="chartHead">
         <div>
-          <h3>Daily profit</h3>
+          <h3 id="chartTitle">Daily profit</h3>
           <div class="sub" id="chartSub">Real money, per day (midnight to midnight, Central time)</div>
         </div>
         <div class="spacer"></div>
-        <div class="seg" id="winSeg" title="One bar per day, or one per time block"><button data-w="day">Per day</button><button data-w="blk">Per time block</button></div>
+        <div class="seg" id="winSeg" title="One bar per day, per time block, or per real TV Divergence trade"><button data-w="day">Per day</button><button data-w="blk">Per time block</button><button data-w="tvd">TV trades</button></div>
         <div class="seg" id="unitSeg"><button data-u="bal">Balance</button><button data-u="$">$</button><button data-u="%">%</button></div>
         <button class="icon" id="setBtn" title="Chart settings" aria-label="Chart settings">⚙︎</button>
         <button class="icon" id="fsBtn" title="Full screen" aria-label="Full screen">⛶</button>
       </div>
       <div class="hstrip" id="hstrip"></div>
+      <div id="tvStats" class="hide"></div>
       <div class="plot" id="plot">
         <canvas id="cv"></canvas>
         <div id="empty" class="hide"></div>
         <div id="tip" class="hide"></div>
       </div>
       <div class="pan hide" id="pan"><span id="panFrom"></span><input type="range" id="panR" min="0" max="0" value="0" aria-label="Scroll through days"><span id="panTo"></span></div>
-      <div class="legend"><span id="lgBal"><span class="sw" style="background:#3d7bd9"></span>Balance</span><span><span class="sw" style="background:var(--up)"></span>Profit</span><span><span class="sw" style="background:var(--down)"></span>Loss</span><span id="lgLine" class="hide"><span class="sw" style="background:#e3c770;height:2px;vertical-align:3px"></span>Running total profit</span><span id="lgToday"><span class="sw" style="background:rgba(61,123,217,.45);outline:1px dashed #7d8899;outline-offset:-1px"></span>Today so far</span></div>
+      <div class="legend"><span id="lgBal"><span class="sw" style="background:#3d7bd9"></span>Balance</span><span><span class="sw" style="background:var(--up)"></span>Profit</span><span><span class="sw" style="background:var(--down)"></span>Loss</span><span id="lgLine" class="hide"><span class="sw" style="background:#e3c770;height:2px;vertical-align:3px"></span>Running total profit</span><span id="lgNo" class="hide"><span class="sw" style="background:transparent;border:1.5px solid #7d8899;border-radius:50%;width:8px;height:8px"></span>Not filled</span><span id="lgPend" class="hide"><span class="sw" style="background:#f5b041;border-radius:50%;width:8px;height:8px"></span>Waiting for result</span><span id="lgToday"><span class="sw" style="background:rgba(61,123,217,.45);outline:1px dashed #7d8899;outline-offset:-1px"></span>Today so far</span></div>
     </section>
 
     <section class="card">
@@ -176,7 +179,7 @@
     const $ = (id) => document.getElementById(id);
     const LS = 'btcpw.autopilot';                 // shared with the autopilot page: log in once
     const PREF = 'btcpw.profits.prefs';
-    const DEF = { win: 500, unit: 'bal', from: '', line: false, today: true, blk: false, v: 2 };
+    const DEF = { win: 500, unit: 'bal', from: '', line: false, today: true, blk: false, tv: false, v: 2 };
     const ls = { get(k) { try { return JSON.parse(localStorage.getItem(k) || 'null'); } catch (e) { return null; } }, set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) {} }, del(k) { try { localStorage.removeItem(k); } catch (e) {} } };
     let prefs = Object.assign({}, DEF, ls.get(PREF) || {});
     if (prefs.v !== 2) { prefs.unit = 'bal'; prefs.v = 2; }   // the balance view became the default
@@ -207,6 +210,35 @@
       }
     }
     function ledSave() { ls.set(ledKey(), led); }
+
+    // ---------------- real TV Divergence orders ('tvdBook' messages, sent only when this view asks)
+    // rows: [placed s, window s, side, status f/p/n/e, ask seen, fill px, shares, cost, fee, billed 1/0, result, profit, bet %, s left]
+    const tvKey = () => 'btcpw.profits.tvd1.' + sess.topic;
+    let tvb = null, tvAsked = 0, tvAskedFull = false;
+    function tvLoad() { tvb = ls.get(tvKey()) || null; }
+    function tvMerge(m) {
+      if (!Array.isArray(m.rows) || (tvb && m.ts < tvb.at)) return;   // an older answer seen again
+      const keep = !tvb || (!m.delta && m.i === 0 && m.ts !== tvb.at) ? [] : tvb.rows;
+      const fresh = new Set(m.rows.map((r) => r[1]));
+      const rows = keep.filter((r) => !fresh.has(r[1])).concat(m.rows).sort((a, b) => a[0] - b[0]);
+      tvb = { at: m.ts, since: m.since || (tvb && tvb.since) || null, rows }; ls.set(tvKey(), tvb);
+      if (!tvStale()) tvAskedFull = false;
+    }
+    // the status says how many real orders there are and how many have settled; ask when this copy disagrees
+    function tvCounts() { const q = st && st.ap && st.ap.tvdLiveSum; return q ? { n: q[0], settled: q[9] } : null; }
+    function tvStale() {
+      if (!tvb) return true;
+      const c = tvCounts(); if (!c) return false;
+      const settled = tvb.rows.filter((r) => (r[3] === 'f' || r[3] === 'p') && r[10] != null).length;
+      return tvb.rows.length !== c.n || settled !== c.settled;
+    }
+    function askTvd(force) {
+      if (!prefs.tv || !sess || Date.now() - tvAsked < (force ? 15000 : 60000)) return;
+      if (!force && !tvStale()) return;
+      const full = force || !tvb || !tvb.rows.length || tvAskedFull === 'delta';   // a delta that didn't fix it: send everything
+      tvAsked = Date.now(); tvAskedFull = full ? 'full' : 'delta';
+      send('tvdBook', full ? {} : { after: tvb.rows[tvb.rows.length - 1][0] });
+    }
     function setStart(start) {   // the bot decides where tracking starts (it can rebuild from an earlier date)
       if (led.start === start) return;
       led.start = start;
@@ -235,7 +267,7 @@
     // ---------------- talking to the bot (through ntfy, encrypted)
     async function openSession(server, topic, bits) {
       sess = { server: server.replace(/\/$/, ''), topic, K: await APCrypto.keysFromBits(bits), T: APCrypto.topics(topic) };
-      ledLoad();
+      ledLoad(); tvLoad();
     }
     async function fetchMsgs(since) {
       const r = await fetch(`${sess.server}/${sess.T.status}/json?poll=1&since=${since || '12h'}`, { cache: 'no-store' });
@@ -247,6 +279,7 @@
         const m = await APCrypto.open(sess.K, l.message);
         if (!m) continue;
         if (m.kind === 'ledger') { mergeChunk(m); chunks++; }
+        else if (m.kind === 'tvdBook') tvMerge(m);
         else if (!m.kind && (!s || m.ts > s.ts)) s = m;
       }
       if (s && (!st || s.ts >= st.ts)) { st = s; mergeStatus(s); syncFrom(); syncWin(); }
@@ -273,6 +306,7 @@
     let cwAsked = 0;
     function syncWin(force) {
       if (!st || st.cw === undefined || Date.now() - st.ts > 75 * 60000) return;
+      if (prefs.tv) return;   // the TV trades view is this page only; the Sense HAT keeps per day / per block
       const want = prefs.blk ? 'blk' : 'day';
       if (st.cw === want || (!force && Date.now() - cwAsked < 120000)) return;
       cwAsked = Date.now(); send('chartWin', { w: want });
@@ -283,7 +317,7 @@
     async function poll() {
       if (!sess) return;
       try { await fetchMsgs(st ? Math.floor(st.ts / 1000) - 5 : '12h'); } catch (e) { /* offline for a moment */ }
-      render(); schedule();
+      render(); schedule(); askTvd();
     }
     document.addEventListener('visibilitychange', () => { if (!document.hidden && sess) { askRefresh(); poll(); } });
 
@@ -305,7 +339,7 @@
     $('logout').onclick = () => { ls.del(LS); sess = null; st = null; clearTimeout(pollTimer); $('dash').classList.add('hide'); $('logout').classList.add('hide'); $('login').classList.remove('hide'); };
     function showDash() {
       $('login').classList.add('hide'); $('dash').classList.remove('hide'); $('logout').classList.remove('hide');
-      render(); schedule(); askRefresh();
+      render(); schedule(); askRefresh(); askTvd();
       if (missingHistory() || missingBlk()) askLedger();
     }
 
@@ -364,6 +398,9 @@
       return a >= 10000 ? s + (a / 1000).toFixed(a % 1000 ? 1 : 0) + 'k' : a >= 1000 ? s + a.toLocaleString('en-US', { maximumFractionDigits: 0 }) : s + a.toFixed(dec);
     };
     function draw() {
+      $('chartTitle').textContent = prefs.tv ? 'TV Divergence trades' : 'Daily profit';
+      if (prefs.tv) return drawTv();
+      $('tvStats').classList.add('hide'); $('lgNo').classList.add('hide'); $('lgPend').classList.add('hide');
       const all = series(!!prefs.blk).filter((r) => prefs.today || !r.today);
       const total = all.length, win = Math.max(7, Math.min(2000, prefs.win | 0 || 500)) * (prefs.blk ? 3 : 1);
       const maxOff = Math.max(0, total - win);
@@ -475,6 +512,107 @@
       G = { S, L, pw, bw, T, ph, off, maxOff, total };
       $('chartSub').textContent = `${prefs.blk ? 'Real money, per time block: 12am–8am, 8am–4pm, 4pm–12am (Central time)' : 'Real money, per day (midnight to midnight, Central time)'}${led.start ? ' · since ' + dLabel(led.start, { month: 'short', day: 'numeric', year: 'numeric' }) : ''}`;
     }
+    // ---------------- TV trades view: one bar per real TV Divergence order, profit in $ or per $1 staked
+    const c2s = (x) => x == null ? '—' : Math.round(x * 100) + '¢';
+    function tvSummary(R) {
+      const F = R.filter((r) => r[3] === 'f' || r[3] === 'p'), D = F.filter((r) => r[10] != null), N = R.filter((r) => r[3] === 'n');
+      const sum = (a, k) => a.reduce((x, r) => x + (r[k] || 0), 0);
+      const won = D.filter((r) => r[10] === 1).length, pnl = sum(D, 11), cost = sum(D, 7), sh = sum(D, 6);
+      const B = F.filter((r) => r[9] === 1 && r[5] > 0 && r[5] < 1 && r[6] > 0), coef = B.length ? B.reduce((x, r) => x + r[8] / (r[6] * r[5] * (1 - r[5])), 0) / B.length : null;
+      const seen = F.length ? sum(F, 4) / F.length : null, fill = F.length ? sum(F, 5) / F.length : null;
+      return { n: R.length, f: F.length, d: D.length, won, lost: D.length - won, pnl, cost, per: cost > 0 ? pnl / cost * 100 : null, be: sh > 0 ? cost / sh * 100 : null,
+        fees: sum(F, 8), coef, billed: B.length, seen, fill, nofill: N.length, nofillWon: N.filter((r) => r[10] === 1).length, nofillDone: N.filter((r) => r[10] != null).length, pend: F.length - D.length, err: R.filter((r) => r[3] === 'e').length };
+    }
+    function renderTvStats(R) {
+      const el = $('tvStats'); el.classList.remove('hide');
+      if (!R.length) { el.innerHTML = ''; return; }
+      const x = tvSummary(R);
+      el.innerHTML = [
+        `<b>${x.n}</b> order${x.n === 1 ? '' : 's'} · <b>${x.f}</b> filled (${Math.round(x.f / x.n * 100)}%)${x.nofill ? ` · ${x.nofill} not filled${x.nofillDone ? `, ${x.nofillWon} of ${x.nofillDone} would have won` : ''}` : ''}${x.err ? ` · ${x.err} error${x.err === 1 ? '' : 's'}` : ''}`,
+        `Settled <b>${x.d}</b> of 30: <b>${x.won}–${x.lost}</b>${x.d ? ` (${Math.round(x.won / x.d * 100)}% vs ${x.be.toFixed(1)}% to break even)` : ''}${x.pend ? ` · ${x.pend} waiting` : ''}`,
+        `P&amp;L <b class="${cls(x.pnl)}">${esc(signed(x.pnl))}</b> on ${esc(money(x.cost))} staked = <b class="${cls(x.per)}">${esc(pctS(x.per))}</b> per $1`,
+        x.f ? `Ask seen ${(x.seen * 100).toFixed(1)}¢ → filled ${(x.fill * 100).toFixed(1)}¢ on average · fees ${esc(money(x.fees))}${x.coef != null ? ` billed at ${x.coef.toFixed(4)}` : ' (estimated)'}` : '',
+      ].filter(Boolean).join('<br>');
+    }
+    function drawTv() {
+      $('lgLine').classList.remove('hide'); $('lgToday').classList.add('hide'); $('lgBal').classList.add('hide');
+      $('lgNo').classList.remove('hide'); $('lgPend').classList.remove('hide');
+      const R = tvb ? tvb.rows : [];
+      renderTvStats(R);
+      const total = R.length, win = Math.max(7, Math.min(2000, prefs.win | 0 || 500));
+      const maxOff = Math.max(0, total - win), off = view.off == null || view.off > maxOff ? maxOff : view.off;
+      const S = R.slice(off, off + win).map((r) => ({ r, d: pday(r[0] * 1000) }));
+      $('pan').classList.toggle('hide', total <= win);
+      if (total > win) { const p = $('panR'); p.max = maxOff; p.value = off; $('panFrom').textContent = dLabel(S[0].d); $('panTo').textContent = dLabel(S[S.length - 1].d); }
+      const dpr = window.devicePixelRatio || 1, W = plot.clientWidth, H = plot.clientHeight;
+      cv.width = Math.round(W * dpr); cv.height = Math.round(H * dpr);
+      const c = cv.getContext('2d'); c.setTransform(dpr, 0, 0, dpr, 0, 0); c.clearRect(0, 0, W, H);
+      const unit = prefs.unit === '%' ? '%' : '$';
+      const settled = (r) => (r[3] === 'f' || r[3] === 'p') && r[10] != null;
+      const val = (r) => !settled(r) ? 0 : unit === '%' ? (r[7] > 0 ? r[11] / r[7] * 100 : 0) : r[11];
+      $('empty').classList.toggle('hide', S.length > 0);
+      if (!S.length) $('empty').innerHTML = `<span>${tvb ? 'No real TV Divergence orders yet. One bar per order once they go in.' : 'Asking the bot for the TV Divergence trades…'}</span>`;
+      // running total: dollars, or return per $1 staked so far (total profit ÷ total staked)
+      let accP = 0, accC = 0; for (const r of R.slice(0, off)) if (settled(r)) { accP += r[11]; accC += r[7]; }
+      const cum = S.map(({ r }) => { if (settled(r)) { accP += r[11]; accC += r[7]; } return unit === '%' ? (accC > 0 ? accP / accC * 100 : 0) : accP; });
+      // one scale for the bars and the running total, so the line's $0 is the bars' $0
+      let hi = 0, lo = 0; for (const { r } of S) { hi = Math.max(hi, val(r)); lo = Math.min(lo, val(r)); }
+      for (const v of cum) { hi = Math.max(hi, v); lo = Math.min(lo, v); }
+      if (hi === 0 && lo === 0) hi = unit === '%' ? 5 : 10;
+      const step = niceStep((hi - lo) / 4.5), top = Math.ceil(hi / step) * step, bot = Math.floor(lo / step) * step;
+      c.font = '11px system-ui, -apple-system, Segoe UI, Roboto, sans-serif';
+      let labW = 0;
+      for (let v = bot; v <= top + step / 2; v += step) labW = Math.max(labW, c.measureText(axisFmt(v, unit, step)).width);
+      const L = Math.ceil(labW) + 14, T = 10, B = 26;
+      const pw = Math.max(10, W - L - 8), ph = Math.max(10, H - T - B);
+      const Y = (v) => T + (top - v) / (top - bot) * ph, CY = Y;
+      c.textAlign = 'right'; c.textBaseline = 'middle';
+      for (let v = bot; v <= top + step / 2; v += step) {
+        const y = Math.round(Y(v)) + .5;
+        c.strokeStyle = Math.abs(v) < step / 1e6 ? '#3a465a' : '#1b2230'; c.lineWidth = 1;
+        c.beginPath(); c.moveTo(L, y); c.lineTo(L + pw, y); c.stroke();
+        c.fillStyle = '#7d8899'; c.fillText(axisFmt(Math.abs(v) < step / 1e6 ? 0 : v, unit, step), L - 8, y);
+      }
+      const slots = Math.max(S.length, 10), bw = pw / slots, bar = bw >= 7 ? Math.min(bw * 0.72, 46) : bw >= 3 ? bw * 0.84 : Math.max(1, bw), y0 = Y(0);
+      S.forEach(({ r }, i) => {
+        const cx = L + i * bw + bw / 2, x = cx - bar / 2;
+        if (r[3] === 'n' || r[3] === 'e') {   // not filled: hollow ring on the zero line
+          c.strokeStyle = r[3] === 'e' ? '#ea3943' : '#7d8899'; c.lineWidth = 1.5; c.beginPath(); c.arc(cx, y0, Math.max(2.5, Math.min(5, bar / 3)), 0, Math.PI * 2); c.stroke(); return;
+        }
+        if (!settled(r)) { c.fillStyle = '#f5b041'; c.beginPath(); c.arc(cx, y0, Math.max(2.5, Math.min(5, bar / 3)), 0, Math.PI * 2); c.fill(); return; }
+        const v = val(r), y = Y(v), h = Math.max(1, Math.abs(y - y0)), yt = v > 0 ? y0 - h : y0;
+        c.fillStyle = v > 0 ? '#16c784' : '#ea3943';
+        const rad = Math.min(3, bar / 3, h / 2); c.beginPath();
+        if (rad >= 1 && c.roundRect) c.roundRect(x, yt, bar, h, v > 0 ? [rad, rad, 0, 0] : [0, 0, rad, rad]); else c.rect(x, yt, bar, h);
+        c.fill();
+      });
+      if (S.length) {
+        c.strokeStyle = '#e3c770'; c.lineWidth = 1.75; c.lineJoin = 'round'; c.beginPath();
+        cum.forEach((v, i) => { const x = L + i * bw + bw / 2, y = CY(v); if (i) c.lineTo(x, y); else c.moveTo(x, y); });
+        c.stroke();
+        if (S.length === 1) { c.fillStyle = '#e3c770'; c.beginPath(); c.arc(L + bw / 2, CY(cum[0]), 2.5, 0, Math.PI * 2); c.fill(); }
+      }
+      // a date under the first trade of each day
+      c.fillStyle = '#7d8899'; c.textAlign = 'center'; c.textBaseline = 'alphabetic';
+      let lastX = -1e9, lastD = null;
+      S.forEach(({ d }, i) => {
+        if (d === lastD) return; lastD = d;
+        const x = L + i * bw + bw / 2, t = dLabel(d), w = c.measureText(t).width;
+        if (x - w / 2 < lastX + 10 || x + w / 2 > W) return;
+        c.fillText(t, Math.max(L + w / 2, x), H - 8); lastX = x + w / 2;
+      });
+      G = { S, L, pw, bw, T, ph, off, maxOff, total, tv: true };
+      const since = tvb && tvb.since ? new Date(tvb.since).toLocaleString('en-US', { timeZone: 'America/Chicago', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : null;
+      $('chartSub').textContent = `Real-money TV Divergence, one bar per order · ${unit === '%' ? 'profit per $1 staked' : 'profit in dollars'}, gold line = ${unit === '%' ? 'return per $1 so far' : 'running total'}${since ? ' · since ' + since + ' CT' : ''}`;
+    }
+    function tvTip({ r }) {
+      const when = new Date(r[0] * 1000).toLocaleString('en-US', { timeZone: 'America/Chicago', weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+      const side = r[2] === 'U' ? 'Up' : 'Down', head = `<div class="muted">${esc(when)} · ${side} · ${r[13] != null ? r[13] + ' s left' : ''}${r[12] != null ? ' · ' + r[12] + '% bet' : ''}</div>`;
+      if (r[3] === 'n' || r[3] === 'e') return head + `<b>${r[3] === 'e' ? 'Order error' : 'Not filled'}</b> <span class="muted">ask ${c2s(r[4])}</span>` + (r[10] != null ? `<div class="${r[10] ? 'up' : 'down'}">would have ${r[10] ? 'won' : 'lost'}</div>` : '<div class="muted">result pending</div>');
+      const res = r[10] == null ? '<b class="amber">Waiting for result</b>' : `<b class="num ${cls(r[11])}">${esc(signed(r[11]))}</b> <span class="num ${cls(r[11])}">${esc(pctS(r[7] > 0 ? r[11] / r[7] * 100 : null))}</span> <span class="muted">${r[10] ? 'won' : 'lost'}</span>`;
+      const coef = r[5] > 0 && r[5] < 1 && r[6] > 0 ? (r[8] / (r[6] * r[5] * (1 - r[5]))).toFixed(4) : null;
+      return head + res + `<div class="num">ask ${c2s(r[4])} → filled ${c2s(r[5])}${r[3] === 'p' ? ' (partial)' : ''} · ${r[6]} shares</div><div class="num muted">cost ${esc(money(r[7]))} incl. fee ${esc(money(r[8]))}${r[9] ? ` billed${coef ? ' (' + coef + ')' : ''}` : ' estimated'}</div>`;
+    }
     // tooltip
     function tipAt(clientX, clientY) {
       if (!G || !G.S.length) return hideTip();
@@ -482,8 +620,11 @@
       const i = Math.floor((x - G.L) / G.bw);
       if (i < 0 || i >= G.S.length) return hideTip();
       const r = G.S[i], tip = $('tip');
+      if (G.tv) { tip.innerHTML = tvTip(r); }
+      else {
       const range = dLabel(r.d, { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' }) + (r.blk != null ? ' · ' + BLK[r.blk] : '');
       tip.innerHTML = `<div class="muted">${esc(range)}${r.today ? ' · so far' : ''}</div><b class="num ${cls(r.pnl)}">${esc(signed(r.pnl))}</b> <span class="num ${cls(r.pct)}">${esc(pctS(r.pct))}</span>${r.sb != null ? `<div class="num">${esc(money(r.sb))} → <b>${esc(money(r.sb + r.pnl))}</b></div>` : ''}<div class="muted">${r.n ? `${r.n} trade${r.n === 1 ? '' : 's'}, ${r.w} won` : 'no trades'}</div>`;
+      }
       tip.classList.remove('hide');
       const tw = tip.offsetWidth, th = tip.offsetHeight, cx = G.L + i * G.bw + G.bw / 2;
       tip.style.left = Math.max(4, Math.min(b.width - tw - 4, cx - tw / 2)) + 'px';
@@ -513,9 +654,11 @@
     // units, settings, full screen
     function renderUnit() {
       for (const b of $('unitSeg').children) b.classList.toggle('on', b.dataset.u === prefs.unit);
-      for (const b of $('winSeg').children) b.classList.toggle('on', b.dataset.w === (prefs.blk ? 'blk' : 'day'));
+      for (const b of $('winSeg').children) b.classList.toggle('on', b.dataset.w === (prefs.tv ? 'tvd' : prefs.blk ? 'blk' : 'day'));
+      $('unitSeg').querySelector('[data-u="bal"]').classList.toggle('hide', !!prefs.tv);   // no balance view for single trades
+      if (prefs.tv && prefs.unit === 'bal') for (const b of $('unitSeg').children) b.classList.toggle('on', b.dataset.u === '$');
     }
-    $('winSeg').addEventListener('click', (e) => { const w = e.target.dataset && e.target.dataset.w; if (!w) return; prefs.blk = w === 'blk'; ls.set(PREF, prefs); view.off = null; render(); syncWin(true); });
+    $('winSeg').addEventListener('click', (e) => { const w = e.target.dataset && e.target.dataset.w; if (!w) return; prefs.tv = w === 'tvd'; if (!prefs.tv) prefs.blk = w === 'blk'; ls.set(PREF, prefs); view.off = null; render(); if (prefs.tv) askTvd(); else syncWin(true); });
     $('unitSeg').addEventListener('click', (e) => { const u = e.target.dataset && e.target.dataset.u; if (!u) return; prefs.unit = u; ls.set(PREF, prefs); renderUnit(); draw(); });
     $('setBtn').onclick = () => {
       $('pWin').value = prefs.win; $('pUnit').value = prefs.unit; $('pFrom').value = prefs.from || ''; $('pLine').checked = !!prefs.line; $('pToday').checked = !!prefs.today;
@@ -527,7 +670,7 @@
     $('pSave').onclick = () => {
       const w = Math.round(+$('pWin').value);
       if (!(w >= 7 && w <= 2000)) return toast('Days on screen: 7 to 2,000', 'err');
-      prefs = { win: w, unit: $('pUnit').value, from: $('pFrom').value || '', line: $('pLine').checked, today: $('pToday').checked, blk: !!prefs.blk, v: 2 };
+      prefs = { win: w, unit: $('pUnit').value, from: $('pFrom').value || '', line: $('pLine').checked, today: $('pToday').checked, blk: !!prefs.blk, tv: !!prefs.tv, v: 2 };
       ls.set(PREF, prefs); view.off = null; $('setDlg').close(); renderUnit(); draw(); syncFrom(true);
       if (prefs.from && led.start && prefs.from < led.start) {
         if (!st || Date.now() - st.ts > 75 * 60000) return toast('The bot seems offline; it will rebuild once you save again while it is running', 'err');
