@@ -457,7 +457,7 @@ export function createAutopilot(o) {
 
   // Real order: immediate-or-cancel limit at `limit` (price of the side we buy). Returns what filled.
   async function liveOrder(mkt, up, limit, qty) {
-    let filled = 0, notional = 0, msg = '';
+    let filled = 0, notional = 0, msg = '', billed = null;   // billed: the fee Polymarket US actually charged (null if not reported)
     const body = {
       marketSlug: mkt.slug,
       intent: up ? 'ORDER_INTENT_BUY_LONG' : 'ORDER_INTENT_BUY_SHORT',
@@ -473,20 +473,23 @@ export function createAutopilot(o) {
     // Execution prices are YES prices; convert to the price of the side we bought
     const ours = (px) => (Math.abs(px - limit) <= Math.abs(1 - px - limit) ? px : 1 - px);
     for (const ex of r.executions || []) {
-      if (/FILL/.test(ex.type || '') && ex.lastShares) { const sh = +ex.lastShares, px = ours(+ex.lastPx.value); filled += sh; notional += sh * px; }
+      if (/FILL/.test(ex.type || '') && ex.lastShares) {
+        const sh = +ex.lastShares, px = ours(+ex.lastPx.value); filled += sh; notional += sh * px;
+        if (ex.commissionNotionalCollected && ex.commissionNotionalCollected.value != null) billed = (billed || 0) + +ex.commissionNotionalCollected.value;
+      }
       if (/REJECT/.test(ex.type || '')) msg = ex.orderRejectReason || ex.text || 'rejected';
     }
-    if (!filled && orderId) {
+    if ((!filled || billed == null) && orderId) {   // no fill reported, or no fee on the fills: ask for the order itself
       try {
         const od = (await api('GET', '/v1/order/' + orderId)).order || {};
-        filled = +od.cumQuantity || 0;
-        if (filled && od.avgPx) notional = filled * ours(+od.avgPx.value);
+        if (!filled) { filled = +od.cumQuantity || 0; if (filled && od.avgPx) notional = filled * ours(+od.avgPx.value); }
+        if (filled && billed == null && od.commissionNotionalTotalCollected && od.commissionNotionalTotalCollected.value != null) billed = +od.commissionNotionalTotalCollected.value;
         if (!msg && /REJECT/.test(od.state || '')) msg = 'rejected';
       } catch (e) { log('autopilot: order lookup failed:', e.message); }
     }
     if (!filled && isMoneyError({ text: msg })) outOfMoney(0, 'Polymarket US refused the order: not enough funds.');
     refreshLive().catch(() => {});
-    return { filled, notional, orderId, msg };
+    return { filled, notional, orderId, msg, fee: billed == null ? null : r4(billed) };
   }
 
   // ------------------------------------------------------------ settlement
@@ -1106,10 +1109,15 @@ export function createAutopilot(o) {
       const ord = await liveOrder(mkt, up, limit, qty);
       Object.assign(rec, { real: 1, limit, want: qty, orderId: ord.orderId, balBefore: r2(bal), liveSince: S.tvd.liveSince });
       if (ord.filled > 0) {
-        const px = ord.notional / ord.filled, fee = r4(feeAt(px) * ord.filled), cost = r2(ord.notional + fee);
+        // the fee Polymarket US billed on this fill when it reports one (the API rate can differ from the market's
+        // listed coefficient), else the listed coefficient's estimate; P&L, break-even and the tally use this
+        const px = ord.notional / ord.filled, feeSrc = ord.fee != null ? 'billed' : 'estimate';
+        const fee = ord.fee != null ? ord.fee : r4(feeAt(px) * ord.filled), cost = r2(ord.notional + fee);
+        const feeCoef = px > 0 && px < 1 ? r4(fee / (ord.filled * px * (1 - px))) : null;
         const status = ord.filled < qty - 1e-9 ? 'partial' : 'filled';
-        record({ Ws: rec.Ws, mode: 'live', strategy: 'tvd', betPct: S.tvdPct, side: rec.side, status, qty: r2(ord.filled), want: qty, px: r4(px), fee, cost, limit, seen: r4(ask), orderId: ord.orderId, slug: mkt.slug, result: null, pnl: null, balBefore: r2(bal) });
-        Object.assign(rec, { realStatus: status, realPx: r4(px), realQty: r2(ord.filled), realCost: cost, realFee: fee });
+        log(`TV divergence fee: ${feeSrc} $${fee.toFixed(4)} on ${r2(ord.filled)} @ ${cents(px)} = coefficient ${feeCoef} (listed ${mkt.feeK})`);
+        record({ Ws: rec.Ws, mode: 'live', strategy: 'tvd', betPct: S.tvdPct, side: rec.side, status, qty: r2(ord.filled), want: qty, px: r4(px), fee, feeSrc, feeCoef, cost, limit, seen: r4(ask), orderId: ord.orderId, slug: mkt.slug, result: null, pnl: null, balBefore: r2(bal) });
+        Object.assign(rec, { realStatus: status, realPx: r4(px), realQty: r2(ord.filled), realCost: cost, realFee: fee, feeSrc, feeCoef, listedFeeK: mkt.feeK });
         S.stats.live.n++; S.stats.live.staked = r2(S.stats.live.staked + cost); day.n++;
         if (S.notifyFills) push({ title: `BOUGHT ${rec.side} (TV DIVERGENCE)`, body: `${r2(ord.filled)} @ ${cents(px)} = ${money(cost)} · spot $${rec.dist.toFixed(0)} past the line, ${rec.left}s left`, priority: 4, tags: up ? 'green_circle' : 'red_circle', click: o.site + 'autopilot.html' });
       } else {
@@ -1124,7 +1132,8 @@ export function createAutopilot(o) {
   }
   // Live tally since real money went on (S.tvd.liveSince): [orders sent, filled, partial, unfilled, errors,
   //  unfilled that would have won, unfilled settled, avg ask seen (¢, filled), avg fill (¢), settled fills, won,
-  //  break-even win rate (%), net P&L ($), % per $1, real losses today, since (ms), guard tally n]
+  //  break-even win rate (%), net P&L ($), % per $1, real losses today, since (ms), guard tally n,
+  //  [fills with a billed fee, their average fee coefficient, total fees $, listed coefficient]]
   function tvdLiveSummary() {
     const since = S.tvd.liveSince || 0;
     const R = S.tvd.trades.filter((t) => t.real === 1 && t.ts >= since);
@@ -1135,7 +1144,9 @@ export function createAutopilot(o) {
     return [R.length, F.filter((t) => t.realStatus === 'filled').length, F.filter((t) => t.realStatus === 'partial').length, N.length, R.filter((t) => t.realStatus === 'error').length,
       N.filter((t) => t.result === 1).length, N.filter((t) => t.result != null).length, avg(F, (t) => t.ask), avg(F, (t) => t.realPx), D.length, w,
       avg(D, (t) => t.realCost / t.realQty), r2(pnl), cost > 0 ? Math.round(pnl / cost * 1000) / 10 : null,
-      S.tvdLoss && S.tvdLoss.d === dayOf(Date.now()) ? S.tvdLoss.n : 0, since, S.tvdTally ? S.tvdTally.n : 0];
+      S.tvdLoss && S.tvdLoss.d === dayOf(Date.now()) ? S.tvdLoss.n : 0, since, S.tvdTally ? S.tvdTally.n : 0,
+      // fees: fills with a billed fee, their average coefficient, total fees ($), the listed coefficient
+      (() => { const b = F.filter((t) => t.feeSrc === 'billed' && t.feeCoef != null); return [b.length, b.length ? r4(b.reduce((a, t) => a + t.feeCoef, 0) / b.length) : null, r2(F.reduce((a, t) => a + (t.realFee || 0), 0)), F.length ? F[F.length - 1].listedFeeK : null]; })()];
   }
   async function settleTvd() {
     const now = Date.now() / 1000;

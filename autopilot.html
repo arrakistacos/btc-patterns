@@ -653,6 +653,7 @@
               : `Real since ${new Date(q[15]).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}: ${q[0]} orders sent, ${q[1]} filled${q[2] ? `, ${q[2]} partly` : ''}, ${q[3]} unfilled${q[4] ? `, ${q[4]} errors` : ''} (fill rate ${q[0] ? Math.round((q[1] + q[2]) / q[0] * 100) : 0}%)`
                 + (q[6] ? `; unfilled that would have won: ${q[5]} of ${q[6]}` : '') + (q[7] != null ? `. Ask seen ${q[7]}¢ vs filled at ${q[8]}¢ on average` : '')
                 + (q[9] ? `. Settled ${q[9]}: ${q[10]} won (${Math.round(q[10] / q[9] * 100)}%, break-even ${q[11]}%), ${m$(q[12])}, ${pc(q[13])} per $1` : '')
+                + (q[17] && (q[17][0] || q[17][2]) ? `. Fees: $${q[17][2].toFixed(2)}${q[17][0] ? `, billed at a coefficient of ${q[17][1]} on ${q[17][0]} fill${q[17][0] === 1 ? '' : 's'}` : ' (estimated)'}${q[17][3] != null ? ` (listed ${q[17][3]})` : ''}` : '')
                 + `. Losses today ${q[14]} of ${L[2]}; safety switch at ${L[3]} bets below ${L[4]}% (${q[16]} so far).`; }
           { const v = ap.tvd;   // TV Divergence forward test
             const pc = (x) => (x >= 0 ? '+' : '') + x + '%';
