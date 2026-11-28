@@ -1,9 +1,9 @@
 {
- "generated": "2026-11-28T03:21:49.149Z",
+ "generated": "2026-11-28T17:36:44.716Z",
  "window": {
   "mode": "end60",
-  "volBars": 24,
-  "volScale": 1,
+  "volBars": 48,
+  "volScale": 0.85,
   "beta": 0,
   "gamma": -0.3,
   "velBars": 12
@@ -13,8 +13,8 @@
   "volBars": 6,
   "volScale": 1,
   "beta": 0,
-  "gamma": 0,
-  "velBars": 3
+  "gamma": -0.15,
+  "velBars": 6
  },
  "outcomes": "polymarket.us",
  "note": "Tuned on resolved 5m BTC markets (Polymarket US official start price and results). window = best vs outcomes; marketMatch = closest to Polymarket odds."
