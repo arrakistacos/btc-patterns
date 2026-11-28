@@ -12,6 +12,10 @@
 //   outcome   from the "price to beat" log lines (tools/recordings.mjs).
 //   vol       Coinbase 1-minute candles: the high-low range of the 30 minutes before the window opens, and the
 //             standard deviation of 1-minute returns over the hour before it (in basis points).
+//   fair      a volatility yardstick for the hold events: the chance a driftless random walk with the hour's 1-minute
+//             volatility stays on X's side for the time left, Φ(distance / (σ per second × √seconds left)). In a quiet
+//             hour $35 is a bigger move, so a high ask then is fair, not late. Ask − fair near 0 means Polymarket was
+//             already pricing the move; well under 0 is the lag this strategy lives on. A yardstick, not a model to trade.
 //   hold event  the first reading in a window where the Coinbase part of the rule is met (hold + cross, 30–150 s
 //             left), whatever Polymarket's ask was then: the denominator for the daily "already priced" check.
 //
@@ -70,6 +74,10 @@ function vol(Ws) {   // [30-min high-low range $, 60-min std of 1-min returns (b
   return [n30 >= 20 ? hi - lo : null, sd];
 }
 
+function Phi(x) {   // standard normal CDF (Abramowitz–Stegun 7.1.26 via erf)
+  const t = 1 / (1 + 0.3275911 * Math.abs(x) / Math.SQRT2), y = 1 - (((((1.061405429 * t - 1.453152027) * t) + 1.421413741) * t - 0.284496736) * t + 0.254829592) * t * Math.exp(-x * x / 2);
+  return x >= 0 ? (1 + y) / 2 : (1 - y) / 2;
+}
 // ---------- replay the rule
 const trig = [], holds = [], perDay = {};
 for (const w of windows) {
@@ -88,7 +96,11 @@ for (const w of windows) {
     if (T < RULE.minLeft || !s || hold < RULE.hold) continue;
     if (!hist.some((h) => h.e < hs && hs - h.e <= RULE.look && (s > 0 ? h.d < 0 : h.d > 0))) continue;
     const ask = s > 0 ? r.ask : 1 - r.bid;
-    if (!held) { held = true; holds.push({ Ws: w.Ws, day, ask, dist: Math.abs(d), left: T }); }
+    if (!held) {
+      held = true;
+      const sig = sd60 != null ? w.K * sd60 / 1e4 / Math.sqrt(60) : null;   // $ per √second
+      holds.push({ Ws: w.Ws, day, ask, dist: Math.abs(d), left: T, fair: sig ? Phi(Math.abs(d) / (sig * Math.sqrt(T))) : null });
+    }
     if (!(ask <= RULE.cap + 1e-9) || ask <= 0.02) continue;
     if (ask < RULE.floor - 1e-9 || r.e - pxE >= RULE.flatSec) continue;
     const n = w.rows[i + 1], nAsk = n && n.e - r.e <= 2 ? (s > 0 ? n.ask : 1 - n.bid) : null;
@@ -137,13 +149,13 @@ out.push(`## By session and day type\n\nUS daytime = 8 AM–4 PM CT. Weekend/hol
 
 const c = (x) => (x == null ? '—' : Math.round(x * 100) + '¢');
 let dt = '## Day by day: is the gap closing?\n\n"Coinbase condition met" = windows where spot got $35+ past K, held 3 readings, and had crossed K in the 60 s before, with 30–150 s left. The ask is Polymarket US\'s at that first moment.\n\n'
-  + '| Day (CT) | | Windows recorded | Median 30-min range | Coinbase condition met | % of windows | Ask > 70¢ | Ask 50–70¢ | Ask < 50¢ | Median ask | Median ask, $35–60 moves | Median move | Triggers | Filled | Won |\n|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|\n';
+  + '| Day (CT) | | Windows recorded | Median 30-min range | Coinbase condition met | % of windows | Ask > 70¢ | Ask 50–70¢ | Ask < 50¢ | Median ask | Median ask, $35–60 moves | Median move | Median fair (vol yardstick) | Median ask − fair | Triggers | Filled | Won |\n|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|\n';
 for (const d of days) {
   const H = holds.filter((h) => h.day === d), T = trig.filter((t) => t.day === d), F = T.filter((t) => t.filled), D = perDay[d];
   const wd = new Date(d + 'T12:00:00Z').toLocaleDateString('en-US', { weekday: 'short', timeZone: 'UTC' }) + (HOLIDAYS.has(d) ? '*' : '');
   const share = (f) => (H.length ? pct(H.filter(f).length / H.length) : '—');
   const mr = med(D.ranges);
-  dt += `| ${d} | ${wd} | ${D.windows} | ${mr == null ? '—' : '$' + Math.round(mr)} | ${H.length} | ${pct(H.length / D.windows)} | ${share((h) => h.ask > 0.70 + 1e-9)} | ${share((h) => h.ask >= 0.50 - 1e-9 && h.ask <= 0.70 + 1e-9)} | ${share((h) => h.ask < 0.50 - 1e-9)} | ${c(med(H.map((h) => h.ask)))} | ${c(med(H.filter((h) => h.dist < 60).map((h) => h.ask)))} | $${Math.round(med(H.map((h) => h.dist)) || 0)} | ${T.length} | ${F.length} | ${F.filter((t) => t.won).length} |\n`;
+  dt += `| ${d} | ${wd} | ${D.windows} | ${mr == null ? '—' : '$' + Math.round(mr)} | ${H.length} | ${pct(H.length / D.windows)} | ${share((h) => h.ask > 0.70 + 1e-9)} | ${share((h) => h.ask >= 0.50 - 1e-9 && h.ask <= 0.70 + 1e-9)} | ${share((h) => h.ask < 0.50 - 1e-9)} | ${c(med(H.map((h) => h.ask)))} | ${c(med(H.filter((h) => h.dist < 60).map((h) => h.ask)))} | $${Math.round(med(H.map((h) => h.dist)) || 0)} | ${c(med(H.filter((h) => h.fair != null).map((h) => h.fair)))} | ${(() => { const g = med(H.filter((h) => h.fair != null).map((h) => h.ask - h.fair)); return g == null ? '—' : (g >= 0 ? '+' : '−') + Math.abs(Math.round(g * 100)) + '¢'; })()} | ${T.length} | ${F.length} | ${F.filter((t) => t.won).length} |\n`;
 }
 out.push(dt + '\n* holiday\n');
 const text = out.join('\n');
