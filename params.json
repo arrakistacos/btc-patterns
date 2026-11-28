@@ -1,9 +1,9 @@
 {
- "generated": "2026-11-27T19:02:53.576Z",
+ "generated": "2026-11-28T03:21:49.149Z",
  "window": {
   "mode": "end60",
   "volBars": 24,
-  "volScale": 0.85,
+  "volScale": 1,
   "beta": 0,
   "gamma": -0.3,
   "velBars": 12
